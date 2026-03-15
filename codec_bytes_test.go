@@ -196,6 +196,39 @@ func TestEUI48Codec_RejectWrongLength(t *testing.T) {
 	}
 }
 
+func TestEUI64Codec_RoundTrip(t *testing.T) {
+	c := NewEUI64Codec()
+	addr := net.HardwareAddr{0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F, 0x70}
+	regs, err := EncodeRegisters(addr, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeRegisters(regs, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 8 {
+		t.Fatalf("len(got) = %d", len(got))
+	}
+	for i := range addr {
+		if got[i] != addr[i] {
+			t.Errorf("got[%d] = 0x%02x, want 0x%02x", i, got[i], addr[i])
+		}
+	}
+}
+
+func TestEUI64Codec_RejectWrongLength(t *testing.T) {
+	c := NewEUI64Codec()
+	_, err := EncodeRegisters(net.HardwareAddr{1, 2, 3, 4, 5, 6}, c)
+	if err == nil {
+		t.Fatal("expected error for 6-byte address")
+	}
+	_, err = EncodeRegisters(net.HardwareAddr(nil), c)
+	if err == nil {
+		t.Fatal("expected error for nil address")
+	}
+}
+
 func mustBytesCodec(t *testing.T, byteCount uint16) Codec[[]byte] {
 	t.Helper()
 	c, err := NewBytesCodec(byteCount)
@@ -243,13 +276,19 @@ func TestDescriptorConsistency_BytesAndAddressCodecs(t *testing.T) {
 				}
 			}
 		case CodecFamilyHardwareAddress:
-			if d.ID == "eui48" {
+			switch d.ID {
+			case "eui48":
 				c := NewEUI48Codec()
 				if c.RegisterSpec() != d.RegisterSpec || c.ByteSpec() != d.ByteSpec {
 					t.Errorf("descriptor %s: spec mismatch", d.ID)
 				}
+			case "eui64":
+				c := NewEUI64Codec()
+				if c.RegisterSpec() != d.RegisterSpec || c.ByteSpec() != d.ByteSpec {
+					t.Errorf("descriptor %s: spec mismatch", d.ID)
+				}
 			}
-		case CodecFamilyUnknown, CodecFamilyInteger, CodecFamilyFloat, CodecFamilyText, CodecFamilyBCD, CodecFamilyVendorSpecific:
+		case CodecFamilyDecimalLimb, CodecFamilyUnknown, CodecFamilyInteger, CodecFamilyFloat, CodecFamilyText, CodecFamilyBCD, CodecFamilyVendorSpecific:
 			// Not under test in this function; skip.
 		}
 	}

@@ -65,6 +65,10 @@ func TestNewRegisterLayout_OutOfRange(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for position 9 (max 4)")
 	}
+	_, err = NewRegisterLayout(2, 0, 3, 2, 1)
+	if err == nil {
+		t.Fatal("expected error for position 0 (out of range)")
+	}
 }
 
 func TestMustNewRegisterLayout_Panic(t *testing.T) {
@@ -85,11 +89,17 @@ func TestNamedLayouts_String(t *testing.T) {
 		{"Layout16_21", Layout16_21, "21"},
 		{"Layout16_12", Layout16_12, "12"},
 		{"Layout32_4321", Layout32_4321, "4321"},
+		{"Layout32_3412", Layout32_3412, "3412"},
 		{"Layout32_2143", Layout32_2143, "2143"},
+		{"Layout32_1234", Layout32_1234, "1234"},
 		{"Layout48_654321", Layout48_654321, "654321"},
+		{"Layout48_563412", Layout48_563412, "563412"},
 		{"Layout48_214365", Layout48_214365, "214365"},
+		{"Layout48_123456", Layout48_123456, "123456"},
 		{"Layout64_87654321", Layout64_87654321, "87654321"},
+		{"Layout64_78563412", Layout64_78563412, "78563412"},
 		{"Layout64_21436587", Layout64_21436587, "21436587"},
+		{"Layout64_12345678", Layout64_12345678, "12345678"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1,3 +1,53 @@
+# Release v0.4.0
+
+**Date:** 2026-03-17
+**Previous release:** v0.3.0
+
+## Summary
+
+**Breaking release.** The codec-first API is now the only way to perform typed register read/write. Client-wide encoding state and all legacy typed helpers have been removed. Use **ReadRegisters** / **WriteRegisters** and **ReadRawBytes** / **WriteRawBytes** for raw transport; use **ReadWithCodec** / **WriteWithCodec** (and runtime codec APIs) for typed access with explicit layout.
+
+The **decimal limb (M10k) codec family** is built around **DecimalLimbOrder** and **CodecFamilyDecimalLimb**: unsigned and signed M10k codecs use order-based constructors and stable IDs `order:low_to_high` / `order:high_to_low`. Documentation and semantics are tightened (signed packed BCD sign nibble rules, UTF-16 contract, discovery philosophy, codec discipline); README, API, and CODECS are aligned with the codebase.
+
+## Changes
+
+### Removed (breaking)
+
+- **SetEncoding** — No longer exists. Byte and word order are defined by the codec’s `RegisterLayout` (e.g. `NewUint32Codec(Layout32_4321)`).
+- **ReadBytes / WriteBytes** — Removed. Use **ReadRawBytes** / **WriteRawBytes** for raw byte transport; use codecs for typed interpretation.
+- **Legacy typed read helpers** — Removed: `ReadUint16`, `ReadUint16s`, `ReadUint16Pair`, `ReadUint32`, `ReadUint32s`, `ReadInt16`, `ReadInt16s`, `ReadInt32`, `ReadInt32s`, `ReadFloat32`, `ReadFloat32s`, `ReadUint48`, `ReadUint48s`, `ReadInt48`, `ReadInt48s`, `ReadUint64`, `ReadUint64s`, `ReadInt64`, `ReadInt64s`, `ReadFloat64`, `ReadFloat64s`, `ReadAscii`, `ReadAsciiFixed`, `ReadAsciiReverse`, `ReadBCD`, `ReadPackedBCD`, `ReadUint8s`, `ReadIPAddr`, `ReadIPv6Addr`, `ReadEUI48`. Use **ReadRegisters** / **ReadRawBytes** plus **ReadWithCodec** or **ReadWithRuntimeCodec** with the appropriate codec.
+- **Legacy typed write helpers** — Removed: `WriteUint32`, `WriteUint32s`, `WriteInt16`, `WriteInt16s`, `WriteInt32`, `WriteInt32s`, `WriteFloat32`, `WriteFloat32s`, `WriteUint48`, `WriteUint48s`, `WriteInt48`, `WriteInt48s`, `WriteUint64`, `WriteUint64s`, `WriteInt64`, `WriteInt64s`, `WriteFloat64`, `WriteFloat64s`, `WriteAscii`, `WriteAsciiFixed`, `WriteAsciiReverse`, `WriteBCD`, `WritePackedBCD`, `WriteUint8s`, `WriteIPAddr`, `WriteIPv6Addr`, `WriteEUI48`. Use **WriteRegisters** / **WriteRawBytes** plus **WriteWithCodec** or **WriteWithRuntimeCodec** with the appropriate codec.
+
+### Added
+
+- **DecimalLimbOrder** — Type with `DecimalLimbLowToHigh` and `DecimalLimbHighToLow`; `String()` returns `"low_to_high"` / `"high_to_low"`.
+- **CodecFamilyDecimalLimb** — Codec family `"decimal_limb"` for base-10000 limb codecs.
+- **M10k unsigned codecs** — `NewUint32M10kCodec(order)`, `NewUint48M10kCodec(order)`, `NewUint64M10kCodec(order)` and `MustNew*` variants. Ranges: uint32 0..99_999_999; uint48 0..999_999_999_999; uint64 0..9_999_999_999_999_999.
+- **M10k signed codecs** — `NewInt32M10kCodec(order)`, `NewInt48M10kCodec(order)`, `NewInt64M10kCodec(order)` and `MustNew*` variants. Only the most-significant limb is signed (−9999..9999); MS limb as `int16(reg)` on wire. Ranges: int32 −99_990_000..99_999_999; int48 −999_900_000_000..999_999_999_999; int64 −9_999_000_000_000_000..9_999_999_999_999_999.
+- **M10k stable IDs** — `uint32_m10k/order:low_to_high`, `uint32_m10k/order:high_to_low`, and similarly for int32, uint48, int48, uint64, int64. Schneider mapping in CODECS.md.
+- **Tests** — Signed packed BCD sign nibble rules; UTF-16 full-width with embedded NUL; M10k signed round-trip and runtime-by-ID.
+
+### Changed (breaking for M10k callers)
+
+- **M10k constructors** — Order-based only. Use `NewUint32M10kCodec(DecimalLimbLowToHigh)` or `DecimalLimbHighToLow` (and analogously for Uint48, Uint64, Int32, Int48, Int64). Old per-order names (e.g. `NewUint32M10k4321Codec`) are not provided.
+- **M10k stable IDs** — Registry uses `order:low_to_high` and `order:high_to_low`; not `order:4321`, `order:2143`, etc. Update CLI or config that relied on the old IDs.
+
+### Documentation and semantics
+
+- **CODECS.md** — Codec design discipline; discovery philosophy; M10k “not layout, not BCD”; sign-magnitude and signed packed BCD sign nibble rules; UTF-16 contract; packed BCD reverse as byte-order variant; date/time out of scope.
+- **API.md** — Discovery subset includes text/UTF-16 and bytes widths 48, 64; ReadRawBytes odd-quantity behaviour; pointers to CODECS for sign-magnitude and UTF-16/signed BCD.
+- **README.md** — Supported Go types: decimal limb/M10k row; BCD variants note; discovery example fix.
+- **codec_registry.go** — Comment updated for discovery subset.
+
+### Unchanged
+
+- Raw transport: **ReadRegister**, **ReadRegisters**, **ReadRawBytes**, **WriteRegister**, **WriteRegisters**, **WriteRawBytes**.
+- Codec API: **ReadWithCodec**, **WriteWithCodec**, all codec constructors, **RegisterLayout**, discovery, runtime codecs, batch decode plans.
+- Coils, discrete inputs, bitfield ops (**ReadRegisterBit**, **ReadRegisterBits**, **WriteRegisterBit**, **UpdateRegisterMask**), file records, FC23/FC24, device identification, SunSpec discovery, diagnostics, report server ID.
+- **Endianness** and **WordOrder** types remain for layout naming (e.g. CLI); they are not used by the client for encoding.
+
+---
+
 # Release v0.3.0
 
 **Date:** 2026-03-15
@@ -5,7 +55,7 @@
 
 ## Summary
 
-Introduce a **codec-first API** for typed register read/write with explicit layout and discovery. Codecs own interpretation; transport remains register-native. The library continues to offer legacy helpers (e.g. `ReadUint32`, `WriteFloat64`) with `SetEncoding`; the codec path uses explicit `RegisterLayout` and does not use `SetEncoding`.
+Introduce a **codec-first API** for typed register read/write with explicit layout and discovery. Codecs own interpretation; transport remains register-native. **Runtime codec** APIs and **batch decode plans** support CLI, descriptor-driven, and query-based workflows. Legacy typed helpers and `SetEncoding` were deprecated and have been removed in v0.4.0.
 
 ## Changes
 
@@ -20,10 +70,19 @@ Introduce a **codec-first API** for typed register read/write with explicit layo
 - **Offline helpers** — `DecodeRegisters`, `EncodeRegisters`, `ValidateRegisterSpec(spec, regs, codecID)`, `ValidateByteSpec(spec, b, codecID)` for tests and tooling.
 - **Discovery (registry)** — `CodecDescriptor`, `CodecCandidate`, `CodecQuery`. `AvailableCodecDescriptors()`, `CodecDescriptorsForRegisterCount`, `CodecDescriptorsForByteCount`, `CodecDescriptorByID`, `CodecCandidatesForRegisterCount`, `CodecCandidatesForByteCount`, `FindCodecDescriptors`. Returned descriptors are deep-copied. Discovery exposes a curated subset of common widths; constructors accept any valid width.
 - **Codec errors** — Sentinels: `ErrCodecRegisterCount`, `ErrCodecLayout`, `ErrCodecValue`, `ErrEncodingError`. Typed: `*CodecRegisterCountError`, `*CodecLayoutError`, `*CodecByteCountError`, `*CodecValueError` (all unwrap to the appropriate sentinel). `ReadWithCodec` returns `*CodecRegisterCountError` when `spec.Count == 0`.
+- **Runtime codec API** — Type-erased `RuntimeDecoder`, `RuntimeEncoder`, `RuntimeCodec` for CLI and descriptor-driven use. Adapters: `AsRuntimeDecoder`, `AsRuntimeEncoder`, `AsRuntimeCodec`. Package helpers: `DecodeRegistersAny`, `EncodeRegistersAny`. Transport: `ReadWithRuntimeCodec`, `WriteWithRuntimeCodec`. Offline: `DecodeWithDescriptor`, `EncodeWithDescriptor`.
+- **Runtime registry** — `RuntimeCodecFromDescriptor`, `RuntimeCodecByID`, `MustRuntimeCodecByID`; discovery: `RuntimeCodecsForRegisterCount`, `RuntimeCodecsForByteCount`, `FindRuntimeCodecs` returning `[]RuntimeCodec`. Every built-in descriptor is instantiable as a runtime codec.
+- **Batch decode plan** — Single-window read with multiple decode items: `ReadWindow`, `RuntimeDecodeItem`, `RuntimeDecodePlan`, `RuntimeDecodedValue`, `RuntimeDecodeResult`. `ValidateRuntimeDecodePlan`, `ExecuteRuntimeDecodePlan` (online), `ExecuteRuntimeDecodePlanOffline`. Per-item decode failures are recorded without aborting the plan.
+
+### Deprecated (will be removed in a future major version)
+
+- **ReadBytes / WriteBytes** — Use `ReadRawBytes` / `WriteRawBytes` for raw byte transport and codecs for typed interpretation.
+- **Legacy typed read/write helpers** — All of `ReadUint16(s)`, `ReadUint16Pair`, `ReadUint32(s)`, `ReadInt16(s)`, `ReadInt32(s)`, `ReadFloat32(s)`, `ReadUint48(s)`, `ReadInt48(s)`, `ReadUint64(s)`, `ReadInt64(s)`, `ReadFloat64(s)`, `ReadAscii`, `ReadAsciiFixed`, `ReadAsciiReverse`, `ReadBCD`, `ReadPackedBCD`, `ReadUint8s`, `ReadIPAddr`, `ReadIPv6Addr`, `ReadEUI48`, and the matching write helpers. **Migration:** Use `ReadRegisters`/`WriteRegisters` or `ReadRawBytes`/`WriteRawBytes` for raw access; use `ReadWithCodec`/`WriteWithCodec` for typed access; use runtime codec APIs for descriptor/CLI/query workflows.
+- **SetEncoding** — Explicit layouts belong to codecs. Use codecs with the desired `RegisterLayout` or runtime codecs; do not depend on client-wide encoding state.
 
 ### Unchanged
 
-- Legacy read/write helpers and `SetEncoding` unchanged. Codec API is additive. SunSpec discovery, bitfield ops, and all existing client/server behaviour unchanged.
+- SunSpec discovery, bitfield ops (`ReadRegisterBit`, `WriteRegisterBit`, `UpdateRegisterMask`), and all existing client/server behaviour unchanged. Raw transport (`ReadRegisters`, `WriteRegisters`, `ReadRawBytes`, `WriteRawBytes`) unchanged.
 
 ---
 
@@ -40,10 +99,10 @@ Add bitfield and masked-register operations for devices that expose booleans and
 
 ### Added
 
-- **ReadRegisterBit(ctx, unitId, addr, bitIndex, regType)** — Reads one register (FC03/FC04) and returns the bit at `bitIndex` (0 = LSB, 15 = MSB). Supports both holding and input registers.
-- **ReadRegisterBits(ctx, unitId, addr, bitIndex, count, regType)** — Reads one register and returns `count` bits (1–16) starting at `bitIndex`. Use for multi-bit mode enums.
-- **WriteRegisterBit(ctx, unitId, addr, bitIndex, value)** — Read-modify-write: reads holding register, sets or clears one bit, writes back (FC03 + FC16). Other bits unchanged.
-- **UpdateRegisterMask(ctx, unitId, addr, mask, value)** — Read-modify-write: `newVal = (old & ^mask) | (value & mask)`. Only bits set in `mask` are updated; use for control words without affecting adjacent bits.
+- **ReadRegisterBit(ctx, unitID, addr, bitIndex, regType)** — Reads one register (FC03/FC04) and returns the bit at `bitIndex` (0 = LSB, 15 = MSB). Supports both holding and input registers.
+- **ReadRegisterBits(ctx, unitID, addr, bitIndex, count, regType)** — Reads one register and returns `count` bits (1–16) starting at `bitIndex`. Use for multi-bit mode enums.
+- **WriteRegisterBit(ctx, unitID, addr, bitIndex, value)** — Read-modify-write: reads holding register, sets or clears one bit, writes back (FC03 + FC16). Other bits unchanged.
+- **UpdateRegisterMask(ctx, unitID, addr, mask, value)** — Read-modify-write: `newVal = (old & ^mask) | (value & mask)`. Only bits set in `mask` are updated; use for control words without affecting adjacent bits.
 
 Invalid `bitIndex` (> 15) or invalid `ReadRegisterBits` range returns `ErrUnexpectedParameters`.
 

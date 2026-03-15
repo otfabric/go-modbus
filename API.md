@@ -11,14 +11,13 @@ All examples assume `import "github.com/otfabric/modbus"`.
 2. [Client](#2-client)
    - [Configuration](#21-clientconfiguration)
    - [Lifecycle](#22-lifecycle)
-   - [Encoding](#23-encoding)
-   - [Read operations](#24-read-operations)
-   - [Write operations](#25-write-operations)
-   - [Advanced register operations (FC20/21/23/24)](#26-advanced-register-operations-fc20212324)
-   - [Device identification (FC43)](#27-device-identification-fc43)
-   - [Modbus device detection](#28-modbus-device-detection)
-   - [SunSpec discovery](#29-sunspec-discovery)
-   - [Diagnostics and Report Server ID (FC08/0x11)](#210-diagnostics-and-report-server-id-fc080x11)
+   - [Read operations](#23-read-operations)
+   - [Write operations](#24-write-operations)
+   - [Advanced register operations (FC20/21/23/24)](#25-advanced-register-operations-fc20212324)
+   - [Device identification (FC43)](#26-device-identification-fc43)
+   - [Modbus device detection](#27-modbus-device-detection)
+   - [SunSpec discovery](#28-sunspec-discovery)
+   - [Diagnostics and Report Server ID (FC08/0x11)](#29-diagnostics-and-report-server-id-fc080x11)
 3. [Server](#3-server)
    - [Configuration](#31-serverconfiguration)
    - [Lifecycle](#32-lifecycle)
@@ -153,53 +152,32 @@ client, err := modbus.NewClient(&modbus.ClientConfiguration{
 })
 ```
 
-### 2.3 Encoding
-
-```go
-func (mc *ModbusClient) SetEncoding(endianness Endianness, wordOrder WordOrder) error
-```
-
-Controls how 16/32/64-bit numeric values are interpreted when reading or writing
-multi-register types. The default is `BigEndian, HighWordFirst`.
-
-| Constant | Meaning |
-|---|---|
-| `BigEndian` | Most-significant byte first within each 16-bit register |
-| `LittleEndian` | Least-significant byte first within each 16-bit register |
-| `HighWordFirst` | Most-significant 16-bit word at the lower register address (for 32/64-bit types) |
-| `LowWordFirst` | Least-significant 16-bit word at the lower register address (for 32/64-bit types) |
-
-```go
-// Siemens-style: big-endian bytes, low word first (CDAB order)
-client.SetEncoding(modbus.BigEndian, modbus.LowWordFirst)
-```
-
-### 2.4 Read operations
+### 2.3 Read operations
 
 All read methods share the same signature preamble:
 
 ```go
-func (mc *ModbusClient) <Method>(ctx context.Context, unitId uint8, addr uint16, ...) (..., error)
+func (mc *ModbusClient) <Method>(ctx context.Context, unitID uint8, addr uint16, ...) (..., error)
 ```
 
 `ctx` propagates cancellation and deadlines. If the context carries a deadline it
-overrides the configured `Timeout`. `unitId` is the Modbus slave/unit ID (1–247;
+overrides the configured `Timeout`. `unitID` is the Modbus slave/unit ID (1–247;
 255 is broadcast).
 
 #### Coils and discrete inputs
 
 ```go
 // FC01 — read one coil
-func (mc *ModbusClient) ReadCoil(ctx context.Context, unitId uint8, addr uint16) (bool, error)
+func (mc *ModbusClient) ReadCoil(ctx context.Context, unitID uint8, addr uint16) (bool, error)
 
 // FC01 — read multiple coils (quantity ≤ 2000)
-func (mc *ModbusClient) ReadCoils(ctx context.Context, unitId uint8, addr uint16, quantity uint16) ([]bool, error)
+func (mc *ModbusClient) ReadCoils(ctx context.Context, unitID uint8, addr uint16, quantity uint16) ([]bool, error)
 
 // FC02 — read one discrete input
-func (mc *ModbusClient) ReadDiscreteInput(ctx context.Context, unitId uint8, addr uint16) (bool, error)
+func (mc *ModbusClient) ReadDiscreteInput(ctx context.Context, unitID uint8, addr uint16) (bool, error)
 
 // FC02 — read multiple discrete inputs (quantity ≤ 2000)
-func (mc *ModbusClient) ReadDiscreteInputs(ctx context.Context, unitId uint8, addr uint16, quantity uint16) ([]bool, error)
+func (mc *ModbusClient) ReadDiscreteInputs(ctx context.Context, unitID uint8, addr uint16, quantity uint16) ([]bool, error)
 ```
 
 ```go
@@ -211,180 +189,30 @@ coils, err := client.ReadCoils(ctx, 1, 0x0000, 8)
 
 ```go
 // FC03/FC04 — read one register as uint16
-func (mc *ModbusClient) ReadRegister(ctx context.Context, unitId uint8, addr uint16, regType RegType) (uint16, error)
+func (mc *ModbusClient) ReadRegister(ctx context.Context, unitID uint8, addr uint16, regType RegType) (uint16, error)
 
 // FC03/FC04 — read multiple registers as []uint16 (quantity ≤ 125)
-func (mc *ModbusClient) ReadRegisters(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]uint16, error)
-
-// FC03/FC04 — read one register as uint16 (alias for ReadRegister)
-func (mc *ModbusClient) ReadUint16(ctx context.Context, unitId uint8, addr uint16, regType RegType) (uint16, error)
-
-// FC03/FC04 — read multiple registers as []uint16 (alias for ReadRegisters)
-func (mc *ModbusClient) ReadUint16s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]uint16, error)
-
-// FC03/FC04 — read one register reinterpreted as int16
-func (mc *ModbusClient) ReadInt16(ctx context.Context, unitId uint8, addr uint16, regType RegType) (int16, error)
-
-// FC03/FC04 — read multiple registers reinterpreted as []int16
-func (mc *ModbusClient) ReadInt16s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]int16, error)
+func (mc *ModbusClient) ReadRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) ([]uint16, error)
 ```
 
 `regType` is `HoldingRegister` (FC03) or `InputRegister` (FC04).
 
 ```go
 val, err := client.ReadRegister(ctx, 1, 0x1000, modbus.HoldingRegister)
-
-// Read a signed 16-bit temperature value (e.g. -10 °C stored as 0xFFF6).
-temp, err := client.ReadInt16(ctx, 1, 0x0010, modbus.InputRegister)
 ```
 
-#### 32-bit registers
-
-Each value occupies 2 consecutive 16-bit registers. Byte and word order are
-controlled by `SetEncoding`.
-
-```go
-func (mc *ModbusClient) ReadUint32(ctx context.Context, unitId uint8, addr uint16, regType RegType) (uint32, error)
-func (mc *ModbusClient) ReadUint32s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]uint32, error)
-
-func (mc *ModbusClient) ReadInt32(ctx context.Context, unitId uint8, addr uint16, regType RegType) (int32, error)
-func (mc *ModbusClient) ReadInt32s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]int32, error)
-
-func (mc *ModbusClient) ReadFloat32(ctx context.Context, unitId uint8, addr uint16, regType RegType) (float32, error)
-func (mc *ModbusClient) ReadFloat32s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]float32, error)
-```
-
-#### 48-bit registers
-
-Each value occupies 3 consecutive 16-bit registers. Byte and word order are
-controlled by `SetEncoding`. Unsigned values are returned as `uint64`;
-signed values are sign-extended to `int64`.
-
-```go
-func (mc *ModbusClient) ReadUint48(ctx context.Context, unitId uint8, addr uint16, regType RegType) (uint64, error)
-func (mc *ModbusClient) ReadUint48s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]uint64, error)
-
-func (mc *ModbusClient) ReadInt48(ctx context.Context, unitId uint8, addr uint16, regType RegType) (int64, error)
-func (mc *ModbusClient) ReadInt48s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]int64, error)
-```
-
-Valid unsigned range: 0 – 2⁴⁸−1 (281 474 976 710 655).
-Valid signed range: −2⁴⁷ – 2⁴⁷−1 (−140 737 488 355 328 – 140 737 488 355 327).
-
-#### 64-bit registers
-
-Each value occupies 4 consecutive 16-bit registers. Byte and word order are
-controlled by `SetEncoding`.
-
-```go
-func (mc *ModbusClient) ReadUint64(ctx context.Context, unitId uint8, addr uint16, regType RegType) (uint64, error)
-func (mc *ModbusClient) ReadUint64s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]uint64, error)
-
-func (mc *ModbusClient) ReadInt64(ctx context.Context, unitId uint8, addr uint16, regType RegType) (int64, error)
-func (mc *ModbusClient) ReadInt64s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]int64, error)
-
-func (mc *ModbusClient) ReadFloat64(ctx context.Context, unitId uint8, addr uint16, regType RegType) (float64, error)
-func (mc *ModbusClient) ReadFloat64s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]float64, error)
-```
-
-#### ASCII strings
-
-`quantity` is the number of 16-bit registers to read. Each register holds two
-ASCII characters. Trailing space characters (`0x20`) are stripped.
-
-```go
-// FC03/FC04 — high byte of each register = first character, low byte = second.
-func (mc *ModbusClient) ReadAscii(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (string, error)
-
-// FC03/FC04 — low byte of each register = first character, high byte = second.
-func (mc *ModbusClient) ReadAsciiReverse(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (string, error)
-```
-
-Example — device stores the serial number "SN1234" in 3 registers at address 0x0100:
-
-```go
-sn, err := client.ReadAscii(ctx, 1, 0x0100, 3, modbus.HoldingRegister)
-// sn == "SN1234"
-```
-
-#### Convenience read helpers (FC03/FC04)
-
-These helpers are useful for fixed-size fields (e.g. SunSpec markers, addresses, fixed ASCII). They use the same request path as other client methods. The address and byte helpers use **raw wire order** and do not apply `SetEncoding` numeric interpretation.
-
-```go
-// Reads exactly 2 consecutive registers as [2]uint16. SetEncoding applies.
-func (mc *ModbusClient) ReadUint16Pair(ctx context.Context, unitId uint8, addr uint16, regType RegType) ([2]uint16, error)
-
-// Same byte layout as ReadAscii (high byte = first char, low byte = second) but trailing spaces are preserved.
-func (mc *ModbusClient) ReadAsciiFixed(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (string, error)
-
-// Reads quantity bytes in raw wire order (no byte reordering). quantity must be > 0.
-func (mc *ModbusClient) ReadUint8s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]uint8, error)
-
-// Reads 4 bytes (2 registers) in raw wire order and returns as IPv4 net.IP.
-func (mc *ModbusClient) ReadIPAddr(ctx context.Context, unitId uint8, addr uint16, regType RegType) (net.IP, error)
-
-// Reads 16 bytes (8 registers) in raw wire order and returns as IPv6 net.IP.
-func (mc *ModbusClient) ReadIPv6Addr(ctx context.Context, unitId uint8, addr uint16, regType RegType) (net.IP, error)
-
-// Reads 6 bytes (3 registers) in raw wire order and returns as MAC/EUI-48 net.HardwareAddr.
-func (mc *ModbusClient) ReadEUI48(ctx context.Context, unitId uint8, addr uint16, regType RegType) (net.HardwareAddr, error)
-```
-
-- **ReadUint16Pair** — FC03/FC04; reads exactly 2 consecutive registers as `[2]uint16`.
-- **ReadAsciiFixed** — FC03/FC04; same as ReadAscii but trailing spaces are preserved.
-- **ReadUint8s** — FC03/FC04; reads bytes in wire order without byte reordering. `quantity == 0` returns `ErrUnexpectedParameters`.
-- **ReadIPAddr** — FC03/FC04; reads 4 bytes and returns `net.IP`. Short response returns `ErrProtocolError`.
-- **ReadIPv6Addr** — FC03/FC04; reads 16 bytes and returns `net.IP`. Short response returns `ErrProtocolError`.
-- **ReadEUI48** — FC03/FC04; reads 6 bytes and returns `net.HardwareAddr`. Short response returns `ErrProtocolError`.
-
-#### BCD and Packed BCD
-
-`quantity` is the number of 16-bit registers to read.
-
-**Binary Coded Decimal (BCD):** each byte encodes one decimal digit (0–9) as an
-8-bit binary number. Two registers (4 bytes) hold 4 decimal digits.
-
-**Packed BCD:** each nibble encodes one decimal digit. The high nibble is the
-more-significant digit. Two registers (4 bytes, 8 nibbles) hold 8 decimal digits.
-
-Both functions return a `string` of decimal digit characters, most-significant
-digit first.
-
-```go
-// FC03/FC04 — each byte = one BCD digit (0x00–0x09).
-func (mc *ModbusClient) ReadBCD(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (string, error)
-
-// FC03/FC04 — each nibble = one packed-BCD digit.
-func (mc *ModbusClient) ReadPackedBCD(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (string, error)
-```
-
-Example encoding reference (from the Modbus spec):
-
-| Format     | Decimal 92 | Wire bytes |
-|------------|-----------|------------|
-| BCD        | 9, 2      | `0x09 0x02` |
-| Packed BCD | 9, 2      | `0x92`      |
-
-#### Codec-based read (FC03/FC04)
-
-For typed read with explicit layout, use the **codec API**: `ReadWithCodec[T](mc, ctx, unitID, addr, regType, codec)`. Codecs define register count and byte order; they do not use `SetEncoding`. See [§ 11 Codec API](#11-codec-api).
+For typed reads (32/64-bit, float, ASCII, BCD, IP, etc.) use the **codec API**: `ReadWithCodec[T](mc, ctx, unitID, addr, regType, codec)`. See [§ 11 Codec API](#11-codec-api).
 
 #### Raw bytes
 
-```go
-// FC03/FC04 — read registers as bytes, respecting the configured endianness
-func (mc *ModbusClient) ReadBytes(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]byte, error)
+**Transport convenience helpers** — no interpretation or codec; for typed values use the codec API.
 
-// FC03/FC04 — read registers as bytes with no byte reordering (wire order)
-func (mc *ModbusClient) ReadRawBytes(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]byte, error)
+```go
+// FC03/FC04 — read registers as bytes in wire order (no reordering)
+func (mc *ModbusClient) ReadRawBytes(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) ([]byte, error)
 ```
 
-For both methods, **quantity is the number of bytes** to read (the library reads
-`ceil(quantity/2)` registers). To read N registers, pass `quantity = N*2`.
-`ReadBytes` applies a per-register byte-swap when endianness is `LittleEndian`.
-`ReadRawBytes` returns bytes exactly as received, deferring all interpretation to
-the caller.
+**Quantity** is the number of bytes to read (the library reads `ceil(quantity/2)` registers). To read N registers, pass `quantity = N*2`. Bytes are returned in wire order. Odd quantity is valid (e.g. quantity 3 reads 2 registers and returns exactly 3 bytes, with the trailing padding byte trimmed).
 
 #### Bitfield / masked register operations
 
@@ -392,16 +220,16 @@ Many devices expose booleans and enums inside holding (or input) registers rathe
 
 ```go
 // FC03/FC04 — read one bit from a register (bitIndex 0 = LSB, 15 = MSB)
-func (mc *ModbusClient) ReadRegisterBit(ctx context.Context, unitId uint8, addr uint16, bitIndex uint8, regType RegType) (bool, error)
+func (mc *ModbusClient) ReadRegisterBit(ctx context.Context, unitID uint8, addr uint16, bitIndex uint8, regType RegType) (bool, error)
 
 // FC03/FC04 — read count bits from one register starting at bitIndex (count 1–16, bitIndex+count ≤ 16)
-func (mc *ModbusClient) ReadRegisterBits(ctx context.Context, unitId uint8, addr uint16, bitIndex, count uint8, regType RegType) ([]bool, error)
+func (mc *ModbusClient) ReadRegisterBits(ctx context.Context, unitID uint8, addr uint16, bitIndex, count uint8, regType RegType) ([]bool, error)
 
 // FC03 + FC16 — read register, set or clear one bit, write back (holding registers only)
-func (mc *ModbusClient) WriteRegisterBit(ctx context.Context, unitId uint8, addr uint16, bitIndex uint8, value bool) error
+func (mc *ModbusClient) WriteRegisterBit(ctx context.Context, unitID uint8, addr uint16, bitIndex uint8, value bool) error
 
 // FC03 + FC16 — read-modify-write: newVal = (old & ^mask) | (value & mask) (holding registers only)
-func (mc *ModbusClient) UpdateRegisterMask(ctx context.Context, unitId uint8, addr uint16, mask, value uint16) error
+func (mc *ModbusClient) UpdateRegisterMask(ctx context.Context, unitID uint8, addr uint16, mask, value uint16) error
 ```
 
 - **ReadRegisterBit** — Reads one register and returns `(reg>>bitIndex)&1 != 0`. Use for status bits, alarm bits, or single enum bits. `bitIndex > 15` returns `ErrUnexpectedParameters`.
@@ -409,119 +237,51 @@ func (mc *ModbusClient) UpdateRegisterMask(ctx context.Context, unitId uint8, ad
 - **WriteRegisterBit** — Read-modify-write: reads the holding register, sets or clears the bit at `bitIndex`, writes back. Other bits unchanged. `bitIndex > 15` returns `ErrUnexpectedParameters`.
 - **UpdateRegisterMask** — Read-modify-write: only the bits set in `mask` are updated to the corresponding bits in `value`; all other bits are preserved. Use for control words and mode fields without affecting adjacent bits.
 
-### 2.5 Write operations
+### 2.4 Write operations
 
 #### Coils
 
 ```go
 // FC05 — write one coil (true → 0xFF00, false → 0x0000)
-func (mc *ModbusClient) WriteCoil(ctx context.Context, unitId uint8, addr uint16, value bool) error
+func (mc *ModbusClient) WriteCoil(ctx context.Context, unitID uint8, addr uint16, value bool) error
 
 // FC05 — write one coil with an arbitrary 16-bit payload (non-standard; use sparingly)
-func (mc *ModbusClient) WriteCoilValue(ctx context.Context, unitId uint8, addr uint16, payload uint16) error
+func (mc *ModbusClient) WriteCoilValue(ctx context.Context, unitID uint8, addr uint16, payload uint16) error
 
 // FC15 — write multiple coils (quantity ≤ 1968)
-func (mc *ModbusClient) WriteCoils(ctx context.Context, unitId uint8, addr uint16, values []bool) error
+func (mc *ModbusClient) WriteCoils(ctx context.Context, unitID uint8, addr uint16, values []bool) error
 ```
 
 #### 16-bit registers
 
 ```go
 // FC06 — write one 16-bit register
-func (mc *ModbusClient) WriteRegister(ctx context.Context, unitId uint8, addr uint16, value uint16) error
+func (mc *ModbusClient) WriteRegister(ctx context.Context, unitID uint8, addr uint16, value uint16) error
 
 // FC16 — write multiple 16-bit registers (quantity ≤ 123)
-func (mc *ModbusClient) WriteRegisters(ctx context.Context, unitId uint8, addr uint16, values []uint16) error
+func (mc *ModbusClient) WriteRegisters(ctx context.Context, unitID uint8, addr uint16, values []uint16) error
 ```
 
-#### 32-bit registers
-
-```go
-func (mc *ModbusClient) WriteUint32(ctx context.Context, unitId uint8, addr uint16, value uint32) error
-func (mc *ModbusClient) WriteUint32s(ctx context.Context, unitId uint8, addr uint16, values []uint32) error
-
-func (mc *ModbusClient) WriteFloat32(ctx context.Context, unitId uint8, addr uint16, value float32) error
-func (mc *ModbusClient) WriteFloat32s(ctx context.Context, unitId uint8, addr uint16, values []float32) error
-```
-
-#### 64-bit registers
-
-```go
-func (mc *ModbusClient) WriteUint64(ctx context.Context, unitId uint8, addr uint16, value uint64) error
-func (mc *ModbusClient) WriteUint64s(ctx context.Context, unitId uint8, addr uint16, values []uint64) error
-
-func (mc *ModbusClient) WriteFloat64(ctx context.Context, unitId uint8, addr uint16, value float64) error
-func (mc *ModbusClient) WriteFloat64s(ctx context.Context, unitId uint8, addr uint16, values []float64) error
-```
-
-#### Signed integer write helpers (FC16)
-
-Same encoding as the corresponding read methods; use `SetEncoding` for byte/word order.
-
-```go
-func (mc *ModbusClient) WriteInt16(ctx context.Context, unitId uint8, addr uint16, value int16) error
-func (mc *ModbusClient) WriteInt16s(ctx context.Context, unitId uint8, addr uint16, values []int16) error
-func (mc *ModbusClient) WriteInt32(ctx context.Context, unitId uint8, addr uint16, value int32) error
-func (mc *ModbusClient) WriteInt32s(ctx context.Context, unitId uint8, addr uint16, values []int32) error
-func (mc *ModbusClient) WriteInt48(ctx context.Context, unitId uint8, addr uint16, value int64) error
-func (mc *ModbusClient) WriteInt48s(ctx context.Context, unitId uint8, addr uint16, values []int64) error
-func (mc *ModbusClient) WriteInt64(ctx context.Context, unitId uint8, addr uint16, value int64) error
-func (mc *ModbusClient) WriteInt64s(ctx context.Context, unitId uint8, addr uint16, values []int64) error
-```
-
-- **WriteInt16(s)** — 1 register per value. Empty slice returns `ErrUnexpectedParameters`.
-- **WriteInt32(s)** — 2 registers per value.
-- **WriteInt48(s)** — 3 registers per value (48-bit sign-extended).
-- **WriteInt64(s)** — 4 registers per value.
-
-#### ASCII, BCD, and address write helpers (FC16)
-
-```go
-func (mc *ModbusClient) WriteAscii(ctx context.Context, unitId uint8, addr uint16, s string) error
-func (mc *ModbusClient) WriteAsciiFixed(ctx context.Context, unitId uint8, addr uint16, s string) error
-func (mc *ModbusClient) WriteAsciiReverse(ctx context.Context, unitId uint8, addr uint16, s string) error
-func (mc *ModbusClient) WriteBCD(ctx context.Context, unitId uint8, addr uint16, s string) error
-func (mc *ModbusClient) WritePackedBCD(ctx context.Context, unitId uint8, addr uint16, s string) error
-func (mc *ModbusClient) WriteUint8s(ctx context.Context, unitId uint8, addr uint16, values []uint8) error
-func (mc *ModbusClient) WriteIPAddr(ctx context.Context, unitId uint8, addr uint16, ip net.IP) error
-func (mc *ModbusClient) WriteIPv6Addr(ctx context.Context, unitId uint8, addr uint16, ip net.IP) error
-func (mc *ModbusClient) WriteEUI48(ctx context.Context, unitId uint8, addr uint16, mac net.HardwareAddr) error
-```
-
-- **WriteAscii** — Same layout as ReadAscii (high byte first per register). Trims trailing spaces; odd length padded with zero. Empty after trim returns `ErrUnexpectedParameters`.
-- **WriteAsciiFixed** — Same as WriteAscii but no trimming; use for fixed-width strings. Empty string returns `ErrUnexpectedParameters`.
-- **WriteAsciiReverse** — Same layout as ReadAsciiReverse (low byte first per register).
-- **WriteBCD** — One byte per digit (0–9). Non-digit in `s` returns an error (e.g. `modbus: BCD string must contain only digits 0-9`).
-- **WritePackedBCD** — Two digits per byte, high nibble first. Odd byte count padded for register alignment. Non-digit returns error.
-- **WriteUint8s** — Raw bytes in wire order (no reordering). Empty slice returns `ErrUnexpectedParameters`.
-- **WriteIPAddr** — 4 bytes (2 registers) from `ip.To4()`. Nil or non-IPv4 returns `ErrUnexpectedParameters`.
-- **WriteIPv6Addr** — 16 bytes (8 registers) from `ip.To16()`.
-- **WriteEUI48** — 6 bytes (3 registers). Nil or length ≠ 6 returns `ErrUnexpectedParameters`.
-
-#### Codec-based write (FC16)
-
-For typed write with explicit layout, use the **codec API**: `WriteWithCodec[T](mc, ctx, unitID, addr, value, codec)`. See [§ 11 Codec API](#11-codec-api).
+For typed writes (32/64-bit, float, ASCII, BCD, IP, etc.) use the **codec API**: `WriteWithCodec[T](mc, ctx, unitID, addr, value, codec)`. See [§ 11 Codec API](#11-codec-api).
 
 #### Raw bytes
 
-```go
-// FC16 — write bytes into registers, respecting the configured endianness
-func (mc *ModbusClient) WriteBytes(ctx context.Context, unitId uint8, addr uint16, values []byte) error
+**Transport convenience helpers** — no interpretation or codec; for typed values use the codec API.
 
-// FC16 — write bytes into registers with no reordering (wire order)
-func (mc *ModbusClient) WriteRawBytes(ctx context.Context, unitId uint8, addr uint16, values []byte) error
+```go
+// FC16 — write bytes into registers in wire order (no reordering)
+func (mc *ModbusClient) WriteRawBytes(ctx context.Context, unitID uint8, addr uint16, values []byte) error
 ```
 
-Odd-length byte slices are zero-padded to align to a 16-bit register boundary.
+Odd-length byte slices are zero-padded to the next register boundary (implicit register-boundary handling).
 
-### 2.6 Advanced register operations (FC20/21/23/24)
+### 2.5 Advanced register operations (FC20/21/23/24)
 
 #### Read/Write Multiple Registers — FC23
 
 Executes a combined write-then-read in a single Modbus transaction. The write
 operation is always performed on the server side before the read. Both addresses
-are holding registers. Values are encoded/decoded using the current endianness
-setting.
+are holding registers. Request and response use raw `[]uint16` register values.
 
 ```go
 // FC23 — write writeValues starting at writeAddr, then read readQty registers
@@ -529,7 +289,7 @@ setting.
 // readQty  ≤ 125 (0x7D), len(writeValues) ≤ 121 (0x79)
 func (mc *ModbusClient) ReadWriteMultipleRegisters(
     ctx         context.Context,
-    unitId      uint8,
+    unitID      uint8,
     readAddr    uint16,
     readQty     uint16,
     writeAddr   uint16,
@@ -559,7 +319,7 @@ than 31 entries.
 // Returns up to 31 uint16 values (queue count ≤ 31).
 func (mc *ModbusClient) ReadFIFOQueue(
     ctx    context.Context,
-    unitId uint8,
+    unitID uint8,
     addr   uint16,
 ) ([]uint16, error)
 ```
@@ -591,7 +351,7 @@ type FileRecordRequest struct {
 // Register data is returned in big-endian wire order.
 func (mc *ModbusClient) ReadFileRecords(
     ctx      context.Context,
-    unitId   uint8,
+    unitID   uint8,
     requests []FileRecordRequest,
 ) ([][]uint16, error)
 ```
@@ -629,7 +389,7 @@ type FileRecord struct {
 // Register values are encoded as big-endian uint16 on the wire.
 func (mc *ModbusClient) WriteFileRecords(
     ctx     context.Context,
-    unitId  uint8,
+    unitID  uint8,
     records []FileRecord,
 ) error
 ```
@@ -650,7 +410,7 @@ if err != nil {
 
 ---
 
-### 2.7 Device identification (FC43)
+### 2.6 Device identification (FC43)
 
 Device identification (FC43 / MEI 0x0E) exposes three categories of objects:
 
@@ -665,7 +425,7 @@ Use **ReadAllDeviceIdentification** to fetch everything the device supports in o
 ```go
 func (mc *ModbusClient) ReadAllDeviceIdentification(
     ctx    context.Context,
-    unitId uint8,
+    unitID uint8,
 ) (*DeviceIdentification, error)
 ```
 
@@ -687,7 +447,7 @@ for _, obj := range di.Objects {
 ```go
 func (mc *ModbusClient) ReadDeviceIdentification(
     ctx              context.Context,
-    unitId           uint8,
+    unitID           uint8,
     readDeviceIdCode uint8,
     objectId         uint8,
 ) (*DeviceIdentification, error)
@@ -748,23 +508,23 @@ if err != nil {
 
 ---
 
-### 2.8 Modbus device detection
+### 2.7 Modbus device detection
 
 **HasUnitReadFunction** probes the given unit with a single read-style function code and returns whether the unit responded with a structurally valid Modbus response (normal or exception). Supported FCs: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20. For any other FC returns `(false, ErrUnexpectedParameters)`. Use after **Open()**.
 
 ```go
-func (mc *ModbusClient) HasUnitReadFunction(ctx context.Context, unitId uint8, fc FunctionCode) (bool, error)
+func (mc *ModbusClient) HasUnitReadFunction(ctx context.Context, unitID uint8, fc FunctionCode) (bool, error)
 ```
 
-**HasUnitIdentifyFunction** reports whether the unit supports Read Device Identification (FC43). Equivalent to `HasUnitReadFunction(ctx, unitId, FCEncapsulatedInterface)`. Use after **Open()**.
+**HasUnitIdentifyFunction** reports whether the unit supports Read Device Identification (FC43). Equivalent to `HasUnitReadFunction(ctx, unitID, FCEncapsulatedInterface)`. Use after **Open()**.
 
 ```go
-func (mc *ModbusClient) HasUnitIdentifyFunction(ctx context.Context, unitId uint8) (bool, error)
+func (mc *ModbusClient) HasUnitIdentifyFunction(ctx context.Context, unitID uint8) (bool, error)
 ```
 
 ---
 
-### 2.9 SunSpec discovery
+### 2.8 SunSpec discovery
 
 The library provides transport-level **read-only** SunSpec discovery helpers: detect the SunSpec "SunS" marker, probe candidate base addresses, and enumerate the model chain (model ID and length only). These APIs do not modify device state. They do **not** implement point decoding, scale factors, or schema-driven parsing; that belongs in a higher-level SunSpec library.
 
@@ -824,7 +584,7 @@ func (mc *ModbusClient) DetectSunSpec(ctx context.Context, opts *SunSpecOptions)
 
 #### ReadSunSpecModelHeaders
 
-Walks the model chain starting at `baseAddress + 2`, reading 2 registers per model (ID, length). Stops at the end model (ID 0xFFFF, length 0) or when guards trigger. **Reaching MaxModels** stops enumeration and returns the models collected so far **without error**. Returns **partial model results** plus `ErrSunSpecModelChainInvalid` for malformed or non-progressing chains (e.g. length 0 with ID ≠ 0xFFFF, or `baseAddress+2` overflow), or `ErrSunSpecModelChainLimitExceeded` when the chain exceeds `MaxAddressSpan`. Uses **big-endian** for marker and headers; does not use SetEncoding. Uses the same request path as other client methods (lock per read, retries, metrics).
+Walks the model chain starting at `baseAddress + 2`, reading 2 registers per model (ID, length). Stops at the end model (ID 0xFFFF, length 0) or when guards trigger. **Reaching MaxModels** stops enumeration and returns the models collected so far **without error**. Returns **partial model results** plus `ErrSunSpecModelChainInvalid` for malformed or non-progressing chains (e.g. length 0 with ID ≠ 0xFFFF, or `baseAddress+2` overflow), or `ErrSunSpecModelChainLimitExceeded` when the chain exceeds `MaxAddressSpan`. Uses **big-endian** for marker and headers. Uses the same request path as other client methods (lock per read, retries, metrics).
 
 ```go
 func (mc *ModbusClient) ReadSunSpecModelHeaders(
@@ -879,7 +639,7 @@ for _, m := range disc.Models {
 
 ---
 
-### 2.10 Diagnostics and Report Server ID (FC08/0x11)
+### 2.9 Diagnostics and Report Server ID (FC08/0x11)
 
 #### Diagnostics (FC 0x08)
 
@@ -888,7 +648,7 @@ Sends a Diagnostics request with a sub-function code and optional data. The resp
 ```go
 func (mc *ModbusClient) Diagnostics(
     ctx        context.Context,
-    unitId     uint8,
+    unitID     uint8,
     subFunction DiagnosticSubFunction,
     data       []byte,
 ) (*DiagnosticResponse, error)
@@ -952,7 +712,7 @@ if err != nil {
 Requests the device-specific server ID, run indicator status, and optional additional data.
 
 ```go
-func (mc *ModbusClient) ReportServerId(ctx context.Context, unitId uint8) (*ReportServerIdResponse, error)
+func (mc *ModbusClient) ReportServerId(ctx context.Context, unitID uint8) (*ReportServerIdResponse, error)
 ```
 
 ```go
@@ -1166,6 +926,7 @@ conditions and `errors.As` to access structured exception details.
 ```go
 var (
     ErrConfigurationError      // invalid configuration passed to NewClient/NewServer
+    ErrClientNotOpen           // request before Open() or after Close()
     ErrRequestTimedOut         // request exceeded deadline or configured timeout
     ErrIllegalFunction         // Modbus exception 0x01
     ErrIllegalDataAddress      // Modbus exception 0x02
@@ -1187,8 +948,10 @@ var (
     ErrSunSpecModelChainInvalid      // malformed or non-progressing SunSpec model chain
     ErrSunSpecModelChainLimitExceeded // SunSpec model chain exceeded MaxAddressSpan
     ErrCodecRegisterCount            // register count does not match codec
+    ErrCodecByteCount                // byte count does not match codec
     ErrCodecLayout                   // invalid layout for codec
     ErrCodecValue                    // invalid value for encode/decode
+    ErrUnknownCodec                  // unknown codec ID (e.g. runtime registry lookup)
     ErrEncodingError                 // codec encoding/byte validation error
 )
 ```
@@ -1231,8 +994,10 @@ Codec operations use the same sentinels and add typed errors for diagnostics. Us
 ```go
 var (
     ErrCodecRegisterCount  // register count mismatch
+    ErrCodecByteCount      // byte count mismatch
     ErrCodecLayout        // invalid layout
     ErrCodecValue         // invalid value for encode/decode
+    ErrUnknownCodec       // unknown codec ID
     ErrEncodingError      // byte-count or encoding validation
 )
 
@@ -1309,16 +1074,16 @@ be **non-blocking** (e.g. increment an atomic counter, send on a buffered channe
 ```go
 type ClientMetrics interface {
     // Called before the first attempt.
-    OnRequest(unitId uint8, functionCode uint8)
+    OnRequest(unitID uint8, functionCode uint8)
 
     // Called after a successful round-trip (including any retry delays).
-    OnResponse(unitId uint8, functionCode uint8, duration time.Duration)
+    OnResponse(unitID uint8, functionCode uint8, duration time.Duration)
 
     // Called when a request ultimately fails with a non-timeout error.
-    OnError(unitId uint8, functionCode uint8, duration time.Duration, err error)
+    OnError(unitID uint8, functionCode uint8, duration time.Duration, err error)
 
     // Called when a request ultimately fails due to a timeout.
-    OnTimeout(unitId uint8, functionCode uint8, duration time.Duration)
+    OnTimeout(unitID uint8, functionCode uint8, duration time.Duration)
 }
 ```
 
@@ -1327,13 +1092,13 @@ type ClientMetrics interface {
 ```go
 type ServerMetrics interface {
     // Called before invoking the handler.
-    OnRequest(unitId uint8, functionCode uint8)
+    OnRequest(unitID uint8, functionCode uint8)
 
     // Called after the handler returns without error.
-    OnResponse(unitId uint8, functionCode uint8, duration time.Duration)
+    OnResponse(unitID uint8, functionCode uint8, duration time.Duration)
 
     // Called when the handler returns an error.
-    OnError(unitId uint8, functionCode uint8, duration time.Duration, err error)
+    OnError(unitID uint8, functionCode uint8, duration time.Duration, err error)
 }
 ```
 
@@ -1474,24 +1239,9 @@ Used in `ClientConfiguration.Parity` (RTU only).
 | `ParityEven` | 1 | Even parity |
 | `ParityOdd` | 2 | Odd parity |
 
-### `Endianness`
+### `Endianness` and `WordOrder`
 
-Used in `SetEncoding`. Controls byte order within each 16-bit register.
-
-| Constant | Description |
-|---|---|
-| `BigEndian` | Most-significant byte at the lower address (default) |
-| `LittleEndian` | Least-significant byte at the lower address |
-
-### `WordOrder`
-
-Used in `SetEncoding`. Controls which 16-bit word of a 32/64-bit value is stored
-at the lower register address.
-
-| Constant | Description |
-|---|---|
-| `HighWordFirst` | Most-significant word at the lower address (default) |
-| `LowWordFirst` | Least-significant word at the lower address |
+`Endianness` (`BigEndian`, `LittleEndian`) and `WordOrder` (`HighWordFirst`, `LowWordFirst`) are type constants used when mapping layout names (e.g. in CLI or descriptor tooling) to `RegisterLayout`. Byte and word order for typed read/write are defined by the codec’s `RegisterLayout`, not by client-wide state.
 
 ### `RegType`
 
@@ -1544,6 +1294,8 @@ Exported constants for SunSpec marker detection, end-of-chain detection, and def
 
 The codec API provides typed register read/write with explicit layout. Transport remains register-native; codecs own interpretation. All codec instances are fixed-width (parameterized at construction).
 
+For a **list and description of all built-in codecs** (numeric, text, bytes, network) with constructors, layouts, and stable IDs, see **[CODECS.md](CODECS.md)**.
+
 ### 11.1 RegisterLayout and common layouts
 
 `RegisterLayout` describes how bytes of a multi-register value are permuted across Modbus registers. Positions are 1-based: 1 = least-significant byte, highest = most-significant byte. Layouts are immutable.
@@ -1561,9 +1313,9 @@ func (l RegisterLayout) String() string          // e.g. "4321", "21436587"
 | Name | Registers | Typical use |
 |------|-----------|--------------|
 | `Layout16_21`, `Layout16_12` | 1 | 16-bit byte order |
-| `Layout32_4321`, `Layout32_2143` | 2 | 32-bit (e.g. ABCD vs CDAB) |
-| `Layout48_654321`, `Layout48_214365` | 3 | 48-bit |
-| `Layout64_87654321`, `Layout64_21436587` | 4 | 64-bit |
+| `Layout32_4321`, `Layout32_3412`, `Layout32_2143`, `Layout32_1234` | 2 | 32-bit (four canonical variants) |
+| `Layout48_654321`, `Layout48_563412`, `Layout48_214365`, `Layout48_123456` | 3 | 48-bit (four variants) |
+| `Layout64_87654321`, `Layout64_78563412`, `Layout64_21436587`, `Layout64_12345678` | 4 | 64-bit (four variants) |
 
 `ErrInvalidLayout` is returned when positions are invalid (wrong length, duplicate, or out of range).
 
@@ -1599,7 +1351,7 @@ type Codec[T any] interface {
 
 ### 11.3 Transport: ReadWithCodec, WriteWithCodec
 
-These are **package-level** generic functions (Go methods cannot have type parameters). They use wire order (big-endian per register) and do **not** use `SetEncoding`.
+These are **package-level** generic functions (Go methods cannot have type parameters). They use wire order (big-endian per register); layout is defined by the codec.
 
 ```go
 func ReadWithCodec[T any](
@@ -1670,15 +1422,53 @@ func NewFloat64Codec(layout RegisterLayout) (Codec[float64], error)
 func MustNewFloat64Codec(layout RegisterLayout) Codec[float64]
 ```
 
+**Sign-magnitude 16-bit:** Special-purpose legacy encoding; one register; bit 15 = sign, bits 0–14 = magnitude. **Not two's complement.** Independent of `RegisterLayout`. Family `integer`, ID `int16_sign_magnitude`. See [CODECS.md](CODECS.md) for details.
+
+```go
+func NewInt16SignMagnitudeCodec() Codec[int16]
+```
+
+**Decimal limb (M10k) — family `decimal_limb`:** Each register holds one base-10000 limb. Unsigned: limbs 0..9999. Signed: only the **most-significant limb** is signed (−9999..9999); others 0..9999; MS limb is `int16(reg)` on wire. Order is given by **DecimalLimbOrder**. Schneider: low_to_high ↔ 2143, 21-65, 21-87; high_to_low ↔ 4321, 65-21, 87-21.
+
+```go
+type DecimalLimbOrder uint8
+const (
+    DecimalLimbLowToHigh  DecimalLimbOrder = 1  // first reg = LSB limb
+    DecimalLimbHighToLow DecimalLimbOrder = 2  // first reg = MSB limb
+)
+func (DecimalLimbOrder) String() string  // "low_to_high" | "high_to_low" | "unknown"
+
+func NewUint32M10kCodec(order DecimalLimbOrder) (Codec[uint32], error)
+func MustNewUint32M10kCodec(order DecimalLimbOrder) Codec[uint32]
+func NewInt32M10kCodec(order DecimalLimbOrder) (Codec[int32], error)
+func MustNewInt32M10kCodec(order DecimalLimbOrder) Codec[int32]
+func NewUint48M10kCodec(order DecimalLimbOrder) (Codec[uint64], error)
+func MustNewUint48M10kCodec(order DecimalLimbOrder) Codec[uint64]
+func NewInt48M10kCodec(order DecimalLimbOrder) (Codec[int64], error)
+func MustNewInt48M10kCodec(order DecimalLimbOrder) Codec[int64]
+func NewUint64M10kCodec(order DecimalLimbOrder) (Codec[uint64], error)
+func MustNewUint64M10kCodec(order DecimalLimbOrder) Codec[uint64]
+func NewInt64M10kCodec(order DecimalLimbOrder) (Codec[int64], error)
+func MustNewInt64M10kCodec(order DecimalLimbOrder) Codec[int64]
+```
+
+Stable IDs: `uint32_m10k/order:low_to_high`, `uint32_m10k/order:high_to_low`, `int32_m10k/order:...`, and similarly for 48/64.
+
 **Text (register count = width in registers):**
 
 ```go
 func NewAsciiCodec(registerCount uint16) (Codec[string], error)
 func NewAsciiFixedCodec(registerCount uint16) (Codec[string], error)
 func NewAsciiReverseCodec(registerCount uint16) (Codec[string], error)
+func NewUTF16BECodec(registerCount uint16) (Codec[string], error)
+func NewUTF16LECodec(registerCount uint16) (Codec[string], error)
 func NewBCDCodec(registerCount uint16) (Codec[string], error)
 func NewPackedBCDCodec(registerCount uint16) (Codec[string], error)
+func NewSignedPackedBCDCodec(registerCount uint16) (Codec[string], error)
+func NewPackedBCDReverseCodec(registerCount uint16) (Codec[string], error)
 ```
+
+UTF-16: full width preserved on decode; embedded NULs survive; encode right-pads with NUL. Signed packed BCD: decode accepts trailing nibble 0xC/0xD/0xF = negative; encode uses 0xC only for negative. See [CODECS.md](CODECS.md) for full contracts.
 
 **Bytes and network (fixed size or byte count):** `NewBytesCodec` and `NewUint8SliceCodec` require **even** byte count (register-backed). IPv6 codec rejects IPv4 addresses.
 
@@ -1688,11 +1478,12 @@ func NewUint8SliceCodec(byteCount uint16) (Codec[[]uint8], error)
 func NewIPAddrCodec() Codec[net.IP]
 func NewIPv6AddrCodec() Codec[net.IP]
 func NewEUI48Codec() Codec[net.HardwareAddr]
+func NewEUI64Codec() Codec[net.HardwareAddr]
 ```
 
 ### 11.6 Discovery (registry)
 
-Descriptors are derived from the registration table; returned descriptors are deep-copied. Discovery exposes a **curated subset** of common widths (e.g. text: 1, 2, 4, 8 registers; bytes: 2, 4, 6, 8, 16 bytes). Constructors accept any valid width; not every width appears in the registry.
+Descriptors are derived from the registration table; returned descriptors are deep-copied. Discovery exposes a **curated subset** of widths (e.g. text/UTF-16: 1, 2, 3, 4, 6, 8, 12, 16, 20, 32, 48, 64 registers; bytes: 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 32, 48, 64 bytes). Constructors accept any valid width; not every width appears in the registry.
 
 ```go
 type CodecDescriptor struct {
@@ -1730,4 +1521,141 @@ func FindCodecDescriptors(q CodecQuery) []CodecDescriptor
 
 ### 11.7 Codec errors (summary)
 
-Sentinels: `ErrCodecRegisterCount`, `ErrCodecLayout`, `ErrCodecValue`, `ErrEncodingError`. Typed: `*CodecRegisterCountError`, `*CodecLayoutError`, `*CodecByteCountError`, `*CodecValueError`; all implement `Unwrap()` to the appropriate sentinel. See [§ 4](#4-errors).
+Sentinels: `ErrCodecRegisterCount`, `ErrCodecLayout`, `ErrCodecValue`, `ErrCodecByteCount`, `ErrUnknownCodec`, `ErrEncodingError`. Typed: `*CodecRegisterCountError`, `*CodecLayoutError`, `*CodecByteCountError`, `*CodecValueError`; all implement `Unwrap()` to the appropriate sentinel. See [§ 4](#4-errors).
+
+### 11.8 Runtime codec API
+
+For CLI tools, descriptor-driven workflows, and batch decode plans the library provides **type-erased** runtime codec interfaces. They do not replace typed `Codec[T]`; use them when the concrete type is not known at compile time.
+
+**Interfaces:**
+
+```go
+type RuntimeDecoder interface {
+    ID() string
+    Name() string
+    RegisterSpec() RegisterSpec
+    ByteSpec() ByteSpec
+    ValueKind() CodecValueKind
+    DecodeRegistersAny(regs []uint16) (any, error)
+}
+
+type RuntimeEncoder interface {
+    ID() string
+    Name() string
+    RegisterSpec() RegisterSpec
+    ByteSpec() ByteSpec
+    ValueKind() CodecValueKind
+    EncodeRegistersAny(value any) ([]uint16, error)
+}
+
+type RuntimeCodec interface {
+    RuntimeDecoder
+    RuntimeEncoder
+}
+```
+
+**Adapters** — wrap typed codecs as runtime interfaces:
+
+```go
+func AsRuntimeDecoder[T any](d Decoder[T], kind CodecValueKind) RuntimeDecoder
+func AsRuntimeEncoder[T any](e Encoder[T], kind CodecValueKind) RuntimeEncoder
+func AsRuntimeCodec[T any](c Codec[T], kind CodecValueKind) RuntimeCodec
+```
+
+**Package-level offline helpers** (work on `[]uint16`; do not use transport):
+
+```go
+func DecodeRegistersAny(regs []uint16, codec RuntimeDecoder) (any, error)
+func EncodeRegistersAny(value any, codec RuntimeEncoder) ([]uint16, error)
+```
+
+`EncodeRegistersAny` returns a `*CodecValueError` if the value type does not match the codec; it does not panic.
+
+### 11.9 Runtime registry and discovery
+
+Instantiate a `RuntimeCodec` from a descriptor or a stable ID (e.g. from discovery or CLI). All built-in descriptors can be instantiated; discovery returns only codecs that are valid for the given width.
+
+```go
+func RuntimeCodecFromDescriptor(desc CodecDescriptor) (RuntimeCodec, error)
+func RuntimeCodecByID(id string) (RuntimeCodec, bool, error)
+func MustRuntimeCodecByID(id string) RuntimeCodec  // panics if id unknown
+
+func RuntimeCodecsForRegisterCount(count uint16) ([]RuntimeCodec, error)
+func RuntimeCodecsForByteCount(count uint16) ([]RuntimeCodec, error)
+func FindRuntimeCodecs(q CodecQuery) ([]RuntimeCodec, error)
+```
+
+IDs follow the same scheme as descriptors (e.g. `uint32/layout:4321`, `ascii/registers:4`, `ip_addr`). `RuntimeCodecsForRegisterCount` and `RuntimeCodecsForByteCount` return only codecs whose register/byte count matches; `FindRuntimeCodecs` filters by `CodecQuery` and returns instantiated runtime codecs.
+
+### 11.10 Runtime transport and descriptor helpers
+
+**Client-bound** (perform a Modbus read or write using a runtime codec):
+
+```go
+func ReadWithRuntimeCodec(mc *ModbusClient, ctx context.Context, unitID uint8, addr uint16, regType RegType, codec RuntimeDecoder) (any, error)
+func WriteWithRuntimeCodec(mc *ModbusClient, ctx context.Context, unitID uint8, addr uint16, value any, codec RuntimeEncoder) error
+```
+
+**Offline** (decode/encode using a descriptor only; useful when you have a descriptor from discovery but no codec instance):
+
+```go
+func DecodeWithDescriptor(regs []uint16, desc CodecDescriptor) (any, error)
+func EncodeWithDescriptor(value any, desc CodecDescriptor) ([]uint16, error)
+```
+
+These instantiate a runtime codec from the descriptor internally. Type mismatch on encode returns `*CodecValueError`.
+
+### 11.11 Batch decode plan
+
+Read one register window (single Modbus request) and decode multiple fields with different codecs. Useful for device maps and CLI “read block” commands.
+
+**Types:**
+
+```go
+type ReadWindow struct {
+    Addr     uint16
+    Quantity uint16
+    RegType  RegType
+}
+
+type RuntimeDecodeItem struct {
+    Name     string
+    Offset   uint16        // register offset within the window
+    Codec    RuntimeDecoder
+    Metadata map[string]any
+}
+
+type RuntimeDecodePlan struct {
+    Window ReadWindow
+    Items  []RuntimeDecodeItem
+}
+
+type RuntimeDecodedValue struct {
+    Name          string
+    CodecID       string
+    ValueKind     CodecValueKind
+    Offset        uint16
+    RegisterCount uint16
+    Value         any
+    Error         error
+}
+
+type RuntimeDecodeResult struct {
+    Addr      uint16
+    Quantity  uint16
+    RegType   RegType
+    Registers []uint16
+    Values    []RuntimeDecodedValue
+}
+```
+
+**Validation and execution:**
+
+```go
+func ValidateRuntimeDecodePlan(plan RuntimeDecodePlan) error
+func ExecuteRuntimeDecodePlan(mc *ModbusClient, ctx context.Context, unitID uint8, plan RuntimeDecodePlan) (*RuntimeDecodeResult, error)
+func ExecuteRuntimeDecodePlanOffline(regs []uint16, plan RuntimeDecodePlan) (*RuntimeDecodeResult, error)
+```
+
+`ValidateRuntimeDecodePlan` returns a `*RuntimePlanValidationError` when the window is invalid (quantity not 1–125, address overflow), items have empty or duplicate names, a codec is nil, or an item’s offset and register count would extend past the window. The executors perform one read (or use the provided slice) and decode each item; per-item decode failures are recorded in `RuntimeDecodedValue.Error` and do not abort the whole plan.
+

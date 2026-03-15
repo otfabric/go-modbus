@@ -66,6 +66,40 @@ func (c int16Codec) EncodeRegisters(v int16) ([]uint16, error) {
 	return bytesToUint16s(BigEndian, raw), nil
 }
 
+// int16SignMagnitudeCodec: one register, bit 15 = sign (1 = negative), bits 0–14 = magnitude. Not two's complement.
+type int16SignMagnitudeCodec struct{}
+
+func (c int16SignMagnitudeCodec) ID() string                 { return "int16_sign_magnitude" }
+func (c int16SignMagnitudeCodec) Name() string               { return "int16_sign_magnitude" }
+func (c int16SignMagnitudeCodec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: 1} }
+func (c int16SignMagnitudeCodec) ByteSpec() ByteSpec         { return ByteSpec{Count: 2} }
+
+func (c int16SignMagnitudeCodec) DecodeRegisters(regs []uint16) (int16, error) {
+	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
+		return 0, err
+	}
+	u := regs[0]
+	mag := int16(u & 0x7FFF)
+	if u&0x8000 != 0 {
+		return -mag, nil
+	}
+	return mag, nil
+}
+
+func (c int16SignMagnitudeCodec) EncodeRegisters(v int16) ([]uint16, error) {
+	mag := uint16(v)
+	if v < 0 {
+		mag = uint16(-v)
+	}
+	if mag > 0x7FFF {
+		return nil, &CodecValueError{Codec: c.ID(), Reason: "magnitude exceeds 15 bits (max 32767)"}
+	}
+	if v < 0 {
+		mag |= 0x8000
+	}
+	return []uint16{mag}, nil
+}
+
 // uint32Codec encodes/decodes two registers as uint32.
 type uint32Codec struct{ layout RegisterLayout }
 
@@ -347,6 +381,11 @@ func MustNewInt16Codec(layout RegisterLayout) Codec[int16] {
 	return c
 }
 
+// NewInt16SignMagnitudeCodec returns a codec for one register as sign-magnitude: bit 15 = sign (1 = negative), bits 0–14 = magnitude. Not two's complement.
+func NewInt16SignMagnitudeCodec() Codec[int16] {
+	return int16SignMagnitudeCodec{}
+}
+
 // NewUint32Codec returns a codec for two registers. Layout must have RegisterCount() == 2.
 func NewUint32Codec(layout RegisterLayout) (Codec[uint32], error) {
 	if err := layoutMustMatch(layout, 2, "uint32"); err != nil {
@@ -513,26 +552,35 @@ func registerNumericDescriptors() {
 			{"int16", "int16", CodecFamilyInteger, CodecValueInt16},
 		})
 	}
-	for _, name := range []string{"4321", "2143"} {
+	for _, name := range []string{"4321", "3412", "2143", "1234"} {
 		registerNumericLayout(mustLayoutForName(2, name), []numericRegEntry{
 			{"uint32", "uint32", CodecFamilyInteger, CodecValueUint32},
 			{"int32", "int32", CodecFamilyInteger, CodecValueInt32},
 			{"float32", "float32", CodecFamilyFloat, CodecValueFloat32},
 		})
 	}
-	for _, name := range []string{"654321", "214365"} {
+	for _, name := range []string{"654321", "563412", "214365", "123456"} {
 		registerNumericLayout(mustLayoutForName(3, name), []numericRegEntry{
 			{"uint48", "uint48", CodecFamilyInteger, CodecValueUint48},
 			{"int48", "int48", CodecFamilyInteger, CodecValueInt48},
 		})
 	}
-	for _, name := range []string{"87654321", "21436587"} {
+	for _, name := range []string{"87654321", "78563412", "21436587", "12345678"} {
 		registerNumericLayout(mustLayoutForName(4, name), []numericRegEntry{
 			{"uint64", "uint64", CodecFamilyInteger, CodecValueUint64},
 			{"int64", "int64", CodecFamilyInteger, CodecValueInt64},
 			{"float64", "float64", CodecFamilyFloat, CodecValueFloat64},
 		})
 	}
+	registerCodecDescriptor(CodecDescriptor{
+		ID:           "int16_sign_magnitude",
+		Name:         "int16_sign_magnitude",
+		Family:       CodecFamilyInteger,
+		ValueKind:    CodecValueInt16,
+		RegisterSpec: RegisterSpec{Count: 1},
+		ByteSpec:     ByteSpec{Count: 2},
+		Layouts:      nil,
+	})
 }
 
 func mustLayoutForName(registerCount uint16, name string) RegisterLayout {
@@ -548,22 +596,34 @@ func mustLayoutForName(registerCount uint16, name string) RegisterLayout {
 		switch name {
 		case "4321":
 			return Layout32_4321
+		case "3412":
+			return Layout32_3412
 		case "2143":
 			return Layout32_2143
+		case "1234":
+			return Layout32_1234
 		}
 	case 3:
 		switch name {
 		case "654321":
 			return Layout48_654321
+		case "563412":
+			return Layout48_563412
 		case "214365":
 			return Layout48_214365
+		case "123456":
+			return Layout48_123456
 		}
 	case 4:
 		switch name {
 		case "87654321":
 			return Layout64_87654321
+		case "78563412":
+			return Layout64_78563412
 		case "21436587":
 			return Layout64_21436587
+		case "12345678":
+			return Layout64_12345678
 		}
 	}
 	panic("modbus: unknown layout " + name + " for " + fmt.Sprint(registerCount) + " register(s)")

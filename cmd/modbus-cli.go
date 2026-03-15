@@ -15,6 +15,34 @@ import (
 	"github.com/otfabric/modbus"
 )
 
+// layoutName32 returns the 32-bit layout name for CLI codec selection (e.g. "4321").
+func layoutName32(e modbus.Endianness, w modbus.WordOrder) string {
+	if e == modbus.BigEndian && w == modbus.HighWordFirst {
+		return "4321"
+	}
+	if e == modbus.BigEndian && w == modbus.LowWordFirst {
+		return "2143"
+	}
+	if e == modbus.LittleEndian && w == modbus.HighWordFirst {
+		return "3412"
+	}
+	return "1234"
+}
+
+// layoutName64 returns the 64-bit layout name for CLI codec selection (e.g. "87654321").
+func layoutName64(e modbus.Endianness, w modbus.WordOrder) string {
+	if e == modbus.BigEndian && w == modbus.HighWordFirst {
+		return "87654321"
+	}
+	if e == modbus.BigEndian && w == modbus.LowWordFirst {
+		return "21436587"
+	}
+	if e == modbus.LittleEndian && w == modbus.HighWordFirst {
+		return "43218765"
+	}
+	return "65872143"
+}
+
 func main() {
 	var err error
 	var help bool
@@ -34,7 +62,7 @@ func main() {
 	var timeout string
 	var cEndianess modbus.Endianness
 	var cWordOrder modbus.WordOrder
-	var unitId uint
+	var unitID uint
 	var runList []operation
 
 	flag.StringVar(&target, "target", "", "target device to connect to (e.g. tcp://somehost:502) [required]")
@@ -45,7 +73,7 @@ func main() {
 	flag.StringVar(&timeout, "timeout", "3s", "timeout value")
 	flag.StringVar(&endianness, "endianness", "big", "register endianness <little|big>")
 	flag.StringVar(&wordOrder, "word-order", "highfirst", "word ordering for 32-bit registers <highfirst|hf|lowfirst|lf>")
-	flag.UintVar(&unitId, "unit-id", 1, "unit/slave id to use")
+	flag.UintVar(&unitID, "unit-id", 1, "unit/slave id to use")
 	flag.StringVar(&certPath, "cert", "", "path to TLS client certificate")
 	flag.StringVar(&keyPath, "key", "", "path to TLS client key")
 	flag.StringVar(&caPath, "ca", "", "path to TLS CA/server certificate")
@@ -340,7 +368,7 @@ func main() {
 			}
 
 			o.op = setUnitId
-			o.unitId, err = parseUnitId(splitArgs[1])
+			o.unitID, err = parseUnitId(splitArgs[1])
 			if err != nil {
 				fmt.Printf("failed to parse '%s' as unit id: %v\n", splitArgs[1], err)
 				os.Exit(2)
@@ -435,19 +463,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = client.SetEncoding(cEndianess, cWordOrder)
-	if err != nil {
-		fmt.Printf("failed to set encoding: %v\n", err)
-		os.Exit(1)
-	}
-
 	// set the initial unit id (note: this can be changed later at runtime through
 	// the setUnitId command)
-	if unitId > 0xff {
-		fmt.Printf("set unit id: value '%v' out of range\n", unitId)
+	if unitID > 0xff {
+		fmt.Printf("set unit id: value '%v' out of range\n", unitID)
 		os.Exit(1)
 	}
-	currentUnitId := uint8(unitId)
+	currentUnitId := uint8(unitID)
 
 	// connect to the remote host/open the serial port
 	err = client.Open()
@@ -505,102 +527,136 @@ func main() {
 			}
 
 		case readUint32, readInt32:
-			var res []uint32
-
-			if o.isHoldingReg {
-				res, err = client.ReadUint32s(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.HoldingRegister)
+			layout32 := layoutName32(cEndianess, cWordOrder)
+			var codecID string
+			if o.op == readUint32 {
+				codecID = "uint32/layout:" + layout32
 			} else {
-				res, err = client.ReadUint32s(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.InputRegister)
+				codecID = "int32/layout:" + layout32
 			}
+			rc, _, _ := modbus.RuntimeCodecByID(codecID)
+			if rc == nil {
+				fmt.Printf("failed to get codec %s\n", codecID)
+				break
+			}
+			regType := modbus.InputRegister
+			if o.isHoldingReg {
+				regType = modbus.HoldingRegister
+			}
+			regs, err := client.ReadRegisters(context.Background(), currentUnitId, o.addr, 2*(o.quantity+1), regType)
 			if err != nil {
 				fmt.Printf("failed to read holding/input registers: %v\n", err)
 			} else {
-				for idx := range res {
+				for idx := uint16(0); idx <= o.quantity; idx++ {
+					slice := regs[idx*2 : (idx+1)*2]
+					decoded, decErr := modbus.DecodeRegistersAny(slice, rc)
+					if decErr != nil {
+						fmt.Printf("decode error at 0x%04x: %v\n", o.addr+idx*2, decErr)
+						continue
+					}
 					if o.op == readUint32 {
-						fmt.Printf("0x%04x\t%-5v : 0x%08x\t%v\n",
-							o.addr+(uint16(idx)*2),
-							o.addr+(uint16(idx)*2),
-							res[idx], res[idx])
+						v := decoded.(uint32)
+						fmt.Printf("0x%04x\t%-5v : 0x%08x\t%v\n", o.addr+idx*2, o.addr+idx*2, v, v)
 					} else {
-						fmt.Printf("0x%04x\t%-5v : 0x%08x\t%v\n",
-							o.addr+(uint16(idx)*2),
-							o.addr+(uint16(idx)*2),
-							res[idx], int32(res[idx]))
+						v := decoded.(int32)
+						fmt.Printf("0x%04x\t%-5v : 0x%08x\t%v\n", o.addr+idx*2, o.addr+idx*2, uint32(v), v)
 					}
 				}
 			}
 
 		case readFloat32:
-			var res []float32
-
-			if o.isHoldingReg {
-				res, err = client.ReadFloat32s(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.HoldingRegister)
-			} else {
-				res, err = client.ReadFloat32s(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.InputRegister)
+			layout32 := layoutName32(cEndianess, cWordOrder)
+			rc, _, _ := modbus.RuntimeCodecByID("float32/layout:" + layout32)
+			if rc == nil {
+				fmt.Printf("failed to get float32 codec for layout %s\n", layout32)
+				break
 			}
+			regType := modbus.InputRegister
+			if o.isHoldingReg {
+				regType = modbus.HoldingRegister
+			}
+			regs, err := client.ReadRegisters(context.Background(), currentUnitId, o.addr, 2*(o.quantity+1), regType)
 			if err != nil {
 				fmt.Printf("failed to read holding/input registers: %v\n", err)
 			} else {
-				for idx := range res {
-					fmt.Printf("0x%04x\t%-5v : %f\n",
-						o.addr+(uint16(idx)*2),
-						o.addr+(uint16(idx)*2),
-						res[idx])
+				for idx := uint16(0); idx <= o.quantity; idx++ {
+					decoded, decErr := modbus.DecodeRegistersAny(regs[idx*2:(idx+1)*2], rc)
+					if decErr != nil {
+						fmt.Printf("decode error at 0x%04x: %v\n", o.addr+idx*2, decErr)
+						continue
+					}
+					fmt.Printf("0x%04x\t%-5v : %f\n", o.addr+idx*2, o.addr+idx*2, decoded.(float32))
 				}
 			}
 
 		case readUint64, readInt64:
-			var res []uint64
-
-			if o.isHoldingReg {
-				res, err = client.ReadUint64s(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.HoldingRegister)
+			layout64 := layoutName64(cEndianess, cWordOrder)
+			var codecID string
+			if o.op == readUint64 {
+				codecID = "uint64/layout:" + layout64
 			} else {
-				res, err = client.ReadUint64s(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.InputRegister)
+				codecID = "int64/layout:" + layout64
 			}
+			rc, _, _ := modbus.RuntimeCodecByID(codecID)
+			if rc == nil {
+				fmt.Printf("failed to get codec %s\n", codecID)
+				break
+			}
+			regType := modbus.InputRegister
+			if o.isHoldingReg {
+				regType = modbus.HoldingRegister
+			}
+			regs, err := client.ReadRegisters(context.Background(), currentUnitId, o.addr, 4*(o.quantity+1), regType)
 			if err != nil {
 				fmt.Printf("failed to read holding/input registers: %v\n", err)
 			} else {
-				for idx := range res {
+				for idx := uint16(0); idx <= o.quantity; idx++ {
+					decoded, decErr := modbus.DecodeRegistersAny(regs[idx*4:(idx+1)*4], rc)
+					if decErr != nil {
+						fmt.Printf("decode error at 0x%04x: %v\n", o.addr+idx*4, decErr)
+						continue
+					}
 					if o.op == readUint64 {
-						fmt.Printf("0x%04x\t%-5v : 0x%016x\t%v\n",
-							o.addr+(uint16(idx)*4),
-							o.addr+(uint16(idx)*4),
-							res[idx], res[idx])
+						v := decoded.(uint64)
+						fmt.Printf("0x%04x\t%-5v : 0x%016x\t%v\n", o.addr+idx*4, o.addr+idx*4, v, v)
 					} else {
-						fmt.Printf("0x%04x\t%-5v : 0x%016x\t%v\n",
-							o.addr+(uint16(idx)*4),
-							o.addr+(uint16(idx)*4),
-							res[idx], int64(res[idx]))
+						v := decoded.(int64)
+						fmt.Printf("0x%04x\t%-5v : 0x%016x\t%v\n", o.addr+idx*4, o.addr+idx*4, uint64(v), v)
 					}
 				}
 			}
 
 		case readFloat64:
-			var res []float64
-
-			if o.isHoldingReg {
-				res, err = client.ReadFloat64s(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.HoldingRegister)
-			} else {
-				res, err = client.ReadFloat64s(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.InputRegister)
+			layout64 := layoutName64(cEndianess, cWordOrder)
+			rc, _, _ := modbus.RuntimeCodecByID("float64/layout:" + layout64)
+			if rc == nil {
+				fmt.Printf("failed to get float64 codec for layout %s\n", layout64)
+				break
 			}
+			regType := modbus.InputRegister
+			if o.isHoldingReg {
+				regType = modbus.HoldingRegister
+			}
+			regs, err := client.ReadRegisters(context.Background(), currentUnitId, o.addr, 4*(o.quantity+1), regType)
 			if err != nil {
 				fmt.Printf("failed to read holding/input registers: %v\n", err)
 			} else {
-				for idx := range res {
-					fmt.Printf("0x%04x\t%-5v : %f\n",
-						o.addr+(uint16(idx)*4),
-						o.addr+(uint16(idx)*4),
-						res[idx])
+				for idx := uint16(0); idx <= o.quantity; idx++ {
+					decoded, decErr := modbus.DecodeRegistersAny(regs[idx*4:(idx+1)*4], rc)
+					if decErr != nil {
+						fmt.Printf("decode error at 0x%04x: %v\n", o.addr+idx*4, decErr)
+						continue
+					}
+					fmt.Printf("0x%04x\t%-5v : %f\n", o.addr+idx*4, o.addr+idx*4, decoded.(float64))
 				}
 			}
 
 		case readBytes:
 			var res []byte
-
 			if o.isHoldingReg {
-				res, err = client.ReadBytes(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.HoldingRegister)
+				res, err = client.ReadRawBytes(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.HoldingRegister)
 			} else {
-				res, err = client.ReadBytes(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.InputRegister)
+				res, err = client.ReadRawBytes(context.Background(), currentUnitId, o.addr, o.quantity+1, modbus.InputRegister)
 			}
 			if err != nil {
 				fmt.Printf("failed to read holding/input registers: %v\n", err)
@@ -652,67 +708,97 @@ func main() {
 			}
 
 		case writeUint32:
-			err = client.WriteUint32(context.Background(), currentUnitId, o.addr, o.u32)
+			rc, _, _ := modbus.RuntimeCodecByID("uint32/layout:" + layoutName32(cEndianess, cWordOrder))
+			if rc != nil {
+				err = modbus.WriteWithRuntimeCodec(client, context.Background(), currentUnitId, o.addr, o.u32, rc)
+			}
 			if err != nil {
 				fmt.Printf("failed to write %v at address 0x%04x: %v\n",
 					o.u32, o.addr, err)
-			} else {
+			} else if rc != nil {
 				fmt.Printf("wrote %v at address 0x%04x\n",
 					o.u32, o.addr)
+			} else {
+				fmt.Printf("failed to get uint32 codec\n")
 			}
 
 		case writeInt32:
-			err = client.WriteUint32(context.Background(), currentUnitId, o.addr, o.u32)
+			rc, _, _ := modbus.RuntimeCodecByID("int32/layout:" + layoutName32(cEndianess, cWordOrder))
+			if rc != nil {
+				err = modbus.WriteWithRuntimeCodec(client, context.Background(), currentUnitId, o.addr, int32(o.u32), rc)
+			}
 			if err != nil {
 				fmt.Printf("failed to write %v at address 0x%04x: %v\n",
 					int32(o.u32), o.addr, err)
-			} else {
+			} else if rc != nil {
 				fmt.Printf("wrote %v at address 0x%04x\n",
 					int32(o.u32), o.addr)
+			} else {
+				fmt.Printf("failed to get int32 codec\n")
 			}
 
 		case writeFloat32:
-			err = client.WriteFloat32(context.Background(), currentUnitId, o.addr, o.f32)
+			rc, _, _ := modbus.RuntimeCodecByID("float32/layout:" + layoutName32(cEndianess, cWordOrder))
+			if rc != nil {
+				err = modbus.WriteWithRuntimeCodec(client, context.Background(), currentUnitId, o.addr, o.f32, rc)
+			}
 			if err != nil {
 				fmt.Printf("failed to write %f at address 0x%04x: %v\n",
 					o.f32, o.addr, err)
-			} else {
+			} else if rc != nil {
 				fmt.Printf("wrote %f at address 0x%04x\n",
 					o.f32, o.addr)
+			} else {
+				fmt.Printf("failed to get float32 codec\n")
 			}
 
 		case writeUint64:
-			err = client.WriteUint64(context.Background(), currentUnitId, o.addr, o.u64)
+			rc, _, _ := modbus.RuntimeCodecByID("uint64/layout:" + layoutName64(cEndianess, cWordOrder))
+			if rc != nil {
+				err = modbus.WriteWithRuntimeCodec(client, context.Background(), currentUnitId, o.addr, o.u64, rc)
+			}
 			if err != nil {
 				fmt.Printf("failed to write %v at address 0x%04x: %v\n",
 					o.u64, o.addr, err)
-			} else {
+			} else if rc != nil {
 				fmt.Printf("wrote %v at address 0x%04x\n",
 					o.u64, o.addr)
+			} else {
+				fmt.Printf("failed to get uint64 codec\n")
 			}
 
 		case writeInt64:
-			err = client.WriteUint64(context.Background(), currentUnitId, o.addr, o.u64)
+			rc, _, _ := modbus.RuntimeCodecByID("int64/layout:" + layoutName64(cEndianess, cWordOrder))
+			if rc != nil {
+				err = modbus.WriteWithRuntimeCodec(client, context.Background(), currentUnitId, o.addr, int64(o.u64), rc)
+			}
 			if err != nil {
 				fmt.Printf("failed to write %v at address 0x%04x: %v\n",
 					int64(o.u64), o.addr, err)
-			} else {
+			} else if rc != nil {
 				fmt.Printf("wrote %v at address 0x%04x\n",
 					int64(o.u64), o.addr)
+			} else {
+				fmt.Printf("failed to get int64 codec\n")
 			}
 
 		case writeFloat64:
-			err = client.WriteFloat64(context.Background(), currentUnitId, o.addr, o.f64)
+			rc, _, _ := modbus.RuntimeCodecByID("float64/layout:" + layoutName64(cEndianess, cWordOrder))
+			if rc != nil {
+				err = modbus.WriteWithRuntimeCodec(client, context.Background(), currentUnitId, o.addr, o.f64, rc)
+			}
 			if err != nil {
 				fmt.Printf("failed to write %f at address 0x%04x: %v\n",
 					o.f64, o.addr, err)
-			} else {
+			} else if rc != nil {
 				fmt.Printf("wrote %f at address 0x%04x\n",
 					o.f64, o.addr)
+			} else {
+				fmt.Printf("failed to get float64 codec\n")
 			}
 
 		case writeBytes:
-			err = client.WriteBytes(context.Background(), currentUnitId, o.addr, o.bytes)
+			err = client.WriteRawBytes(context.Background(), currentUnitId, o.addr, o.bytes)
 			if err != nil {
 				fmt.Printf("failed to write %v at address 0x%04x: %v\n",
 					o.bytes, o.addr, err)
@@ -725,7 +811,7 @@ func main() {
 			time.Sleep(o.duration)
 
 		case setUnitId:
-			currentUnitId = o.unitId
+			currentUnitId = o.unitID
 
 		case repeat:
 			// start over
@@ -799,7 +885,7 @@ type operation struct {
 	f64          float64
 	bytes        []byte
 	duration     time.Duration
-	unitId       uint8
+	unitID       uint8
 }
 
 func parseUint16(in string) (u16 uint16, err error) {
@@ -929,7 +1015,7 @@ func parseHexBytes(in string) (out []byte, err error) {
 	return
 }
 
-func performBoolScan(ctx context.Context, client *modbus.ModbusClient, unitId uint8, isCoil bool) {
+func performBoolScan(ctx context.Context, client *modbus.ModbusClient, unitID uint8, isCoil bool) {
 	var err error
 	var addr uint32
 	var val bool
@@ -946,9 +1032,9 @@ func performBoolScan(ctx context.Context, client *modbus.ModbusClient, unitId ui
 
 	for addr = 0; addr <= 0xffff; addr++ {
 		if isCoil {
-			val, err = client.ReadCoil(ctx, unitId, uint16(addr))
+			val, err = client.ReadCoil(ctx, unitID, uint16(addr))
 		} else {
-			val, err = client.ReadDiscreteInput(ctx, unitId, uint16(addr))
+			val, err = client.ReadDiscreteInput(ctx, unitID, uint16(addr))
 		}
 		if err == modbus.ErrIllegalDataAddress || err == modbus.ErrIllegalFunction {
 			// the register does not exist
@@ -966,7 +1052,7 @@ func performBoolScan(ctx context.Context, client *modbus.ModbusClient, unitId ui
 	fmt.Printf("found %v %ss\n", count, regType)
 }
 
-func performRegisterScan(ctx context.Context, client *modbus.ModbusClient, unitId uint8, isHoldingReg bool) {
+func performRegisterScan(ctx context.Context, client *modbus.ModbusClient, unitID uint8, isHoldingReg bool) {
 	var err error
 	var addr uint32
 	var val uint16
@@ -983,9 +1069,9 @@ func performRegisterScan(ctx context.Context, client *modbus.ModbusClient, unitI
 
 	for addr = 0; addr <= 0xffff; addr++ {
 		if isHoldingReg {
-			val, err = client.ReadRegister(ctx, unitId, uint16(addr), modbus.HoldingRegister)
+			val, err = client.ReadRegister(ctx, unitID, uint16(addr), modbus.HoldingRegister)
 		} else {
-			val, err = client.ReadRegister(ctx, unitId, uint16(addr), modbus.InputRegister)
+			val, err = client.ReadRegister(ctx, unitID, uint16(addr), modbus.InputRegister)
 		}
 		if err == modbus.ErrIllegalDataAddress || err == modbus.ErrIllegalFunction {
 			// the register does not exist
@@ -1013,14 +1099,14 @@ func performUnitIdScan(ctx context.Context, client *modbus.ModbusClient) {
 
 	fmt.Println("starting unit id scan")
 
-	for unitId := uint(0); unitId <= 0xff; unitId++ {
-		_, err = client.ReadRegister(ctx, uint8(unitId), 0, modbus.InputRegister)
+	for unitID := uint(0); unitID <= 0xff; unitID++ {
+		_, err = client.ReadRegister(ctx, uint8(unitID), 0, modbus.InputRegister)
 		switch err {
 		case nil,
 			modbus.ErrIllegalDataAddress,
 			modbus.ErrIllegalFunction,
 			modbus.ErrIllegalDataValue:
-			fmt.Printf("0x%02x (%3v): ok\n", unitId, unitId)
+			fmt.Printf("0x%02x (%3v): ok\n", unitID, unitID)
 			countOk++
 
 		case modbus.ErrRequestTimedOut:
@@ -1030,7 +1116,7 @@ func performUnitIdScan(ctx context.Context, client *modbus.ModbusClient) {
 			countGWTimeout++
 
 		default:
-			fmt.Printf("0x%02x (%3v): %v\n", unitId, unitId, err)
+			fmt.Printf("0x%02x (%3v): %v\n", unitID, unitID, err)
 			countErr++
 		}
 	}
@@ -1039,7 +1125,7 @@ func performUnitIdScan(ctx context.Context, client *modbus.ModbusClient) {
 		countOk, countErr, countTimeout, countGWTimeout)
 }
 
-func performPing(ctx context.Context, client *modbus.ModbusClient, unitId uint8, count uint16, interval time.Duration) {
+func performPing(ctx context.Context, client *modbus.ModbusClient, unitID uint8, count uint16, interval time.Duration) {
 	var err error
 	var okCount uint
 	var timeoutCount uint
@@ -1057,7 +1143,7 @@ func performPing(ctx context.Context, client *modbus.ModbusClient, unitId uint8,
 
 	for run := uint16(0); run < count; run++ {
 		ts = time.Now()
-		_, err = client.ReadRegister(ctx, unitId, 0x0000, modbus.HoldingRegister)
+		_, err = client.ReadRegister(ctx, unitID, 0x0000, modbus.HoldingRegister)
 
 		rtt = time.Since(ts)
 		avgRTT += rtt

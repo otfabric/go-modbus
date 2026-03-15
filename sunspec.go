@@ -2,6 +2,7 @@ package modbus
 
 import (
 	"context"
+	"errors"
 )
 
 // SunSpec marker is the 4-byte ASCII "SunS" in two big-endian 16-bit registers.
@@ -124,9 +125,16 @@ func validateSunSpecOptions(o *SunSpecOptions) error {
 // DetectSunSpec probes candidate base addresses for the SunSpec "SunS" marker.
 // These APIs are read-only discovery helpers and do not modify device state.
 // They use the same request path as other client methods (lock per read, retries, metrics).
-// It does not treat "device is not SunSpec" as an error: when no candidate matches,
-// it returns a result with Detected false and error nil. A non-nil error is returned
-// for invalid options (unsupported RegType, empty BaseAddresses), context cancellation, or inability to produce a result.
+//
+// Result semantics:
+//   - If at least one probe succeeds (valid register read) but no candidate has the "SunS" marker:
+//     Detected is false, error is nil ("device is not SunSpec").
+//   - If every probe fails (transport/exception so no candidate responded successfully):
+//     returns a non-nil error (e.g. errors.Join of attempt errors) so that "could not read at all"
+//     is not confused with "device is not SunSpec".
+//
+// A non-nil error is also returned for invalid options (unsupported RegType, empty BaseAddresses)
+// or context cancellation.
 func (mc *ModbusClient) DetectSunSpec(ctx context.Context, opts *SunSpecOptions) (*SunSpecDetectionResult, error) {
 	o := mc.sunSpecOptions(opts)
 	if err := validateSunSpecOptions(&o); err != nil {
@@ -137,6 +145,7 @@ func (mc *ModbusClient) DetectSunSpec(ctx context.Context, opts *SunSpecOptions)
 		RegType:  o.RegType,
 		Attempts: make([]SunSpecProbeAttempt, 0, len(o.BaseAddresses)),
 	}
+	var anyProbeSucceeded bool
 
 	for _, base := range o.BaseAddresses {
 		select {
@@ -158,6 +167,7 @@ func (mc *ModbusClient) DetectSunSpec(ctx context.Context, opts *SunSpecOptions)
 			res.Attempts = append(res.Attempts, attempt)
 			continue
 		}
+		anyProbeSucceeded = true
 		regs := bytesToUint16s(BigEndian, raw)
 		attempt.Registers = regs
 		matched := len(regs) >= 2 && regs[0] == SunSpecMarkerReg0 && regs[1] == SunSpecMarkerReg1
@@ -172,6 +182,19 @@ func (mc *ModbusClient) DetectSunSpec(ctx context.Context, opts *SunSpecOptions)
 		}
 	}
 
+	// If every probe failed due to transport (no candidate responded successfully),
+	// return an error so "device not SunSpec" is not confused with "could not read at all".
+	if !anyProbeSucceeded && len(res.Attempts) > 0 {
+		var errs []error
+		for _, a := range res.Attempts {
+			if a.Error != nil {
+				errs = append(errs, a.Error)
+			}
+		}
+		if len(errs) > 0 {
+			return res, errors.Join(errs...)
+		}
+	}
 	return res, nil
 }
 

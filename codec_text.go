@@ -141,6 +141,11 @@ func (c bcdCodec) DecodeRegisters(regs []uint16) (string, error) {
 		return "", err
 	}
 	raw := uint16sToBytes(BigEndian, regs)
+	for i, b := range raw {
+		if b > 9 {
+			return "", &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("invalid BCD byte at index %d: value %d not in 0-9", i, b)}
+		}
+	}
 	return bytesToBCD(raw), nil
 }
 
@@ -174,6 +179,11 @@ func (c packedBCDCodec) DecodeRegisters(regs []uint16) (string, error) {
 		return "", err
 	}
 	raw := uint16sToBytes(BigEndian, regs)
+	for i, b := range raw {
+		if b>>4 > 9 || b&0x0f > 9 {
+			return "", &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("invalid packed BCD byte at index %d: nibble(s) not in 0-9", i)}
+		}
+	}
 	return bytesToPackedBCD(raw), nil
 }
 
@@ -193,6 +203,84 @@ func (c packedBCDCodec) EncodeRegisters(s string) ([]uint16, error) {
 		return nil, err
 	}
 	return bytesToUint16s(BigEndian, b), nil
+}
+
+// signedPackedBCDCodec: packed BCD with trailing-nibble sign. Last nibble 0xC/0xD/0xF = negative; 0x0-0x9 = positive (and is the last digit).
+// Decode returns signed digit string (e.g. "-1234" or "1234"). Encode accepts optional leading "-" and digits only; encode uses 0xC for negative.
+type signedPackedBCDCodec struct{ registerCount uint16 }
+
+func (c signedPackedBCDCodec) ID() string {
+	return fmt.Sprintf("signed_packed_bcd/registers:%d", c.registerCount)
+}
+func (c signedPackedBCDCodec) Name() string { return "signed_packed_bcd" }
+func (c signedPackedBCDCodec) RegisterSpec() RegisterSpec {
+	return RegisterSpec{Count: c.registerCount}
+}
+func (c signedPackedBCDCodec) ByteSpec() ByteSpec { return ByteSpec{Count: c.registerCount * 2} }
+
+func (c signedPackedBCDCodec) DecodeRegisters(regs []uint16) (string, error) {
+	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
+		return "", err
+	}
+	raw := uint16sToBytes(BigEndian, regs)
+	s, err := bytesToSignedPackedBCD(raw)
+	if err != nil {
+		return "", &CodecValueError{Codec: c.ID(), Reason: err.Error()}
+	}
+	return s, nil
+}
+
+func (c signedPackedBCDCodec) EncodeRegisters(s string) ([]uint16, error) {
+	totalNibbles := int(c.registerCount * 4)
+	b, err := signedPackedBCDToBytes(s, totalNibbles)
+	if err != nil {
+		return nil, &CodecValueError{Codec: c.ID(), Reason: err.Error()}
+	}
+	return bytesToUint16s(BigEndian, b), nil
+}
+
+// packedBCDReverseCodec: packed BCD with low byte first per register (byte-swap within each word on wire).
+type packedBCDReverseCodec struct{ registerCount uint16 }
+
+func (c packedBCDReverseCodec) ID() string {
+	return fmt.Sprintf("packed_bcd_reverse/registers:%d", c.registerCount)
+}
+func (c packedBCDReverseCodec) Name() string { return "packed_bcd_reverse" }
+func (c packedBCDReverseCodec) RegisterSpec() RegisterSpec {
+	return RegisterSpec{Count: c.registerCount}
+}
+func (c packedBCDReverseCodec) ByteSpec() ByteSpec { return ByteSpec{Count: c.registerCount * 2} }
+
+func (c packedBCDReverseCodec) DecodeRegisters(regs []uint16) (string, error) {
+	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
+		return "", err
+	}
+	// Low byte first per register on wire: use LittleEndian to get logical byte order.
+	raw := uint16sToBytes(LittleEndian, regs)
+	for i, b := range raw {
+		if b>>4 > 9 || b&0x0f > 9 {
+			return "", &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("invalid packed BCD byte at index %d: nibble(s) not in 0-9", i)}
+		}
+	}
+	return bytesToPackedBCD(raw), nil
+}
+
+func (c packedBCDReverseCodec) EncodeRegisters(s string) ([]uint16, error) {
+	digitCount := int(c.registerCount * 4)
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return nil, &CodecValueError{Codec: c.ID(), Reason: "packed BCD string must contain only digits 0-9"}
+		}
+	}
+	if len(s) > digitCount {
+		s = s[len(s)-digitCount:]
+	}
+	s = padLeadingZeros(s, digitCount)
+	b, err := packedBCDToBytes(s)
+	if err != nil {
+		return nil, err
+	}
+	return bytesToUint16s(LittleEndian, b), nil
 }
 
 func padLeadingZeros(s string, length int) string {
@@ -247,12 +335,28 @@ func NewPackedBCDCodec(registerCount uint16) (Codec[string], error) {
 	return packedBCDCodec{registerCount: registerCount}, nil
 }
 
+// NewSignedPackedBCDCodec returns a codec for signed packed BCD: trailing nibble 0xC/0xD/0xF = negative, 0x0-0x9 = positive. Decode returns e.g. "-1234" or "1234"; encode accepts optional leading "-". registerCount must be >= 1.
+func NewSignedPackedBCDCodec(registerCount uint16) (Codec[string], error) {
+	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+		return nil, err
+	}
+	return signedPackedBCDCodec{registerCount: registerCount}, nil
+}
+
+// NewPackedBCDReverseCodec returns a codec for packed BCD with low byte first per register (byte-swap within each word on wire). registerCount must be >= 1.
+func NewPackedBCDReverseCodec(registerCount uint16) (Codec[string], error) {
+	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+		return nil, err
+	}
+	return packedBCDReverseCodec{registerCount: registerCount}, nil
+}
+
 func init() {
 	registerTextDescriptors()
 }
 
 func registerTextDescriptors() {
-	for _, n := range []uint16{1, 2, 4, 8} {
+	for _, n := range []uint16{1, 2, 3, 4, 6, 8, 12, 16, 20, 32, 48, 64} {
 		registerCodecDescriptor(CodecDescriptor{
 			ID:           fmt.Sprintf("ascii/registers:%d", n),
 			Name:         "ascii",
@@ -292,6 +396,24 @@ func registerTextDescriptors() {
 		registerCodecDescriptor(CodecDescriptor{
 			ID:           fmt.Sprintf("packed_bcd/registers:%d", n),
 			Name:         "packed_bcd",
+			Family:       CodecFamilyBCD,
+			ValueKind:    CodecValueString,
+			RegisterSpec: RegisterSpec{Count: n},
+			ByteSpec:     ByteSpec{Count: n * 2},
+			Layouts:      nil,
+		})
+		registerCodecDescriptor(CodecDescriptor{
+			ID:           fmt.Sprintf("signed_packed_bcd/registers:%d", n),
+			Name:         "signed_packed_bcd",
+			Family:       CodecFamilyBCD,
+			ValueKind:    CodecValueString,
+			RegisterSpec: RegisterSpec{Count: n},
+			ByteSpec:     ByteSpec{Count: n * 2},
+			Layouts:      nil,
+		})
+		registerCodecDescriptor(CodecDescriptor{
+			ID:           fmt.Sprintf("packed_bcd_reverse/registers:%d", n),
+			Name:         "packed_bcd_reverse",
 			Family:       CodecFamilyBCD,
 			ValueKind:    CodecValueString,
 			RegisterSpec: RegisterSpec{Count: n},

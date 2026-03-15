@@ -59,6 +59,8 @@ var (
 	ErrCodecRegisterCount = errors.New("modbus: codec register count mismatch")
 	ErrCodecLayout        = errors.New("modbus: invalid codec layout")
 	ErrCodecValue         = errors.New("modbus: invalid codec value")
+	ErrCodecByteCount     = errors.New("modbus: codec byte count mismatch")
+	ErrUnknownCodec       = errors.New("modbus: unknown codec")
 	ErrEncodingError      = errors.New("modbus: encoding error")
 )
 
@@ -105,7 +107,7 @@ func (e *CodecByteCountError) Error() string {
 	return fmt.Sprintf("modbus: codec byte count mismatch: %s expected %d bytes, got %d", e.Codec, e.Expected.Count, e.Actual)
 }
 
-func (e *CodecByteCountError) Unwrap() error { return ErrEncodingError }
+func (e *CodecByteCountError) Unwrap() error { return ErrCodecByteCount }
 
 // CodecValueError is returned when a value is invalid for encode or decode.
 type CodecValueError struct {
@@ -127,6 +129,9 @@ func (e *CodecValueError) Unwrap() error { return ErrCodecValue }
 // register count against the codec's RegisterSpec before calling the codec.
 func DecodeRegisters[T any](regs []uint16, codec Decoder[T]) (T, error) {
 	var zero T
+	if codec == nil {
+		return zero, &CodecValueError{Codec: "codec", Reason: "codec must not be nil"}
+	}
 	spec := codec.RegisterSpec()
 	if err := ValidateRegisterSpec(spec, regs, codec.ID()); err != nil {
 		return zero, err
@@ -137,6 +142,9 @@ func DecodeRegisters[T any](regs []uint16, codec Decoder[T]) (T, error) {
 // EncodeRegisters encodes a value to raw registers using the given codec, then
 // validates the result against the codec's RegisterSpec.
 func EncodeRegisters[T any](value T, codec Encoder[T]) ([]uint16, error) {
+	if codec == nil {
+		return nil, &CodecValueError{Codec: "codec", Reason: "codec must not be nil"}
+	}
 	regs, err := codec.EncodeRegisters(value)
 	if err != nil {
 		return nil, err

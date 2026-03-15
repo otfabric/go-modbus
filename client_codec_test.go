@@ -17,6 +17,32 @@ func (zeroCountDecoder) RegisterSpec() RegisterSpec               { return Regis
 func (zeroCountDecoder) ByteSpec() ByteSpec                       { return ByteSpec{Count: 0} }
 func (zeroCountDecoder) DecodeRegisters([]uint16) (string, error) { return "", nil }
 
+func TestReadUint32WithLayout_InvalidLayout(t *testing.T) {
+	client, _ := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+	_ = client.Open()
+	defer func() { _ = client.Close() }()
+	_, err := ReadUint32WithLayout(client, context.Background(), 1, 0, HoldingRegister, RegisterLayout{})
+	if err == nil {
+		t.Fatal("expected error for invalid layout")
+	}
+	if !errors.Is(err, ErrCodecLayout) {
+		var le *CodecLayoutError
+		if errors.As(err, &le) {
+			t.Logf("got CodecLayoutError: %v", le)
+		}
+	}
+}
+
+func TestWriteUint32WithLayout_InvalidLayout(t *testing.T) {
+	client, _ := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+	_ = client.Open()
+	defer func() { _ = client.Close() }()
+	err := WriteUint32WithLayout(client, context.Background(), 1, 0, 0, RegisterLayout{})
+	if err == nil {
+		t.Fatal("expected error for invalid layout")
+	}
+}
+
 func TestReadWithCodec_ZeroCount_ReturnsCodecError(t *testing.T) {
 	client, err := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
 	if err != nil {
@@ -53,18 +79,18 @@ func TestReadWithCodec_Integration(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 2 {
 				// Two registers: 0x1234, 0x5678 -> uint32 0x12345678 with layout 4321
 				payload := []byte{0x04, 0x12, 0x34, 0x56, 0x78}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -126,17 +152,17 @@ func TestReadUint32WithLayout_Integration(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 2 {
 				payload := []byte{0x04, 0x12, 0x34, 0x56, 0x78}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()

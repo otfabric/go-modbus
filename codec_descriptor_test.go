@@ -11,6 +11,9 @@ func TestCodecFamily_String(t *testing.T) {
 	if s := CodecFamilyUnknown.String(); s != "unknown" {
 		t.Errorf("CodecFamilyUnknown.String() = %q", s)
 	}
+	if s := CodecFamily(255).String(); s != "unknown" {
+		t.Errorf("unknown CodecFamily: got %q", s)
+	}
 }
 
 func TestCodecValueKind_String(t *testing.T) {
@@ -19,5 +22,8 @@ func TestCodecValueKind_String(t *testing.T) {
 	}
 	if s := CodecValueFloat64.String(); s != "float64" {
 		t.Errorf("CodecValueFloat64.String() = %q", s)
+	}
+	if s := CodecValueKind(255).String(); s != "unknown" {
+		t.Errorf("unknown CodecValueKind: got %q", s)
 	}
 }

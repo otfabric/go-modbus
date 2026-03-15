@@ -147,6 +147,33 @@ func (c eui48Codec) EncodeRegisters(mac net.HardwareAddr) ([]uint16, error) {
 	return bytesToUint16s(BigEndian, b), nil
 }
 
+// eui64Codec: 8 bytes (4 registers), EUI-64 in raw wire order.
+type eui64Codec struct{}
+
+func (c eui64Codec) ID() string                 { return "eui64" }
+func (c eui64Codec) Name() string               { return "eui64" }
+func (c eui64Codec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: 4} }
+func (c eui64Codec) ByteSpec() ByteSpec         { return ByteSpec{Count: 8} }
+
+func (c eui64Codec) DecodeRegisters(regs []uint16) (net.HardwareAddr, error) {
+	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
+		return nil, err
+	}
+	raw := uint16sToBytes(BigEndian, regs)
+	hw := make(net.HardwareAddr, 8)
+	copy(hw, raw)
+	return hw, nil
+}
+
+func (c eui64Codec) EncodeRegisters(addr net.HardwareAddr) ([]uint16, error) {
+	if addr == nil || len(addr) != 8 {
+		return nil, &CodecValueError{Codec: c.ID(), Reason: "EUI-64 address must be exactly 8 bytes"}
+	}
+	b := make([]byte, 8)
+	copy(b, addr)
+	return bytesToUint16s(BigEndian, b), nil
+}
+
 func bytesCodecRejectOdd(byteCount uint16) error {
 	if byteCount == 0 || byteCount%2 != 0 {
 		return fmt.Errorf("%w: byte count must be positive and even for register-backed bytes", ErrCodecValue)
@@ -185,12 +212,17 @@ func NewEUI48Codec() Codec[net.HardwareAddr] {
 	return eui48Codec{}
 }
 
+// NewEUI64Codec returns a codec for EUI-64 (8 bytes, 4 registers) in raw wire order.
+func NewEUI64Codec() Codec[net.HardwareAddr] {
+	return eui64Codec{}
+}
+
 func init() {
 	registerBytesDescriptors()
 }
 
 func registerBytesDescriptors() {
-	for _, n := range []uint16{2, 4, 6, 8, 16} {
+	for _, n := range []uint16{2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 32, 48, 64} {
 		registerCodecDescriptor(CodecDescriptor{
 			ID:           fmt.Sprintf("bytes/bytes:%d", n),
 			Name:         "bytes",
@@ -235,6 +267,15 @@ func registerBytesDescriptors() {
 		ValueKind:    CodecValueHardwareAddr,
 		RegisterSpec: RegisterSpec{Count: 3},
 		ByteSpec:     ByteSpec{Count: 6},
+		Layouts:      nil,
+	})
+	registerCodecDescriptor(CodecDescriptor{
+		ID:           "eui64",
+		Name:         "eui64",
+		Family:       CodecFamilyHardwareAddress,
+		ValueKind:    CodecValueHardwareAddr,
+		RegisterSpec: RegisterSpec{Count: 4},
+		ByteSpec:     ByteSpec{Count: 8},
 		Layouts:      nil,
 	})
 }

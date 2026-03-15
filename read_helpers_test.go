@@ -9,8 +9,8 @@ import (
 )
 
 // writeMBAPRegs sends an FC03/FC04 normal response with the given register bytes (payload only: byte count + data).
-func writeMBAPRegs(conn net.Conn, txid []byte, unitId, fc byte, payload []byte) error {
-	return writeMBAPNormal(conn, txid, unitId, fc, payload)
+func writeMBAPRegs(conn net.Conn, txid []byte, unitID, fc byte, payload []byte) error {
+	return writeMBAPNormal(conn, txid, unitID, fc, payload)
 }
 
 func TestReadUint16Pair_HoldingRegisters(t *testing.T) {
@@ -31,9 +31,9 @@ func TestReadUint16Pair_HoldingRegisters(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
@@ -41,9 +41,9 @@ func TestReadUint16Pair_HoldingRegisters(t *testing.T) {
 			if addr == 0 && qty == 2 {
 				// 0x5375, 0x6E53
 				payload := []byte{0x04, 0x53, 0x75, 0x6E, 0x53}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -57,12 +57,15 @@ func TestReadUint16Pair_HoldingRegisters(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	pair, err := client.ReadUint16Pair(context.Background(), 1, 0, HoldingRegister)
+	regs, err := client.ReadRegisters(context.Background(), 1, 0, 2, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadUint16Pair: %v", err)
+		t.Fatalf("ReadRegisters: %v", err)
 	}
-	if pair[0] != 0x5375 || pair[1] != 0x6E53 {
-		t.Errorf("expected [0x5375, 0x6E53], got [0x%04X, 0x%04X]", pair[0], pair[1])
+	if len(regs) != 2 {
+		t.Fatalf("expected 2 registers, got %d", len(regs))
+	}
+	if regs[0] != 0x5375 || regs[1] != 0x6E53 {
+		t.Errorf("expected [0x5375, 0x6E53], got [0x%04X, 0x%04X]", regs[0], regs[1])
 	}
 }
 
@@ -84,17 +87,17 @@ func TestReadUint16Pair_InputRegisters(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadInputRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 2 {
 				payload := []byte{0x04, 0x00, 0x01, 0x00, 0x02}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -108,12 +111,12 @@ func TestReadUint16Pair_InputRegisters(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	pair, err := client.ReadUint16Pair(context.Background(), 1, 0, InputRegister)
+	regs, err := client.ReadRegisters(context.Background(), 1, 0, 2, InputRegister)
 	if err != nil {
-		t.Fatalf("ReadUint16Pair: %v", err)
+		t.Fatalf("ReadRegisters: %v", err)
 	}
-	if pair[0] != 1 || pair[1] != 2 {
-		t.Errorf("expected [1, 2], got [%d, %d]", pair[0], pair[1])
+	if len(regs) != 2 || regs[0] != 1 || regs[1] != 2 {
+		t.Errorf("expected [1, 2], got %v", regs)
 	}
 }
 
@@ -135,8 +138,8 @@ func TestReadUint16Pair_Exception(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
-			_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
+			_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 		}
 	}()
 
@@ -149,7 +152,7 @@ func TestReadUint16Pair_Exception(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	_, err = client.ReadUint16Pair(context.Background(), 1, 0, HoldingRegister)
+	_, err = client.ReadRegisters(context.Background(), 1, 0, 2, HoldingRegister)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -176,18 +179,18 @@ func TestReadAsciiFixed_TrailingSpacePreserved(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 2 {
 				// 0x4142 'AB', 0x4320 'C '
 				payload := []byte{0x04, 0x41, 0x42, 0x43, 0x20}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -201,17 +204,18 @@ func TestReadAsciiFixed_TrailingSpacePreserved(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	s, err := client.ReadAsciiFixed(context.Background(), 1, 0, 2, HoldingRegister)
+	raw, err := client.ReadRawBytes(context.Background(), 1, 0, 4, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadAsciiFixed: %v", err)
+		t.Fatalf("ReadRawBytes: %v", err)
 	}
+	s := string(raw)
 	if s != "ABC " {
 		t.Errorf("expected \"ABC \" (with trailing space), got %q", s)
 	}
-	// Compare with ReadAscii which strips trailing space
-	trimmed, _ := client.ReadAscii(context.Background(), 1, 0, 2, HoldingRegister)
+	codec, _ := NewAsciiCodec(2)
+	trimmed, _ := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, codec)
 	if trimmed != "ABC" {
-		t.Errorf("ReadAscii expected \"ABC\", got %q", trimmed)
+		t.Errorf("ReadWithCodec Ascii expected \"ABC\", got %q", trimmed)
 	}
 }
 
@@ -223,7 +227,7 @@ func TestReadAsciiFixed_ZeroQuantity(t *testing.T) {
 	_ = client.Open()
 	defer func() { _ = client.Close() }()
 
-	_, err = client.ReadAsciiFixed(context.Background(), 1, 0, 0, HoldingRegister)
+	_, err = client.ReadRawBytes(context.Background(), 1, 0, 0, HoldingRegister)
 	if err == nil {
 		t.Fatal("expected error for quantity 0")
 	}
@@ -250,17 +254,17 @@ func TestReadUint8s_WireOrder(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 2 {
 				payload := []byte{0x04, 0x01, 0x02, 0x03, 0x04}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -274,9 +278,9 @@ func TestReadUint8s_WireOrder(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	b, err := client.ReadUint8s(context.Background(), 1, 0, 4, HoldingRegister)
+	b, err := client.ReadRawBytes(context.Background(), 1, 0, 4, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadUint8s: %v", err)
+		t.Fatalf("ReadRawBytes: %v", err)
 	}
 	if len(b) != 4 {
 		t.Fatalf("expected 4 bytes, got %d", len(b))
@@ -307,17 +311,17 @@ func TestReadUint8s_OddByteCount(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 2 {
 				payload := []byte{0x04, 0xAA, 0xBB, 0xCC, 0xDD}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -331,9 +335,9 @@ func TestReadUint8s_OddByteCount(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	b, err := client.ReadUint8s(context.Background(), 1, 0, 3, HoldingRegister)
+	b, err := client.ReadRawBytes(context.Background(), 1, 0, 3, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadUint8s: %v", err)
+		t.Fatalf("ReadRawBytes: %v", err)
 	}
 	if len(b) != 3 {
 		t.Fatalf("expected 3 bytes, got %d", len(b))
@@ -351,7 +355,7 @@ func TestReadUint8s_ZeroQuantity(t *testing.T) {
 	_ = client.Open()
 	defer func() { _ = client.Close() }()
 
-	_, err = client.ReadUint8s(context.Background(), 1, 0, 0, HoldingRegister)
+	_, err = client.ReadRawBytes(context.Background(), 1, 0, 0, HoldingRegister)
 	if err == nil {
 		t.Fatal("expected error for quantity 0")
 	}
@@ -378,18 +382,18 @@ func TestReadIPAddr(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 2 {
 				// 192.168.1.10
 				payload := []byte{0x04, 192, 168, 1, 10}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -403,9 +407,10 @@ func TestReadIPAddr(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	ip, err := client.ReadIPAddr(context.Background(), 1, 0, HoldingRegister)
+	codec := NewIPAddrCodec()
+	ip, err := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, codec)
 	if err != nil {
-		t.Fatalf("ReadIPAddr: %v", err)
+		t.Fatalf("ReadWithCodec IP: %v", err)
 	}
 	if len(ip) != 4 {
 		t.Fatalf("expected 4 bytes, got %d", len(ip))
@@ -435,17 +440,17 @@ func TestReadIPv6Addr(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 8 {
 				payload := append([]byte{16}, expect...)
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -459,9 +464,10 @@ func TestReadIPv6Addr(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	ip, err := client.ReadIPv6Addr(context.Background(), 1, 0, HoldingRegister)
+	codec := NewIPv6AddrCodec()
+	ip, err := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, codec)
 	if err != nil {
-		t.Fatalf("ReadIPv6Addr: %v", err)
+		t.Fatalf("ReadWithCodec IPv6: %v", err)
 	}
 	if len(ip) != 16 {
 		t.Fatalf("expected 16 bytes, got %d", len(ip))
@@ -491,17 +497,17 @@ func TestReadEUI48(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 3 {
 				payload := append([]byte{6}, expect...)
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -515,9 +521,10 @@ func TestReadEUI48(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	hw, err := client.ReadEUI48(context.Background(), 1, 0, HoldingRegister)
+	codec := NewEUI48Codec()
+	hw, err := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, codec)
 	if err != nil {
-		t.Fatalf("ReadEUI48: %v", err)
+		t.Fatalf("ReadWithCodec EUI48: %v", err)
 	}
 	if len(hw) != 6 {
 		t.Fatalf("expected 6 bytes, got %d", len(hw))
@@ -548,17 +555,17 @@ func TestReadHelpers_UnaffectedBySetEncoding(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty == 2 {
 				payload := []byte{0x04, 0x01, 0x02, 0x03, 0x04}
-				_ = writeMBAPRegs(sock, txid, unitId, fc, payload)
+				_ = writeMBAPRegs(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -572,20 +579,19 @@ func TestReadHelpers_UnaffectedBySetEncoding(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Change encoding; address helpers should still return raw wire order
-	_ = client.SetEncoding(LittleEndian, LowWordFirst)
-
-	ip, err := client.ReadIPAddr(context.Background(), 1, 0, HoldingRegister)
+	// Raw byte and IP codec always use wire order
+	ipCodec := NewIPAddrCodec()
+	ip, err := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, ipCodec)
 	if err != nil {
-		t.Fatalf("ReadIPAddr: %v", err)
+		t.Fatalf("ReadWithCodec IP: %v", err)
 	}
 	if ip[0] != 1 || ip[1] != 2 || ip[2] != 3 || ip[3] != 4 {
-		t.Errorf("expected raw bytes [1,2,3,4] regardless of SetEncoding, got %v", ip)
+		t.Errorf("expected raw bytes [1,2,3,4], got %v", ip)
 	}
 
-	b, err := client.ReadUint8s(context.Background(), 1, 0, 4, HoldingRegister)
+	b, err := client.ReadRawBytes(context.Background(), 1, 0, 4, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadUint8s: %v", err)
+		t.Fatalf("ReadRawBytes: %v", err)
 	}
 	if b[0] != 1 || b[1] != 2 || b[2] != 3 || b[3] != 4 {
 		t.Errorf("expected raw bytes [1,2,3,4], got %v", b)
@@ -613,8 +619,8 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 			if err != nil {
 				return
 			}
-			txid, unitId, fc := frame[0:2], frame[6], frame[7]
-			_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+			txid, unitID, fc := frame[0:2], frame[6], frame[7]
+			_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 		}
 	}()
 
@@ -629,17 +635,8 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 
 	ctx := context.Background()
 
-	t.Run("ReadAsciiFixed", func(t *testing.T) {
-		_, err := client.ReadAsciiFixed(ctx, 1, 0, 2, HoldingRegister)
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !errors.Is(err, ErrIllegalDataAddress) {
-			t.Errorf("expected ErrIllegalDataAddress, got %v", err)
-		}
-	})
-	t.Run("ReadUint8s", func(t *testing.T) {
-		_, err := client.ReadUint8s(ctx, 1, 0, 4, HoldingRegister)
+	t.Run("ReadRawBytes", func(t *testing.T) {
+		_, err := client.ReadRawBytes(ctx, 1, 0, 4, HoldingRegister)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -648,7 +645,8 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 		}
 	})
 	t.Run("ReadIPAddr", func(t *testing.T) {
-		_, err := client.ReadIPAddr(ctx, 1, 0, HoldingRegister)
+		codec := NewIPAddrCodec()
+		_, err := ReadWithCodec(client, ctx, 1, 0, HoldingRegister, codec)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -657,7 +655,8 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 		}
 	})
 	t.Run("ReadIPv6Addr", func(t *testing.T) {
-		_, err := client.ReadIPv6Addr(ctx, 1, 0, HoldingRegister)
+		codec := NewIPv6AddrCodec()
+		_, err := ReadWithCodec(client, ctx, 1, 0, HoldingRegister, codec)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -666,7 +665,8 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 		}
 	})
 	t.Run("ReadEUI48", func(t *testing.T) {
-		_, err := client.ReadEUI48(ctx, 1, 0, HoldingRegister)
+		codec := NewEUI48Codec()
+		_, err := ReadWithCodec(client, ctx, 1, 0, HoldingRegister, codec)
 		if err == nil {
 			t.Fatal("expected error")
 		}

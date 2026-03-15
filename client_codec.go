@@ -15,20 +15,17 @@ func ReadWithCodec[T any](
 	codec Decoder[T],
 ) (T, error) {
 	var zero T
+	if codec == nil {
+		return zero, &CodecValueError{Codec: "codec", Reason: "codec must not be nil"}
+	}
 	spec := codec.RegisterSpec()
 	if spec.Count == 0 {
 		return zero, &CodecRegisterCountError{Codec: codec.ID(), Expected: spec, Actual: 0}
 	}
-
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	mbPayload, err := mc.readRegisters(ctx, unitID, addr, spec.Count, regType)
+	regs, err := mc.readRegistersForCodec(ctx, unitID, addr, spec.Count, regType)
 	if err != nil {
 		return zero, err
 	}
-
-	regs := bytesToUint16s(BigEndian, mbPayload)
 	return DecodeRegisters(regs, codec)
 }
 
@@ -43,16 +40,14 @@ func WriteWithCodec[T any](
 	value T,
 	codec Encoder[T],
 ) error {
+	if codec == nil {
+		return &CodecValueError{Codec: "codec", Reason: "codec must not be nil"}
+	}
 	regs, err := EncodeRegisters(value, codec)
 	if err != nil {
 		return err
 	}
-
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	payload := uint16sToBytes(BigEndian, regs)
-	return mc.writeRegisters(ctx, unitID, addr, payload)
+	return mc.writeRegistersForCodec(ctx, unitID, addr, regs)
 }
 
 // ReadUint32WithLayout reads two registers at addr and decodes them as uint32

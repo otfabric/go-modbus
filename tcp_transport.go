@@ -78,7 +78,7 @@ func (tt *tcpTransport) ExecuteRequest(ctx context.Context, req *pdu) (res *pdu,
 	res, err = tt.readResponse()
 	if err == nil {
 		tt.logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X",
-			res.unitId, res.functionCode, res.payload)
+			res.unitID, res.functionCode, res.payload)
 	}
 
 	return
@@ -100,7 +100,7 @@ func (tt *tcpTransport) ReadRequest() (req *pdu, err error) {
 	}
 
 	tt.logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X",
-		req.unitId, req.functionCode, req.payload)
+		req.unitID, req.functionCode, req.payload)
 
 	// store the incoming transaction id
 	tt.lastTxnId = txnId
@@ -160,7 +160,7 @@ func (tt *tcpTransport) readMBAPFrame() (p *pdu, txnId uint16, err error) {
 	var rxbuf []byte
 	var bytesNeeded int
 	var protocolId uint16
-	var unitId uint8
+	var unitID uint8
 
 	// read the MBAP header
 	rxbuf = make([]byte, mbapHeaderLength)
@@ -174,7 +174,7 @@ func (tt *tcpTransport) readMBAPFrame() (p *pdu, txnId uint16, err error) {
 	// decode the protocol identifier
 	protocolId = bytesToUint16(BigEndian, rxbuf[2:4])
 	// store the source unit id
-	unitId = rxbuf[6]
+	unitID = rxbuf[6]
 
 	// MBAP length field = unit_id + function_code + payload (2..254 per spec)
 	mbapLen := int(bytesToUint16(BigEndian, rxbuf[4:6]))
@@ -203,7 +203,7 @@ func (tt *tcpTransport) readMBAPFrame() (p *pdu, txnId uint16, err error) {
 
 	// store unit id, function code and payload in the PDU object
 	p = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FunctionCode(rxbuf[0]),
 		payload:      rxbuf[1:],
 	}
@@ -220,7 +220,7 @@ func (tt *tcpTransport) assembleMBAPFrame(txnId uint16, p *pdu) (payload []byte)
 	// length (covers unit identifier + function code + payload fields)
 	payload = append(payload, uint16ToBytes(BigEndian, uint16(2+len(p.payload)))...)
 	// unit identifier
-	payload = append(payload, p.unitId)
+	payload = append(payload, p.unitID)
 	// function code
 	payload = append(payload, byte(p.functionCode))
 	// payload

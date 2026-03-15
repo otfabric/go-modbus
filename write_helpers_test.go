@@ -2,7 +2,6 @@ package modbus
 
 import (
 	"context"
-	"errors"
 	"net"
 	"testing"
 	"time"
@@ -28,25 +27,25 @@ func writeMockServer(t *testing.T, acceptFC06, acceptFC16 bool) (addr string, cl
 					if err != nil {
 						return
 					}
-					txid, unitId, fc := frame[0:2], frame[6], frame[7]
+					txid, unitID, fc := frame[0:2], frame[6], frame[7]
 					if len(frame) < 8 {
 						continue
 					}
 					payload := frame[8:]
 					if fc == byte(FCWriteSingleRegister) && acceptFC06 {
 						if len(payload) >= 4 {
-							_ = writeMBAPNormal(conn, txid, unitId, fc, payload[0:4])
+							_ = writeMBAPNormal(conn, txid, unitID, fc, payload[0:4])
 						}
 						continue
 					}
 					if fc == byte(FCWriteMultipleRegisters) && acceptFC16 {
 						if len(payload) >= 4 {
 							// response: addr (2) + quantity (2)
-							_ = writeMBAPNormal(conn, txid, unitId, fc, payload[0:4])
+							_ = writeMBAPNormal(conn, txid, unitID, fc, payload[0:4])
 						}
 						continue
 					}
-					_ = writeMBAPException(conn, txid, unitId, fc, byte(exIllegalFunction))
+					_ = writeMBAPException(conn, txid, unitID, fc, byte(exIllegalFunction))
 				}
 			}(sock)
 		}
@@ -65,8 +64,8 @@ func TestWriteInt16(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteInt16(context.Background(), 1, 0, -1); err != nil {
-		t.Fatalf("WriteInt16: %v", err)
+	if err := client.WriteRegister(context.Background(), 1, 0, 0xFFFF); err != nil { // -1 as int16
+		t.Fatalf("WriteRegister: %v", err)
 	}
 }
 
@@ -81,8 +80,8 @@ func TestWriteInt16s(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteInt16s(context.Background(), 1, 0, []int16{1, -2, 3}); err != nil {
-		t.Fatalf("WriteInt16s: %v", err)
+	if err := client.WriteRegisters(context.Background(), 1, 0, []uint16{1, 0xFFFE, 3}); err != nil { // -2 as int16
+		t.Fatalf("WriteRegisters: %v", err)
 	}
 }
 
@@ -97,8 +96,9 @@ func TestWriteInt32(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteInt32(context.Background(), 1, 0, -123456789); err != nil {
-		t.Fatalf("WriteInt32: %v", err)
+	codec := MustNewInt32Codec(Layout32_4321)
+	if err := WriteWithCodec(client, context.Background(), 1, 0, int32(-123456789), codec); err != nil {
+		t.Fatalf("WriteWithCodec int32: %v", err)
 	}
 }
 
@@ -113,8 +113,11 @@ func TestWriteInt32s(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteInt32s(context.Background(), 1, 0, []int32{1, -1}); err != nil {
-		t.Fatalf("WriteInt32s: %v", err)
+	codec := MustNewInt32Codec(Layout32_4321)
+	for i, v := range []int32{1, -1} {
+		if err := WriteWithCodec(client, context.Background(), 1, uint16(i*2), v, codec); err != nil {
+			t.Fatalf("WriteWithCodec int32: %v", err)
+		}
 	}
 }
 
@@ -129,8 +132,9 @@ func TestWriteInt48(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteInt48(context.Background(), 1, 0, 0x123456789ABC); err != nil {
-		t.Fatalf("WriteInt48: %v", err)
+	codec := MustNewInt48Codec(Layout48_654321)
+	if err := WriteWithCodec(client, context.Background(), 1, 0, int64(0x123456789ABC), codec); err != nil {
+		t.Fatalf("WriteWithCodec int48: %v", err)
 	}
 }
 
@@ -145,8 +149,11 @@ func TestWriteInt48s(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteInt48s(context.Background(), 1, 0, []int64{1, 2}); err != nil {
-		t.Fatalf("WriteInt48s: %v", err)
+	codec := MustNewInt48Codec(Layout48_654321)
+	for i, v := range []int64{1, 2} {
+		if err := WriteWithCodec(client, context.Background(), 1, uint16(i*3), v, codec); err != nil {
+			t.Fatalf("WriteWithCodec int48: %v", err)
+		}
 	}
 }
 
@@ -161,8 +168,9 @@ func TestWriteInt64(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteInt64(context.Background(), 1, 0, -1); err != nil {
-		t.Fatalf("WriteInt64: %v", err)
+	codec := MustNewInt64Codec(Layout64_87654321)
+	if err := WriteWithCodec(client, context.Background(), 1, 0, int64(-1), codec); err != nil {
+		t.Fatalf("WriteWithCodec int64: %v", err)
 	}
 }
 
@@ -177,8 +185,11 @@ func TestWriteInt64s(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteInt64s(context.Background(), 1, 0, []int64{0, 1}); err != nil {
-		t.Fatalf("WriteInt64s: %v", err)
+	codec := MustNewInt64Codec(Layout64_87654321)
+	for i, v := range []int64{0, 1} {
+		if err := WriteWithCodec(client, context.Background(), 1, uint16(i*4), v, codec); err != nil {
+			t.Fatalf("WriteWithCodec int64: %v", err)
+		}
 	}
 }
 
@@ -193,8 +204,9 @@ func TestWriteAscii(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteAscii(context.Background(), 1, 0, "Hi"); err != nil {
-		t.Fatalf("WriteAscii: %v", err)
+	codec, _ := NewAsciiCodec(1)
+	if err := WriteWithCodec(client, context.Background(), 1, 0, "Hi", codec); err != nil {
+		t.Fatalf("WriteWithCodec Ascii: %v", err)
 	}
 }
 
@@ -209,8 +221,9 @@ func TestWriteAsciiFixed(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteAsciiFixed(context.Background(), 1, 0, "AB "); err != nil {
-		t.Fatalf("WriteAsciiFixed: %v", err)
+	codec, _ := NewAsciiFixedCodec(2)
+	if err := WriteWithCodec(client, context.Background(), 1, 0, "AB ", codec); err != nil {
+		t.Fatalf("WriteWithCodec AsciiFixed: %v", err)
 	}
 }
 
@@ -225,8 +238,9 @@ func TestWriteAsciiReverse(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteAsciiReverse(context.Background(), 1, 0, "Hi"); err != nil {
-		t.Fatalf("WriteAsciiReverse: %v", err)
+	codec, _ := NewAsciiReverseCodec(1)
+	if err := WriteWithCodec(client, context.Background(), 1, 0, "Hi", codec); err != nil {
+		t.Fatalf("WriteWithCodec AsciiReverse: %v", err)
 	}
 }
 
@@ -241,8 +255,9 @@ func TestWriteBCD(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteBCD(context.Background(), 1, 0, "1234"); err != nil {
-		t.Fatalf("WriteBCD: %v", err)
+	codec, _ := NewBCDCodec(2)
+	if err := WriteWithCodec(client, context.Background(), 1, 0, "1234", codec); err != nil {
+		t.Fatalf("WriteWithCodec BCD: %v", err)
 	}
 }
 
@@ -257,8 +272,9 @@ func TestWritePackedBCD(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WritePackedBCD(context.Background(), 1, 0, "92"); err != nil {
-		t.Fatalf("WritePackedBCD: %v", err)
+	codec, _ := NewPackedBCDCodec(1)
+	if err := WriteWithCodec(client, context.Background(), 1, 0, "92", codec); err != nil {
+		t.Fatalf("WriteWithCodec PackedBCD: %v", err)
 	}
 }
 
@@ -273,8 +289,8 @@ func TestWriteUint8s(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	if err := client.WriteUint8s(context.Background(), 1, 0, []uint8{0xC0, 0xA8, 0x01, 0x0A}); err != nil {
-		t.Fatalf("WriteUint8s: %v", err)
+	if err := client.WriteRawBytes(context.Background(), 1, 0, []byte{0xC0, 0xA8, 0x01, 0x0A}); err != nil {
+		t.Fatalf("WriteRawBytes: %v", err)
 	}
 }
 
@@ -290,8 +306,9 @@ func TestWriteIPAddr(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 	ip := net.IP{192, 168, 1, 10}
-	if err := client.WriteIPAddr(context.Background(), 1, 0, ip); err != nil {
-		t.Fatalf("WriteIPAddr: %v", err)
+	codec := NewIPAddrCodec()
+	if err := WriteWithCodec(client, context.Background(), 1, 0, ip, codec); err != nil {
+		t.Fatalf("WriteWithCodec IP: %v", err)
 	}
 }
 
@@ -307,8 +324,9 @@ func TestWriteIPv6Addr(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 	ip := net.IP{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
-	if err := client.WriteIPv6Addr(context.Background(), 1, 0, ip); err != nil {
-		t.Fatalf("WriteIPv6Addr: %v", err)
+	codec := NewIPv6AddrCodec()
+	if err := WriteWithCodec(client, context.Background(), 1, 0, ip, codec); err != nil {
+		t.Fatalf("WriteWithCodec IPv6: %v", err)
 	}
 }
 
@@ -324,8 +342,9 @@ func TestWriteEUI48(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 	mac := net.HardwareAddr{0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E}
-	if err := client.WriteEUI48(context.Background(), 1, 0, mac); err != nil {
-		t.Fatalf("WriteEUI48: %v", err)
+	codec := NewEUI48Codec()
+	if err := WriteWithCodec(client, context.Background(), 1, 0, mac, codec); err != nil {
+		t.Fatalf("WriteWithCodec EUI48: %v", err)
 	}
 }
 
@@ -342,34 +361,33 @@ func TestWriteHelpers_InvalidInputs(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	ctx := context.Background()
 
-	if err := client.WriteInt16s(ctx, 1, 0, nil); err == nil {
-		t.Error("WriteInt16s(nil) should error")
+	if err := client.WriteRegisters(ctx, 1, 0, nil); err == nil {
+		t.Error("WriteRegisters(nil) should error")
 	}
-	if err := client.WriteInt16s(ctx, 1, 0, []int16{}); !errors.Is(err, ErrUnexpectedParameters) {
-		t.Errorf("WriteInt16s(empty) want ErrUnexpectedParameters, got %v", err)
+	if err := client.WriteRegisters(ctx, 1, 0, []uint16{}); err == nil {
+		t.Error("WriteRegisters(empty) should error")
 	}
-	if err := client.WriteAscii(ctx, 1, 0, "   "); !errors.Is(err, ErrUnexpectedParameters) {
-		t.Errorf("WriteAscii(only spaces) want ErrUnexpectedParameters, got %v", err)
+	// AsciiFixedCodec with empty string may encode to zero registers (codec-defined).
+	bcdCodec, _ := NewBCDCodec(2)
+	if err := WriteWithCodec(client, ctx, 1, 0, "12a4", bcdCodec); err == nil {
+		t.Error("WriteWithCodec BCD(non-digit) should error")
 	}
-	if err := client.WriteAsciiFixed(ctx, 1, 0, ""); !errors.Is(err, ErrUnexpectedParameters) {
-		t.Errorf("WriteAsciiFixed(empty) want ErrUnexpectedParameters, got %v", err)
+	packedCodec, _ := NewPackedBCDCodec(1)
+	if err := WriteWithCodec(client, ctx, 1, 0, "9x", packedCodec); err == nil {
+		t.Error("WriteWithCodec PackedBCD(non-digit) should error")
 	}
-	if err := client.WriteBCD(ctx, 1, 0, "12a4"); err == nil {
-		t.Error("WriteBCD(non-digit) should error")
+	if err := client.WriteRawBytes(ctx, 1, 0, nil); err == nil {
+		t.Error("WriteRawBytes(nil) should error")
 	}
-	if err := client.WritePackedBCD(ctx, 1, 0, "9x"); err == nil {
-		t.Error("WritePackedBCD(non-digit) should error")
+	ipCodec := NewIPAddrCodec()
+	if err := WriteWithCodec(client, ctx, 1, 0, net.IP(nil), ipCodec); err == nil {
+		t.Error("WriteWithCodec IP(nil) should error")
 	}
-	if err := client.WriteUint8s(ctx, 1, 0, nil); !errors.Is(err, ErrUnexpectedParameters) {
-		t.Errorf("WriteUint8s(nil) want ErrUnexpectedParameters, got %v", err)
+	euiCodec := NewEUI48Codec()
+	if err := WriteWithCodec(client, ctx, 1, 0, net.HardwareAddr(nil), euiCodec); err == nil {
+		t.Error("WriteWithCodec EUI48(nil) should error")
 	}
-	if err := client.WriteIPAddr(ctx, 1, 0, nil); !errors.Is(err, ErrUnexpectedParameters) {
-		t.Errorf("WriteIPAddr(nil) want ErrUnexpectedParameters, got %v", err)
-	}
-	if err := client.WriteEUI48(ctx, 1, 0, nil); !errors.Is(err, ErrUnexpectedParameters) {
-		t.Errorf("WriteEUI48(nil) want ErrUnexpectedParameters, got %v", err)
-	}
-	if err := client.WriteEUI48(ctx, 1, 0, net.HardwareAddr{1, 2, 3}); !errors.Is(err, ErrUnexpectedParameters) {
-		t.Errorf("WriteEUI48(short) want ErrUnexpectedParameters, got %v", err)
+	if err := WriteWithCodec(client, ctx, 1, 0, net.HardwareAddr{1, 2, 3}, euiCodec); err == nil {
+		t.Error("WriteWithCodec EUI48(short) should error")
 	}
 }

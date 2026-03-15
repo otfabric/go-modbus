@@ -2,6 +2,7 @@ package modbus
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -183,13 +184,152 @@ func TestAsciiCodec_OverlongASCII_Truncated(t *testing.T) {
 	}
 }
 
+func TestSignedPackedBCDCodec_PositiveRoundTrip(t *testing.T) {
+	c, err := NewSignedPackedBCDCodec(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := "1234"
+	regs, err := EncodeRegisters(s, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeRegisters(regs, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != s {
+		t.Errorf("round-trip positive: got %q, want %q", got, s)
+	}
+}
+
+func TestSignedPackedBCDCodec_NegativeRoundTrip(t *testing.T) {
+	c, err := NewSignedPackedBCDCodec(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := "-1234"
+	regs, err := EncodeRegisters(s, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeRegisters(regs, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != s {
+		t.Errorf("round-trip negative: got %q, want %q", got, s)
+	}
+}
+
+func TestSignedPackedBCDCodec_RejectNonDigit(t *testing.T) {
+	c, err := NewSignedPackedBCDCodec(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = EncodeRegisters("-12a4", c)
+	if err == nil {
+		t.Fatal("expected error for non-digit in signed packed BCD")
+	}
+}
+
+// TestSignedPackedBCDCodec_SignNibbleRules verifies documented sign nibble semantics:
+// decode accepts 0xC, 0xD, 0xF as negative; encode emits only 0xC for negative.
+func TestSignedPackedBCDCodec_SignNibbleRules(t *testing.T) {
+	c, err := NewSignedPackedBCDCodec(2) // 4 bytes = 8 nibbles; 7 digits + sign for negative
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Encode "-123" → negative uses 0xC in trailing nibble only
+	regs, err := EncodeRegisters("-123", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := regsToBytes(regs)
+	lastNibble := raw[len(raw)-1] & 0x0F
+	if lastNibble != 0x0C {
+		t.Errorf("encode negative: trailing nibble = 0x%X, want 0xC (canonical)", lastNibble)
+	}
+	// Decode: 0xC, 0xD, 0xF in trailing nibble must all yield negative
+	for _, signNibble := range []byte{0x0C, 0x0D, 0x0F} {
+		rawNeg := make([]byte, len(raw))
+		copy(rawNeg, raw)
+		rawNeg[len(rawNeg)-1] = (rawNeg[len(rawNeg)-1] & 0xF0) | signNibble
+		regsIn := bytesToRegs(rawNeg)
+		got, err := DecodeRegisters(regsIn, c)
+		if err != nil {
+			t.Errorf("decode with sign nibble 0x%X: %v", signNibble, err)
+			continue
+		}
+		if !strings.HasPrefix(got, "-") {
+			t.Errorf("decode with sign nibble 0x%X: got %q, want negative", signNibble, got)
+		}
+	}
+}
+
+func regsToBytes(regs []uint16) []byte {
+	out := make([]byte, 0, len(regs)*2)
+	for _, r := range regs {
+		out = append(out, byte(r>>8), byte(r))
+	}
+	return out
+}
+
+func bytesToRegs(b []byte) []uint16 {
+	out := make([]uint16, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		out = append(out, uint16(b[i])<<8|uint16(b[i+1]))
+	}
+	return out
+}
+
+func TestPackedBCDReverseCodec_RoundTrip(t *testing.T) {
+	c, err := NewPackedBCDReverseCodec(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := "12345678"
+	regs, err := EncodeRegisters(s, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeRegisters(regs, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != s {
+		t.Errorf("round-trip: got %q, want %q", got, s)
+	}
+}
+
+func TestPackedBCDReverseCodec_ByteOrder(t *testing.T) {
+	// Reverse = low byte first per register. "12" pads to 4 digits = "0012", bytes [0x00, 0x12], LE word = 0x1200.
+	c, err := NewPackedBCDReverseCodec(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regs, err := EncodeRegisters("12", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regs[0] != 0x1200 {
+		t.Errorf("packed_bcd_reverse encode: reg[0] = 0x%04x, want 0x1200 (LE)", regs[0])
+	}
+	got, _ := DecodeRegisters(regs, c)
+	if got != "0012" {
+		t.Errorf("got %q, want 0012 (leading zero padded)", got)
+	}
+}
+
 func TestTextCodec_ZeroRegistersRejected(t *testing.T) {
 	for name, fn := range map[string]func(uint16) (Codec[string], error){
-		"ascii":         NewAsciiCodec,
-		"ascii_fixed":   NewAsciiFixedCodec,
-		"ascii_reverse": NewAsciiReverseCodec,
-		"bcd":           NewBCDCodec,
-		"packed_bcd":    NewPackedBCDCodec,
+		"ascii":              NewAsciiCodec,
+		"ascii_fixed":        NewAsciiFixedCodec,
+		"ascii_reverse":      NewAsciiReverseCodec,
+		"bcd":                NewBCDCodec,
+		"packed_bcd":         NewPackedBCDCodec,
+		"signed_packed_bcd":  NewSignedPackedBCDCodec,
+		"packed_bcd_reverse": NewPackedBCDReverseCodec,
 	} {
 		_, err := fn(0)
 		if err == nil {

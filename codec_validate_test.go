@@ -45,8 +45,8 @@ func TestValidateByteSpec_Mismatch(t *testing.T) {
 	if !errors.As(err, &e) {
 		t.Errorf("expected CodecByteCountError, got %T", err)
 	}
-	if !errors.Is(err, ErrEncodingError) {
-		t.Errorf("expected ErrEncodingError, got %v", err)
+	if !errors.Is(err, ErrCodecByteCount) {
+		t.Errorf("expected ErrCodecByteCount, got %v", err)
 	}
 	if e.Codec != "test-byte-codec" || e.Actual != 3 || e.Expected.Count != 4 {
 		t.Errorf("Codec=%q Expected.Count=%d Actual=%d", e.Codec, e.Expected.Count, e.Actual)

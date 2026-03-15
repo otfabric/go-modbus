@@ -28,7 +28,7 @@ func bitfieldMockServer(t *testing.T) (addr string, cleanup func()) {
 					if err != nil {
 						return
 					}
-					txid, unitId, fc := frame[0:2], frame[6], frame[7]
+					txid, unitID, fc := frame[0:2], frame[6], frame[7]
 					if len(frame) < 12 {
 						continue
 					}
@@ -38,9 +38,9 @@ func bitfieldMockServer(t *testing.T) (addr string, cleanup func()) {
 						if qty == 1 {
 							// 0xBEEF = 1011 1110 1110 1111 (bit0-3 set, bit4 clear, ...)
 							resp := []byte{0x02, 0xBE, 0xEF}
-							_ = writeMBAPNormal(conn, txid, unitId, fc, resp)
+							_ = writeMBAPNormal(conn, txid, unitID, fc, resp)
 						} else {
-							_ = writeMBAPException(conn, txid, unitId, fc, byte(exIllegalDataAddress))
+							_ = writeMBAPException(conn, txid, unitID, fc, byte(exIllegalDataAddress))
 						}
 						continue
 					}
@@ -48,17 +48,17 @@ func bitfieldMockServer(t *testing.T) (addr string, cleanup func()) {
 						qty := int(payload[2])<<8 | int(payload[3])
 						if qty == 1 {
 							resp := []byte{0x02, 0x12, 0x34}
-							_ = writeMBAPNormal(conn, txid, unitId, fc, resp)
+							_ = writeMBAPNormal(conn, txid, unitID, fc, resp)
 						} else {
-							_ = writeMBAPException(conn, txid, unitId, fc, byte(exIllegalDataAddress))
+							_ = writeMBAPException(conn, txid, unitID, fc, byte(exIllegalDataAddress))
 						}
 						continue
 					}
 					if fc == byte(FCWriteMultipleRegisters) && len(payload) >= 4 {
-						_ = writeMBAPNormal(conn, txid, unitId, fc, payload[0:4])
+						_ = writeMBAPNormal(conn, txid, unitID, fc, payload[0:4])
 						continue
 					}
-					_ = writeMBAPException(conn, txid, unitId, fc, byte(exIllegalFunction))
+					_ = writeMBAPException(conn, txid, unitID, fc, byte(exIllegalFunction))
 				}
 			}(sock)
 		}

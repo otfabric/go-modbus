@@ -10,6 +10,10 @@ import (
 
 const (
 	maxRTUFrameLength int = 256
+	// rtuResponseLengthVariable: read until inter-frame silence (FC08, FC2B).
+	rtuResponseLengthVariable int = -1
+	// rtuResponseLengthFIFO: FC18 uses 2-byte byte count; read one more byte then use it.
+	rtuResponseLengthFIFO int = -2
 )
 
 type rtuTransport struct {
@@ -108,7 +112,7 @@ func (rt *rtuTransport) ExecuteRequest(ctx context.Context, req *pdu) (res *pdu,
 	res, err = rt.readRTUFrame()
 	if err == nil {
 		rt.logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X",
-			res.unitId, res.functionCode, res.payload)
+			res.unitID, res.functionCode, res.payload)
 	}
 
 	if err == ErrBadCRC || err == ErrProtocolError || err == ErrShortFrame {
@@ -173,14 +177,59 @@ func (rt *rtuTransport) readRTUFrame() (res *pdu, err error) {
 	}
 
 	// figure out how many further bytes to read
-	bytesNeeded, err = expectedResponseLenth(FunctionCode(rxbuf[1]), uint8(rxbuf[2]))
+	bytesNeeded, err = expectedResponseLength(FunctionCode(rxbuf[1]), uint8(rxbuf[2]))
 	if err != nil {
 		return
 	}
 
-	// FC08 Diagnostics has no length byte; read until inter-frame silence (t3.5)
-	if bytesNeeded == -1 {
-		return rt.readVariableLengthDiagnostics(rxbuf[:3])
+	// Variable-length responses: read until inter-frame silence (t3.5)
+	if bytesNeeded == rtuResponseLengthVariable {
+		switch FunctionCode(rxbuf[1]) {
+		case FCDiagnostics:
+			return rt.readVariableLengthDiagnostics(rxbuf[:3])
+		case FCEncapsulatedInterface:
+			return rt.readVariableLengthEncapsulated(rxbuf[:3])
+		default:
+			err = ErrProtocolError
+			return
+		}
+	}
+
+	// FC18: byte count is 2 bytes; we have only the first. Read one more then the rest.
+	if bytesNeeded == rtuResponseLengthFIFO {
+		byteCount, err = io.ReadFull(rt.link, rxbuf[3:4])
+		if (byteCount > 0 || err == nil) && byteCount != 1 {
+			err = ErrShortFrame
+			return
+		}
+		if err != nil && err != io.ErrUnexpectedEOF {
+			return
+		}
+		bytesNeeded = (int(rxbuf[2]) << 8) | int(rxbuf[3])
+		if bytesNeeded < 0 || 4+bytesNeeded+2 > maxRTUFrameLength {
+			err = ErrProtocolError
+			return
+		}
+		byteCount, err = io.ReadFull(rt.link, rxbuf[4:4+bytesNeeded+2])
+		if err != nil && err != io.ErrUnexpectedEOF {
+			return
+		}
+		if byteCount != bytesNeeded+2 {
+			err = ErrShortFrame
+			return
+		}
+		crc.init()
+		crc.add(rxbuf[0 : 4+bytesNeeded])
+		if !crc.isEqual(rxbuf[4+bytesNeeded], rxbuf[4+bytesNeeded+1]) {
+			err = ErrBadCRC
+			return
+		}
+		res = &pdu{
+			unitID:       rxbuf[0],
+			functionCode: FunctionCode(rxbuf[1]),
+			payload:      rxbuf[2 : 4+bytesNeeded],
+		}
+		return
 	}
 
 	// we need to read 2 additional bytes of CRC after the payload
@@ -213,7 +262,7 @@ func (rt *rtuTransport) readRTUFrame() (res *pdu, err error) {
 	}
 
 	res = &pdu{
-		unitId:       rxbuf[0],
+		unitID:       rxbuf[0],
 		functionCode: FunctionCode(rxbuf[1]),
 		// pass the byte count + trailing data as payload, withtout the CRC
 		payload: rxbuf[2 : 3+bytesNeeded-2],
@@ -224,9 +273,9 @@ func (rt *rtuTransport) readRTUFrame() (res *pdu, err error) {
 
 // readVariableLengthDiagnostics reads an FC08 Diagnostics response, which has no
 // byte-count field. It reads until inter-frame silence (t3.5) or the buffer is full.
-// header is the first 3 bytes already read: unitId, functionCode (0x08), subFuncHi.
+// header is the first 3 bytes already read: unitID, functionCode (0x08), subFuncHi.
 func (rt *rtuTransport) readVariableLengthDiagnostics(header []byte) (res *pdu, err error) {
-	const minFrameBytes = 6 // unitId(1) + fc(1) + subFunc(2) + crc(2)
+	const minFrameBytes = 6 // unitID(1) + fc(1) + subFunc(2) + crc(2)
 	var crc crc
 
 	buf := make([]byte, maxRTUFrameLength)
@@ -266,7 +315,58 @@ func (rt *rtuTransport) readVariableLengthDiagnostics(header []byte) (res *pdu, 
 	}
 
 	res = &pdu{
-		unitId:       buf[0],
+		unitID:       buf[0],
+		functionCode: FunctionCode(buf[1]),
+		payload:      append([]byte(nil), buf[2:offset-2]...),
+	}
+	return
+}
+
+// readVariableLengthEncapsulated reads an FC2B Encapsulated Interface (e.g. Read Device ID)
+// response. It has no byte-count field; the first payload byte is MEI type. Reads until
+// inter-frame silence (t3.5) or the buffer is full.
+func (rt *rtuTransport) readVariableLengthEncapsulated(header []byte) (res *pdu, err error) {
+	const minFrameBytes = 6 // unitID(1) + fc(1) + MEI(1) + at least 1 data byte + crc(2)
+	var crc crc
+
+	buf := make([]byte, maxRTUFrameLength)
+	copy(buf, header)
+	offset := len(header)
+
+	for offset < maxRTUFrameLength {
+		err = rt.link.SetDeadline(time.Now().Add(rt.t35))
+		if err != nil {
+			return
+		}
+		n, readErr := rt.link.Read(buf[offset : offset+1])
+		if n > 0 {
+			offset += n
+			continue
+		}
+		if readErr != nil && os.IsTimeout(readErr) {
+			break
+		}
+		if readErr != nil {
+			err = readErr
+			return
+		}
+		break
+	}
+
+	if offset < minFrameBytes {
+		err = ErrShortFrame
+		return
+	}
+
+	crc.init()
+	crc.add(buf[:offset-2])
+	if !crc.isEqual(buf[offset-2], buf[offset-1]) {
+		err = ErrBadCRC
+		return
+	}
+
+	res = &pdu{
+		unitID:       buf[0],
 		functionCode: FunctionCode(buf[1]),
 		payload:      append([]byte(nil), buf[2:offset-2]...),
 	}
@@ -277,7 +377,7 @@ func (rt *rtuTransport) readVariableLengthDiagnostics(header []byte) (res *pdu, 
 func (rt *rtuTransport) assembleRTUFrame(p *pdu) (adu []byte) {
 	var crc crc
 
-	adu = append(adu, p.unitId)
+	adu = append(adu, p.unitID)
 	adu = append(adu, byte(p.functionCode))
 	adu = append(adu, p.payload...)
 
@@ -293,7 +393,7 @@ func (rt *rtuTransport) assembleRTUFrame(p *pdu) (adu []byte) {
 
 // Computes the expected length of a Modbus RTU response.
 // For normal responses, the returned int is the number of payload bytes still to read
-// after the first 3 bytes (unitId, functionCode, first payload byte).
+// after the first 3 bytes (unitID, functionCode, first payload byte).
 // Return -1 for variable-length responses (FC08 Diagnostics); the caller must use
 // readVariableLengthDiagnostics.
 //
@@ -301,7 +401,7 @@ func (rt *rtuTransport) assembleRTUFrame(p *pdu) (adu []byte) {
 // - FC03/04 response: byte_count(1) + 2*quantity; byte_count = 2*quantity.
 // - FC01/02 response: byte_count(1) + ceil(quantity/8); FC05/06/0F/10/16: 5 bytes (echo).
 // - Exception response: 1 byte (exception code). FC08: variable (no byte_count field).
-func expectedResponseLenth(responseCode FunctionCode, responseLength uint8) (int, error) {
+func expectedResponseLength(responseCode FunctionCode, responseLength uint8) (int, error) {
 	switch responseCode {
 	case FCReadHoldingRegisters,
 		FCReadInputRegisters,
@@ -315,9 +415,20 @@ func expectedResponseLenth(responseCode FunctionCode, responseLength uint8) (int
 		return 3, nil
 	case FCMaskWriteRegister:
 		return 5, nil
+	case FCReadFileRecord,
+		FCWriteFileRecord,
+		FCReadWriteMultipleRegs:
+		// First payload byte is byte count.
+		return int(responseLength), nil
+	case FCReadFIFOQueue:
+		// Byte count is 2 bytes (big-endian); we only have the first. Caller reads one more then uses it.
+		return rtuResponseLengthFIFO, nil
 	case FCDiagnostics:
 		// Variable-length PDU — no byte-count field.
-		return -1, nil
+		return rtuResponseLengthVariable, nil
+	case FCEncapsulatedInterface:
+		// MEI type (first payload byte) is not length; variable-length like FC08.
+		return rtuResponseLengthVariable, nil
 	case FCReportServerID:
 		return int(responseLength), nil
 	case FCReadExceptionStatus:
@@ -334,7 +445,12 @@ func expectedResponseLenth(responseCode FunctionCode, responseLength uint8) (int
 		FunctionCode(0x80 | uint8(FCMaskWriteRegister)),
 		FunctionCode(0x80 | uint8(FCDiagnostics)),
 		FunctionCode(0x80 | uint8(FCReportServerID)),
-		FunctionCode(0x80 | uint8(FCReadExceptionStatus)):
+		FunctionCode(0x80 | uint8(FCReadExceptionStatus)),
+		FunctionCode(0x80 | uint8(FCReadFileRecord)),
+		FunctionCode(0x80 | uint8(FCWriteFileRecord)),
+		FunctionCode(0x80 | uint8(FCReadWriteMultipleRegs)),
+		FunctionCode(0x80 | uint8(FCReadFIFOQueue)),
+		FunctionCode(0x80 | uint8(FCEncapsulatedInterface)):
 		return 0, nil
 	default:
 		return 0, ErrProtocolError

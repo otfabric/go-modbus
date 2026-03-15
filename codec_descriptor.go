@@ -16,6 +16,7 @@ const (
 	CodecFamilyBytes
 	CodecFamilyNetwork
 	CodecFamilyHardwareAddress
+	CodecFamilyDecimalLimb
 	CodecFamilyVendorSpecific
 )
 
@@ -28,7 +29,32 @@ var codecFamilyNames = map[CodecFamily]string{
 	CodecFamilyBytes:           "bytes",
 	CodecFamilyNetwork:         "network",
 	CodecFamilyHardwareAddress: "hardware_address",
+	CodecFamilyDecimalLimb:     "decimal_limb",
 	CodecFamilyVendorSpecific:  "vendor_specific",
+}
+
+// DecimalLimbOrder controls how base-10000 limbs are ordered across registers.
+// Used by M10k (modulo-10000) codecs; distinct from byte-order RegisterLayout.
+type DecimalLimbOrder uint8
+
+const (
+	// DecimalLimbLowToHigh: first register is least-significant limb.
+	// Schneider equivalents: 2143, 21-65, 21-87.
+	DecimalLimbLowToHigh DecimalLimbOrder = iota + 1
+	// DecimalLimbHighToLow: first register is most-significant limb.
+	// Schneider equivalents: 4321, 65-21, 87-21.
+	DecimalLimbHighToLow
+)
+
+func (o DecimalLimbOrder) String() string {
+	switch o {
+	case DecimalLimbLowToHigh:
+		return "low_to_high"
+	case DecimalLimbHighToLow:
+		return "high_to_low"
+	default:
+		return "unknown"
+	}
 }
 
 func (f CodecFamily) String() string {

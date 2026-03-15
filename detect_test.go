@@ -32,18 +32,18 @@ func readMBAPFrame(conn net.Conn) ([]byte, error) {
 }
 
 // writeMBAPException writes an MBAP exception frame for the given FC.
-func writeMBAPException(conn net.Conn, txid []byte, unitId, fc, exCode byte) error {
+func writeMBAPException(conn net.Conn, txid []byte, unitID, fc, exCode byte) error {
 	_, err := conn.Write([]byte{
 		txid[0], txid[1], 0x00, 0x00, 0x00, 0x03,
-		unitId, fc | 0x80, exCode,
+		unitID, fc | 0x80, exCode,
 	})
 	return err
 }
 
 // writeMBAPNormal writes an MBAP normal-response frame.
-func writeMBAPNormal(conn net.Conn, txid []byte, unitId, fc byte, payload []byte) error {
+func writeMBAPNormal(conn net.Conn, txid []byte, unitID, fc byte, payload []byte) error {
 	length := uint16ToBytes(BigEndian, uint16(2+len(payload)))
-	frame := append(append([]byte{txid[0], txid[1], 0x00, 0x00}, length...), unitId, fc)
+	frame := append(append([]byte{txid[0], txid[1], 0x00, 0x00}, length...), unitID, fc)
 	frame = append(frame, payload...)
 	_, err := conn.Write(frame)
 	return err
@@ -73,12 +73,12 @@ func TestHasUnitReadFunction_FC03_NormalResponse(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc == byte(FCReadHoldingRegisters) {
-				_ = writeMBAPNormal(sock, txid, unitId, fc, []byte{0x02, 0x00, 0x00})
+				_ = writeMBAPNormal(sock, txid, unitID, fc, []byte{0x02, 0x00, 0x00})
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 			}
 		}
 	}()
@@ -124,9 +124,9 @@ func TestHasUnitReadFunction_FC03_ExceptionResponse(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
-			_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+			_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 		}
 	}()
 
@@ -265,7 +265,7 @@ func TestHasUnitIdentifyFunction_FC43_NormalResponse(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc == byte(FCEncapsulatedInterface) {
 				payload := []byte{
@@ -275,9 +275,9 @@ func TestHasUnitIdentifyFunction_FC43_NormalResponse(t *testing.T) {
 					0x01,
 					0x00, 0x03, 'A', 'B', 'C',
 				}
-				_ = writeMBAPNormal(sock, txid, unitId, fc, payload)
+				_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 			}
 		}
 	}()
@@ -323,9 +323,9 @@ func TestHasUnitIdentifyFunction_FC43_ExceptionResponse(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
-			_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+			_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 		}
 	}()
 

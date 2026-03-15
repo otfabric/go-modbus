@@ -92,11 +92,9 @@ type ModbusClient struct {
 	logger                    *logger
 	lock                      sync.Mutex
 	isOpen                    bool
-	endianness                Endianness
-	wordOrder                 WordOrder
 	transport                 transport
 	transportType             transportType
-	pool                      *connPool // non-nil when MaxConns > 1 and transport is TCP-based
+	pool                      *connPool // non-nil when MaxConns > 1 and transport uses pool (tcp/rtuovertcp/rtuoverudp/udp)
 	lastResponseTransactionID uint16    // last MBAP transaction ID from response (TCP only; 0 for RTU)
 }
 
@@ -237,6 +235,9 @@ func objectDescription(id byte) string {
 
 // NewClient creates, configures and returns a modbus client object.
 func NewClient(conf *ClientConfiguration) (mc *ModbusClient, err error) {
+	if conf == nil {
+		return nil, ErrConfigurationError
+	}
 	var clientType string
 	var splitURL []string
 
@@ -354,16 +355,13 @@ func NewClient(conf *ClientConfiguration) (mc *ModbusClient, err error) {
 		return
 	}
 
-	mc.endianness = BigEndian
-	mc.wordOrder = HighWordFirst
-
 	return
 }
 
 // Opens the underlying transport (network socket or serial line).
-// If MaxConns > 1 and the transport is TCP-based, a connection pool pre-warmed
+// If MaxConns > 1 and the transport uses the pool (tcp, rtuovertcp, rtuoverudp, udp — not tcp+tls), a connection pool pre-warmed
 // with MinConns connections is created; subsequent requests draw from the pool and
-// may execute concurrently. For serial transports, a single transport is used.
+// may execute concurrently. For serial and tcp+tls, a single transport is used.
 func (mc *ModbusClient) Open() (err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
@@ -373,7 +371,7 @@ func (mc *ModbusClient) Open() (err error) {
 		return
 	}
 
-	// TCP-based pool: MaxConns > 1 covers tcp/rtuovertcp/rtuoverudp/udp
+	// Connection pool: MaxConns > 1 for tcp, rtuovertcp, rtuoverudp, udp (not tcp+tls).
 	usePool := mc.conf.MaxConns > 1 &&
 		(mc.transportType == modbusTCP ||
 			mc.transportType == modbusRTUOverTCP ||
@@ -383,14 +381,19 @@ func (mc *ModbusClient) Open() (err error) {
 	if usePool {
 		mc.pool, err = newConnPool(
 			mc.conf.MinConns, mc.conf.MaxConns, mc.dialTransport, mc.logger)
+		if err != nil {
+			return
+		}
+		mc.transport = nil
 	} else {
 		mc.transport, err = mc.dialTransport()
+		if err != nil {
+			return
+		}
+		mc.pool = nil
 	}
 
-	if err == nil {
-		mc.isOpen = true
-	}
-
+	mc.isOpen = true
 	return
 }
 
@@ -525,64 +528,44 @@ func (mc *ModbusClient) Close() (err error) {
 	if mc.pool != nil {
 		err = mc.pool.closeAll()
 		mc.pool = nil
-	} else if mc.transport != nil {
-		err = mc.transport.Close()
 	}
-
+	if mc.transport != nil {
+		if cerr := mc.transport.Close(); err == nil {
+			err = cerr
+		}
+		mc.transport = nil
+	}
 	mc.isOpen = false
-
 	return
 }
 
-// LastTransactionID returns the MBAP transaction ID of the last successful response (TCP only).
-// For RTU and other transports it is always 0. Useful for diagnostics and correlating with captures.
+// LastTransactionID returns the most recently observed MBAP transaction ID on this client instance.
+// For RTU and other non-TCP transports it is always 0. In pooled/concurrent use (MaxConns > 1),
+// this is a shared diagnostic value and is not request-specific.
 func (mc *ModbusClient) LastTransactionID() uint16 {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 	return mc.lastResponseTransactionID
 }
 
-// Sets the encoding (endianness and word ordering) of subsequent requests.
-func (mc *ModbusClient) SetEncoding(endianness Endianness, wordOrder WordOrder) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	if endianness != BigEndian && endianness != LittleEndian {
-		mc.logger.Errorf("unknown endianness value %v", endianness)
-		err = ErrUnexpectedParameters
-		return
-	}
-
-	if wordOrder != HighWordFirst && wordOrder != LowWordFirst {
-		mc.logger.Errorf("unknown word order value %v", wordOrder)
-		err = ErrUnexpectedParameters
-		return
-	}
-
-	mc.endianness = endianness
-	mc.wordOrder = wordOrder
-
-	return
-}
-
 // Reads multiple coils (function code 01).
-func (mc *ModbusClient) ReadCoils(ctx context.Context, unitId uint8, addr uint16, quantity uint16) (values []bool, err error) {
+func (mc *ModbusClient) ReadCoils(ctx context.Context, unitID uint8, addr uint16, quantity uint16) (values []bool, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
-	values, err = mc.readBools(ctx, unitId, addr, quantity, false)
+	values, err = mc.readBools(ctx, unitID, addr, quantity, false)
 
 	return
 }
 
 // Reads a single coil (function code 01).
-func (mc *ModbusClient) ReadCoil(ctx context.Context, unitId uint8, addr uint16) (value bool, err error) {
+func (mc *ModbusClient) ReadCoil(ctx context.Context, unitID uint8, addr uint16) (value bool, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
 	var values []bool
 
-	values, err = mc.readBools(ctx, unitId, addr, 1, false)
+	values, err = mc.readBools(ctx, unitID, addr, 1, false)
 	if err == nil {
 		value = values[0]
 	}
@@ -591,23 +574,23 @@ func (mc *ModbusClient) ReadCoil(ctx context.Context, unitId uint8, addr uint16)
 }
 
 // Reads multiple discrete inputs (function code 02).
-func (mc *ModbusClient) ReadDiscreteInputs(ctx context.Context, unitId uint8, addr uint16, quantity uint16) (values []bool, err error) {
+func (mc *ModbusClient) ReadDiscreteInputs(ctx context.Context, unitID uint8, addr uint16, quantity uint16) (values []bool, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
-	values, err = mc.readBools(ctx, unitId, addr, quantity, true)
+	values, err = mc.readBools(ctx, unitID, addr, quantity, true)
 
 	return
 }
 
 // Reads a single discrete input (function code 02).
-func (mc *ModbusClient) ReadDiscreteInput(ctx context.Context, unitId uint8, addr uint16) (value bool, err error) {
+func (mc *ModbusClient) ReadDiscreteInput(ctx context.Context, unitID uint8, addr uint16) (value bool, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
 	var values []bool
 
-	values, err = mc.readBools(ctx, unitId, addr, 1, true)
+	values, err = mc.readBools(ctx, unitID, addr, 1, true)
 	if err == nil {
 		value = values[0]
 	}
@@ -616,238 +599,65 @@ func (mc *ModbusClient) ReadDiscreteInput(ctx context.Context, unitId uint8, add
 }
 
 // Reads multiple 16-bit registers (function code 03 or 04).
-func (mc *ModbusClient) ReadRegisters(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []uint16, err error) {
+func (mc *ModbusClient) ReadRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) (values []uint16, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
 	var mbPayload []byte
 
 	// read quantity uint16 registers, as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity, regType)
+	mbPayload, err = mc.readRegisters(ctx, unitID, addr, quantity, regType)
 	if err != nil {
 		return
 	}
 
 	// decode payload bytes as uint16s
-	values = bytesToUint16s(mc.endianness, mbPayload)
+	values = bytesToUint16s(BigEndian, mbPayload)
 
 	return
 }
 
 // Reads a single 16-bit register (function code 03 or 04).
-func (mc *ModbusClient) ReadRegister(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value uint16, err error) {
+func (mc *ModbusClient) ReadRegister(ctx context.Context, unitID uint8, addr uint16, regType RegType) (value uint16, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
 	var mbPayload []byte
 
 	// read 1 uint16 register, as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 1, regType)
+	mbPayload, err = mc.readRegisters(ctx, unitID, addr, 1, regType)
 	if err == nil {
-		value = bytesToUint16s(mc.endianness, mbPayload)[0]
+		value = bytesToUint16s(BigEndian, mbPayload)[0]
 	}
 
 	return
 }
 
-// Reads multiple 32-bit registers.
-func (mc *ModbusClient) ReadUint32s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []uint32, err error) {
+// ReadRawBytes is a transport convenience helper: it reads one or more 16-bit
+// registers (FC03/FC04) as raw bytes. quantity is the number of bytes to read
+// (the library reads ceil(quantity/2) registers). No interpretation or reordering
+// is applied; bytes are returned exactly as on the wire. For typed interpretation
+// use ReadWithCodec or ReadWithRuntimeCodec. Odd quantity is valid: the library
+// reads ceil(quantity/2) registers and returns exactly quantity bytes, trimming
+// the final padding byte when needed.
+func (mc *ModbusClient) ReadRawBytes(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) (values []byte, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
-	var mbPayload []byte
-
-	// read 2 * quantity uint16 registers, as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity*2, regType)
-	if err != nil {
-		return
-	}
-
-	// decode payload bytes as uint32s
-	values = bytesToUint32s(mc.endianness, mc.wordOrder, mbPayload)
+	values, err = mc.readBytes(ctx, unitID, addr, quantity, regType)
 
 	return
-}
-
-// Reads a single 32-bit register.
-func (mc *ModbusClient) ReadUint32(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value uint32, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	// read 2 uint16 registers (= 1 uint32), as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 2, regType)
-	if err == nil {
-		value = bytesToUint32s(mc.endianness, mc.wordOrder, mbPayload)[0]
-	}
-
-	return
-}
-
-// Reads multiple 32-bit float registers.
-func (mc *ModbusClient) ReadFloat32s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []float32, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	// read 2 * quantity uint16 registers, as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity*2, regType)
-	if err != nil {
-		return
-	}
-
-	// decode payload bytes as float32s
-	values = bytesToFloat32s(mc.endianness, mc.wordOrder, mbPayload)
-
-	return
-}
-
-// Reads a single 32-bit float register.
-func (mc *ModbusClient) ReadFloat32(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value float32, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	// read 2 uint16 registers (= 1 float32), as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 2, regType)
-	if err == nil {
-		value = bytesToFloat32s(mc.endianness, mc.wordOrder, mbPayload)[0]
-	}
-
-	return
-}
-
-// Reads multiple 64-bit registers.
-func (mc *ModbusClient) ReadUint64s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []uint64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	// read 4 * quantity uint16 registers, as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity*4, regType)
-	if err != nil {
-		return
-	}
-
-	// decode payload bytes as uint64s
-	values = bytesToUint64s(mc.endianness, mc.wordOrder, mbPayload)
-
-	return
-}
-
-// Reads a single 64-bit register.
-func (mc *ModbusClient) ReadUint64(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value uint64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	// read 4 uint16 registers (= 1 uint64), as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 4, regType)
-	if err == nil {
-		value = bytesToUint64s(mc.endianness, mc.wordOrder, mbPayload)[0]
-	}
-
-	return
-}
-
-// Reads multiple 64-bit float registers.
-func (mc *ModbusClient) ReadFloat64s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []float64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	// read 4 * quantity uint16 registers, as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity*4, regType)
-	if err != nil {
-		return
-	}
-
-	// decode payload bytes as float64s
-	values = bytesToFloat64s(mc.endianness, mc.wordOrder, mbPayload)
-
-	return
-}
-
-// Reads a single 64-bit float register.
-func (mc *ModbusClient) ReadFloat64(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value float64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	// read 4 uint16 registers (= 1 float64), as bytes
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 4, regType)
-	if err == nil {
-		value = bytesToFloat64s(mc.endianness, mc.wordOrder, mbPayload)[0]
-	}
-
-	return
-}
-
-// ReadBytes reads one or more 16-bit registers (FC03/FC04) as bytes. quantity is the
-// number of bytes to read (the library reads ceil(quantity/2) registers). A per-register
-// byteswap is applied when endianness is LittleEndian.
-func (mc *ModbusClient) ReadBytes(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []byte, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	values, err = mc.readBytes(ctx, unitId, addr, quantity, regType, true)
-
-	return
-}
-
-// ReadRawBytes reads one or more 16-bit registers (FC03/FC04) as raw bytes. quantity is
-// the number of bytes to read (the library reads ceil(quantity/2) registers). No byte or
-// word reordering is performed; bytes are returned exactly as on the wire.
-func (mc *ModbusClient) ReadRawBytes(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []byte, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	values, err = mc.readBytes(ctx, unitId, addr, quantity, regType, false)
-
-	return
-}
-
-// Reads multiple 16-bit unsigned registers (function code 03 or 04).
-// Equivalent to ReadRegisters; provided for naming consistency.
-func (mc *ModbusClient) ReadUint16s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []uint16, err error) {
-	return mc.ReadRegisters(ctx, unitId, addr, quantity, regType)
-}
-
-// Reads a single 16-bit unsigned register (function code 03 or 04).
-// Equivalent to ReadRegister; provided for naming consistency.
-func (mc *ModbusClient) ReadUint16(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value uint16, err error) {
-	return mc.ReadRegister(ctx, unitId, addr, regType)
-}
-
-// ReadUint16Pair reads exactly two consecutive 16-bit registers (FC03/FC04) and returns them as [2]uint16.
-// Uses the same byte-order semantics as ReadRegisters (SetEncoding applies).
-func (mc *ModbusClient) ReadUint16Pair(ctx context.Context, unitId uint8, addr uint16, regType RegType) ([2]uint16, error) {
-	regs, err := mc.ReadUint16s(ctx, unitId, addr, 2, regType)
-	if err != nil {
-		return [2]uint16{}, err
-	}
-	if len(regs) != 2 {
-		return [2]uint16{}, ErrProtocolError
-	}
-	return [2]uint16{regs[0], regs[1]}, nil
 }
 
 const maxRegisterBitIndex = 15
 
 // ReadRegisterBit reads one register (FC03/FC04) and returns the value of the bit at bitIndex (0 = LSB, 15 = MSB).
 // Useful for status bits, alarm bits, and enums packed in a single register.
-func (mc *ModbusClient) ReadRegisterBit(ctx context.Context, unitId uint8, addr uint16, bitIndex uint8, regType RegType) (bool, error) {
+func (mc *ModbusClient) ReadRegisterBit(ctx context.Context, unitID uint8, addr uint16, bitIndex uint8, regType RegType) (bool, error) {
 	if bitIndex > maxRegisterBitIndex {
 		return false, ErrUnexpectedParameters
 	}
-	reg, err := mc.ReadRegister(ctx, unitId, addr, regType)
+	reg, err := mc.ReadRegister(ctx, unitID, addr, regType)
 	if err != nil {
 		return false, err
 	}
@@ -856,11 +666,11 @@ func (mc *ModbusClient) ReadRegisterBit(ctx context.Context, unitId uint8, addr 
 
 // ReadRegisterBits reads one register (FC03/FC04) and returns count bits starting at bitIndex (0 = LSB).
 // count must be 1–16 and bitIndex+count must not exceed 16. Useful for multi-bit fields (e.g. mode enums).
-func (mc *ModbusClient) ReadRegisterBits(ctx context.Context, unitId uint8, addr uint16, bitIndex, count uint8, regType RegType) ([]bool, error) {
+func (mc *ModbusClient) ReadRegisterBits(ctx context.Context, unitID uint8, addr uint16, bitIndex, count uint8, regType RegType) ([]bool, error) {
 	if count == 0 || count > 16 || bitIndex > maxRegisterBitIndex || uint16(bitIndex)+uint16(count) > 16 {
 		return nil, ErrUnexpectedParameters
 	}
-	reg, err := mc.ReadRegister(ctx, unitId, addr, regType)
+	reg, err := mc.ReadRegister(ctx, unitID, addr, regType)
 	if err != nil {
 		return nil, err
 	}
@@ -873,348 +683,38 @@ func (mc *ModbusClient) ReadRegisterBits(ctx context.Context, unitId uint8, addr
 
 // WriteRegisterBit reads the register at addr (FC03), sets or clears the bit at bitIndex (0 = LSB, 15 = MSB),
 // and writes the result back (FC16). Other bits are unchanged. Only holding registers are written.
-func (mc *ModbusClient) WriteRegisterBit(ctx context.Context, unitId uint8, addr uint16, bitIndex uint8, value bool) error {
+func (mc *ModbusClient) WriteRegisterBit(ctx context.Context, unitID uint8, addr uint16, bitIndex uint8, value bool) error {
 	if bitIndex > maxRegisterBitIndex {
 		return ErrUnexpectedParameters
 	}
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
-	mbPayload, err := mc.readRegisters(ctx, unitId, addr, 1, HoldingRegister)
+	mbPayload, err := mc.readRegisters(ctx, unitID, addr, 1, HoldingRegister)
 	if err != nil {
 		return err
 	}
-	reg := bytesToUint16s(mc.endianness, mbPayload)[0]
+	reg := bytesToUint16s(BigEndian, mbPayload)[0]
 	if value {
 		reg |= 1 << bitIndex
 	} else {
 		reg &^= 1 << bitIndex
 	}
-	return mc.writeRegisters(ctx, unitId, addr, uint16ToBytes(mc.endianness, reg))
+	return mc.writeRegisters(ctx, unitID, addr, uint16ToBytes(BigEndian, reg))
 }
 
-// UpdateRegisterMask performs a read-modify-write on a single holding register: newVal = (old & ^mask) | (value & mask).
+// UpdateRegisterMask performs a client-side read-modify-write on a single holding register:
+// newVal = (old & ^mask) | (value & mask). It uses FC03 then FC16, not protocol FC22 (Mask Write Register).
 // Only the bits set in mask are updated; others are preserved. Useful for control words and mode fields without clobbering adjacent bits.
-func (mc *ModbusClient) UpdateRegisterMask(ctx context.Context, unitId uint8, addr uint16, mask, value uint16) error {
+func (mc *ModbusClient) UpdateRegisterMask(ctx context.Context, unitID uint8, addr uint16, mask, value uint16) error {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
-	mbPayload, err := mc.readRegisters(ctx, unitId, addr, 1, HoldingRegister)
+	mbPayload, err := mc.readRegisters(ctx, unitID, addr, 1, HoldingRegister)
 	if err != nil {
 		return err
 	}
-	old := bytesToUint16s(mc.endianness, mbPayload)[0]
+	old := bytesToUint16s(BigEndian, mbPayload)[0]
 	newVal := (old & ^mask) | (value & mask)
-	return mc.writeRegisters(ctx, unitId, addr, uint16ToBytes(mc.endianness, newVal))
-}
-
-// ReadAsciiFixed reads quantity registers (FC03/FC04) as ASCII with the same byte layout as ReadAscii
-// (high byte of each register = first character, low byte = second) but does not strip trailing spaces.
-// Returns the exact fixed-width string. quantity must be greater than zero.
-func (mc *ModbusClient) ReadAsciiFixed(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (string, error) {
-	if quantity == 0 {
-		return "", ErrUnexpectedParameters
-	}
-	raw, err := mc.ReadRawBytes(ctx, unitId, addr, quantity*2, regType)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
-}
-
-// ReadUint8s reads quantity bytes from registers (FC03/FC04) in raw wire order without byte reordering.
-// Useful for fixed binary fields (e.g. IPv6, EUI-48, opaque buffers). quantity must be greater than zero.
-// Does not apply SetEncoding; bytes are returned exactly as on the wire.
-func (mc *ModbusClient) ReadUint8s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]uint8, error) {
-	if quantity == 0 {
-		return nil, ErrUnexpectedParameters
-	}
-	b, err := mc.ReadRawBytes(ctx, unitId, addr, quantity, regType)
-	if err != nil {
-		return nil, err
-	}
-	return []uint8(b), nil
-}
-
-// ReadIPAddr reads 4 bytes (2 registers) from the given address (FC03/FC04) in raw wire order
-// and returns them as an IPv4 net.IP. Does not apply SetEncoding.
-func (mc *ModbusClient) ReadIPAddr(ctx context.Context, unitId uint8, addr uint16, regType RegType) (net.IP, error) {
-	b, err := mc.ReadUint8s(ctx, unitId, addr, 4, regType)
-	if err != nil {
-		return nil, err
-	}
-	if len(b) != 4 {
-		return nil, ErrProtocolError
-	}
-	ip := make(net.IP, 4)
-	copy(ip, b)
-	return ip, nil
-}
-
-// ReadIPv6Addr reads 16 bytes (8 registers) from the given address (FC03/FC04) in raw wire order
-// and returns them as an IPv6 net.IP. Does not apply SetEncoding.
-func (mc *ModbusClient) ReadIPv6Addr(ctx context.Context, unitId uint8, addr uint16, regType RegType) (net.IP, error) {
-	b, err := mc.ReadUint8s(ctx, unitId, addr, 16, regType)
-	if err != nil {
-		return nil, err
-	}
-	if len(b) != 16 {
-		return nil, ErrProtocolError
-	}
-	return net.IP(b), nil
-}
-
-// ReadEUI48 reads 6 bytes (3 registers) from the given address (FC03/FC04) in raw wire order
-// and returns them as a MAC/EUI-48 net.HardwareAddr. Does not apply SetEncoding.
-func (mc *ModbusClient) ReadEUI48(ctx context.Context, unitId uint8, addr uint16, regType RegType) (net.HardwareAddr, error) {
-	b, err := mc.ReadUint8s(ctx, unitId, addr, 6, regType)
-	if err != nil {
-		return nil, err
-	}
-	if len(b) != 6 {
-		return nil, ErrProtocolError
-	}
-	return net.HardwareAddr(b), nil
-}
-
-// Reads multiple 16-bit signed registers (function code 03 or 04).
-// The raw 16-bit value of each register is reinterpreted as int16.
-func (mc *ModbusClient) ReadInt16s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []int16, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity, regType)
-	if err != nil {
-		return
-	}
-
-	values = bytesToInt16s(mc.endianness, mbPayload)
-
-	return
-}
-
-// Reads a single 16-bit signed register (function code 03 or 04).
-// The raw 16-bit value is reinterpreted as int16.
-func (mc *ModbusClient) ReadInt16(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value int16, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 1, regType)
-	if err == nil {
-		value = bytesToInt16s(mc.endianness, mbPayload)[0]
-	}
-
-	return
-}
-
-// Reads multiple 32-bit signed registers (function code 03 or 04).
-// Each value occupies 2 consecutive 16-bit registers. Byte and word order are
-// controlled by SetEncoding.
-func (mc *ModbusClient) ReadInt32s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []int32, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity*2, regType)
-	if err != nil {
-		return
-	}
-
-	values = bytesToInt32s(mc.endianness, mc.wordOrder, mbPayload)
-
-	return
-}
-
-// Reads a single 32-bit signed register (function code 03 or 04).
-// The value occupies 2 consecutive 16-bit registers.
-func (mc *ModbusClient) ReadInt32(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value int32, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 2, regType)
-	if err == nil {
-		value = bytesToInt32s(mc.endianness, mc.wordOrder, mbPayload)[0]
-	}
-
-	return
-}
-
-// Reads multiple 64-bit signed registers (function code 03 or 04).
-// Each value occupies 4 consecutive 16-bit registers. Byte and word order are
-// controlled by SetEncoding.
-func (mc *ModbusClient) ReadInt64s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []int64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity*4, regType)
-	if err != nil {
-		return
-	}
-
-	values = bytesToInt64s(mc.endianness, mc.wordOrder, mbPayload)
-
-	return
-}
-
-// Reads a single 64-bit signed register (function code 03 or 04).
-// The value occupies 4 consecutive 16-bit registers.
-func (mc *ModbusClient) ReadInt64(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value int64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 4, regType)
-	if err == nil {
-		value = bytesToInt64s(mc.endianness, mc.wordOrder, mbPayload)[0]
-	}
-
-	return
-}
-
-// Reads multiple 48-bit unsigned values (function code 03 or 04), returned as
-// uint64. Each value occupies 3 consecutive 16-bit registers. Byte and word
-// order are controlled by SetEncoding.
-func (mc *ModbusClient) ReadUint48s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []uint64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity*3, regType)
-	if err != nil {
-		return
-	}
-
-	values = bytesToUint48s(mc.endianness, mc.wordOrder, mbPayload)
-
-	return
-}
-
-// Reads a single 48-bit unsigned value (function code 03 or 04), returned as
-// uint64. The value occupies 3 consecutive 16-bit registers.
-func (mc *ModbusClient) ReadUint48(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value uint64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 3, regType)
-	if err == nil {
-		value = bytesToUint48s(mc.endianness, mc.wordOrder, mbPayload)[0]
-	}
-
-	return
-}
-
-// Reads multiple 48-bit signed values (function code 03 or 04), returned as
-// int64. Each value occupies 3 consecutive 16-bit registers. The 48-bit value
-// is sign-extended to 64 bits. Byte and word order are controlled by SetEncoding.
-func (mc *ModbusClient) ReadInt48s(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []int64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity*3, regType)
-	if err != nil {
-		return
-	}
-
-	values = bytesToInt48s(mc.endianness, mc.wordOrder, mbPayload)
-
-	return
-}
-
-// Reads a single 48-bit signed value (function code 03 or 04), returned as
-// int64. The value occupies 3 consecutive 16-bit registers.
-func (mc *ModbusClient) ReadInt48(ctx context.Context, unitId uint8, addr uint16, regType RegType) (value int64, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, 3, regType)
-	if err == nil {
-		value = bytesToInt48s(mc.endianness, mc.wordOrder, mbPayload)[0]
-	}
-
-	return
-}
-
-// Reads quantity registers (function code 03 or 04) as an ASCII string.
-// The high byte of each register is the first character, the low byte the second.
-// Trailing spaces are stripped from the returned string.
-func (mc *ModbusClient) ReadAscii(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (value string, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity, regType)
-	if err == nil {
-		value = bytesToAscii(mbPayload)
-	}
-
-	return
-}
-
-// Reads quantity registers (function code 03 or 04) as an ASCII string with
-// byte-swapped register words. The low byte of each register is the first
-// character, the high byte the second. Trailing spaces are stripped.
-func (mc *ModbusClient) ReadAsciiReverse(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (value string, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity, regType)
-	if err == nil {
-		value = bytesToAsciiReverse(mbPayload)
-	}
-
-	return
-}
-
-// Reads quantity registers (function code 03 or 04) as a Binary Coded Decimal
-// (BCD) string. Each byte encodes one decimal digit (0–9). Returns a string of
-// decimal digits, most-significant digit first.
-func (mc *ModbusClient) ReadBCD(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (value string, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity, regType)
-	if err == nil {
-		value = bytesToBCD(mbPayload)
-	}
-
-	return
-}
-
-// Reads quantity registers (function code 03 or 04) as a Packed BCD string.
-// Each nibble encodes one decimal digit (0–9): the high nibble is the more-
-// significant digit. Returns a string of decimal digits, most-significant digit first.
-func (mc *ModbusClient) ReadPackedBCD(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (value string, err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var mbPayload []byte
-
-	mbPayload, err = mc.readRegisters(ctx, unitId, addr, quantity, regType)
-	if err == nil {
-		value = bytesToPackedBCD(mbPayload)
-	}
-
-	return
+	return mc.writeRegisters(ctx, unitID, addr, uint16ToBytes(BigEndian, newVal))
 }
 
 // ReadDeviceIdentification reads device identification objects using FC43 / MEI type 0x0E.
@@ -1229,7 +729,7 @@ func (mc *ModbusClient) ReadPackedBCD(ctx context.Context, unitId uint8, addr ui
 // For objectId use 0x00 to start from the first object (stream access); for Individual,
 // pass the desired object ID. The device responds at its conformity level if a higher
 // category is requested (e.g. requesting Extended on a basic-only device returns Basic).
-func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitId uint8, readDeviceIdCode uint8, objectId uint8) (di *DeviceIdentification, err error) {
+func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitID uint8, readDeviceIdCode uint8, objectId uint8) (di *DeviceIdentification, err error) {
 	var req *pdu
 	var res *pdu
 	var offset int
@@ -1254,7 +754,7 @@ func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitId uin
 
 	for {
 		req = &pdu{
-			unitId:       unitId,
+			unitID:       unitID,
 			functionCode: FCEncapsulatedInterface,
 			payload:      []byte{byte(MEIReadDeviceIdentification), readDeviceIdCode, nextObjId},
 		}
@@ -1348,8 +848,8 @@ func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitId uin
 // (ReadDeviceIdExtended); the device responds with all objects it implements, up to
 // its conformity level. Use this when you want a single, complete snapshot of
 // device identification without calling ReadDeviceIdentification multiple times.
-func (mc *ModbusClient) ReadAllDeviceIdentification(ctx context.Context, unitId uint8) (*DeviceIdentification, error) {
-	return mc.ReadDeviceIdentification(ctx, unitId, ReadDeviceIdExtended, 0x00)
+func (mc *ModbusClient) ReadAllDeviceIdentification(ctx context.Context, unitID uint8) (*DeviceIdentification, error) {
+	return mc.ReadDeviceIdentification(ctx, unitID, ReadDeviceIdExtended, 0x00)
 }
 
 // detectionProbe is one entry in the probe set used by HasUnitReadFunction.
@@ -1457,7 +957,7 @@ func allDetectionProbes() []detectionProbe {
 					return true
 				}
 				// Normal FC11: byte count (1) + data; spec has at least server ID + run indicator (2 bytes).
-				// Reject echo (which would be [unitId, 0x11], so byte count 1 and len 2).
+				// Reject echo (which would be [unitID, 0x11], so byte count 1 and len 2).
 				if res.functionCode != req.functionCode || len(res.payload) < 2 {
 					return false
 				}
@@ -1509,13 +1009,13 @@ func getProbeForFC(fc FunctionCode) (detectionProbe, bool) {
 
 // runOneProbe runs a single detection probe. Caller must hold mc.lock.
 // Returns (true, nil) on valid response, (false, nil) on timeout/invalid, (false, err) on context/transport error.
-func (mc *ModbusClient) runOneProbe(ctx context.Context, unitId uint8, p detectionProbe) (bool, error) {
+func (mc *ModbusClient) runOneProbe(ctx context.Context, unitID uint8, p detectionProbe) (bool, error) {
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
 	default:
 	}
-	req := &pdu{unitId: unitId, functionCode: p.fc, payload: p.payload}
+	req := &pdu{unitID: unitID, functionCode: p.fc, payload: p.payload}
 	res, err := mc.executeRequest(ctx, req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1530,24 +1030,24 @@ func (mc *ModbusClient) runOneProbe(ctx context.Context, unitId uint8, p detecti
 // the unit responded with a structurally valid Modbus response (normal or exception). Use after Open().
 // Only FCs that have a detection probe are supported: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20.
 // For an unsupported fc, returns (false, ErrUnexpectedParameters).
-func (mc *ModbusClient) HasUnitReadFunction(ctx context.Context, unitId uint8, fc FunctionCode) (bool, error) {
+func (mc *ModbusClient) HasUnitReadFunction(ctx context.Context, unitID uint8, fc FunctionCode) (bool, error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 	p, ok := getProbeForFC(fc)
 	if !ok {
 		return false, ErrUnexpectedParameters
 	}
-	return mc.runOneProbe(ctx, unitId, p)
+	return mc.runOneProbe(ctx, unitID, p)
 }
 
 // HasUnitIdentifyFunction reports whether the given unit supports Read Device Identification (FC43).
-// It is equivalent to HasUnitReadFunction(ctx, unitId, FCEncapsulatedInterface). Use after Open().
-func (mc *ModbusClient) HasUnitIdentifyFunction(ctx context.Context, unitId uint8) (bool, error) {
-	return mc.HasUnitReadFunction(ctx, unitId, FCEncapsulatedInterface)
+// It is equivalent to HasUnitReadFunction(ctx, unitID, FCEncapsulatedInterface). Use after Open().
+func (mc *ModbusClient) HasUnitIdentifyFunction(ctx context.Context, unitID uint8) (bool, error) {
+	return mc.HasUnitReadFunction(ctx, unitID, FCEncapsulatedInterface)
 }
 
 // Writes a single coil (function code 05).
-func (mc *ModbusClient) WriteCoil(ctx context.Context, unitId uint8, addr uint16, value bool) (err error) {
+func (mc *ModbusClient) WriteCoil(ctx context.Context, unitID uint8, addr uint16, value bool) (err error) {
 	var payload uint16
 
 	mc.lock.Lock()
@@ -1559,7 +1059,7 @@ func (mc *ModbusClient) WriteCoil(ctx context.Context, unitId uint8, addr uint16
 		payload = 0x0000
 	}
 
-	err = mc.writeCoil(ctx, unitId, addr, payload)
+	err = mc.writeCoil(ctx, unitID, addr, payload)
 
 	return
 }
@@ -1569,17 +1069,17 @@ func (mc *ModbusClient) WriteCoil(ctx context.Context, unitId uint8, addr uint16
 // This is a violation of the modbus spec and should almost never be necessary,
 // but a handful of vendors seem to be hiding various DO/coil control modes
 // behind it (e.g. toggle, interlock, delayed open/close, etc.).
-func (mc *ModbusClient) WriteCoilValue(ctx context.Context, unitId uint8, addr uint16, payload uint16) (err error) {
+func (mc *ModbusClient) WriteCoilValue(ctx context.Context, unitID uint8, addr uint16, payload uint16) (err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
-	err = mc.writeCoil(ctx, unitId, addr, payload)
+	err = mc.writeCoil(ctx, unitID, addr, payload)
 
 	return
 }
 
 // Writes multiple coils (function code 15).
-func (mc *ModbusClient) WriteCoils(ctx context.Context, unitId uint8, addr uint16, values []bool) (err error) {
+func (mc *ModbusClient) WriteCoils(ctx context.Context, unitID uint8, addr uint16, values []bool) (err error) {
 	var req *pdu
 	var res *pdu
 	var quantity uint16
@@ -1611,7 +1111,7 @@ func (mc *ModbusClient) WriteCoils(ctx context.Context, unitId uint8, addr uint1
 
 	// create and fill in the request object
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCWriteMultipleCoils,
 	}
 
@@ -1660,7 +1160,7 @@ func (mc *ModbusClient) WriteCoils(ctx context.Context, unitId uint8, addr uint1
 }
 
 // Writes a single 16-bit register (function code 06).
-func (mc *ModbusClient) WriteRegister(ctx context.Context, unitId uint8, addr uint16, value uint16) (err error) {
+func (mc *ModbusClient) WriteRegister(ctx context.Context, unitID uint8, addr uint16, value uint16) (err error) {
 	var req *pdu
 	var res *pdu
 
@@ -1669,14 +1169,14 @@ func (mc *ModbusClient) WriteRegister(ctx context.Context, unitId uint8, addr ui
 
 	// create and fill in the request object
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCWriteSingleRegister,
 	}
 
 	// register address
 	req.payload = uint16ToBytes(BigEndian, addr)
 	// register value
-	req.payload = append(req.payload, uint16ToBytes(mc.endianness, value)...)
+	req.payload = append(req.payload, uint16ToBytes(BigEndian, value)...)
 
 	// run the request across the transport and wait for a response
 	res, err = mc.executeRequest(ctx, req)
@@ -1692,7 +1192,7 @@ func (mc *ModbusClient) WriteRegister(ctx context.Context, unitId uint8, addr ui
 			// bytes 1-2 should be the register address
 			bytesToUint16(BigEndian, res.payload[0:2]) != addr ||
 			// bytes 3-4 should be the value
-			bytesToUint16(mc.endianness, res.payload[2:4]) != value {
+			bytesToUint16(BigEndian, res.payload[2:4]) != value {
 			err = ErrProtocolError
 			return
 		}
@@ -1714,7 +1214,7 @@ func (mc *ModbusClient) WriteRegister(ctx context.Context, unitId uint8, addr ui
 }
 
 // Writes multiple 16-bit registers (function code 16).
-func (mc *ModbusClient) WriteRegisters(ctx context.Context, unitId uint8, addr uint16, values []uint16) (err error) {
+func (mc *ModbusClient) WriteRegisters(ctx context.Context, unitID uint8, addr uint16, values []uint16) (err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
@@ -1722,347 +1222,37 @@ func (mc *ModbusClient) WriteRegisters(ctx context.Context, unitId uint8, addr u
 
 	// turn registers to bytes
 	for _, value := range values {
-		payload = append(payload, uint16ToBytes(mc.endianness, value)...)
+		payload = append(payload, uint16ToBytes(BigEndian, value)...)
 	}
 
-	err = mc.writeRegisters(ctx, unitId, addr, payload)
+	err = mc.writeRegisters(ctx, unitID, addr, payload)
 
 	return
 }
 
-// Writes multiple 32-bit registers.
-func (mc *ModbusClient) WriteUint32s(ctx context.Context, unitId uint8, addr uint16, values []uint32) (err error) {
+// WriteRawBytes is a transport convenience helper: it writes raw bytes into
+// holding registers (FC16). No interpretation or reordering is applied. For
+// typed values use WriteWithCodec or WriteWithRuntimeCodec. Odd-length slices
+// are zero-padded to the next register boundary (implicit register-boundary handling).
+func (mc *ModbusClient) WriteRawBytes(ctx context.Context, unitID uint8, addr uint16, values []byte) (err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 
-	var payload []byte
-
-	// turn registers to bytes
-	for _, value := range values {
-		payload = append(payload, uint32ToBytes(mc.endianness, mc.wordOrder, value)...)
-	}
-
-	err = mc.writeRegisters(ctx, unitId, addr, payload)
+	err = mc.writeBytes(ctx, unitID, addr, values)
 
 	return
-}
-
-// Writes a single 32-bit register.
-func (mc *ModbusClient) WriteUint32(ctx context.Context, unitId uint8, addr uint16, value uint32) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	err = mc.writeRegisters(ctx, unitId, addr, uint32ToBytes(mc.endianness, mc.wordOrder, value))
-
-	return
-}
-
-// Writes multiple 32-bit float registers.
-func (mc *ModbusClient) WriteFloat32s(ctx context.Context, unitId uint8, addr uint16, values []float32) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var payload []byte
-
-	// turn registers to bytes
-	for _, value := range values {
-		payload = append(payload, float32ToBytes(mc.endianness, mc.wordOrder, value)...)
-	}
-
-	err = mc.writeRegisters(ctx, unitId, addr, payload)
-
-	return
-}
-
-// Writes a single 32-bit float register.
-func (mc *ModbusClient) WriteFloat32(ctx context.Context, unitId uint8, addr uint16, value float32) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	err = mc.writeRegisters(ctx, unitId, addr, float32ToBytes(mc.endianness, mc.wordOrder, value))
-
-	return
-}
-
-// Writes multiple 64-bit registers.
-func (mc *ModbusClient) WriteUint64s(ctx context.Context, unitId uint8, addr uint16, values []uint64) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var payload []byte
-
-	// turn registers to bytes
-	for _, value := range values {
-		payload = append(payload, uint64ToBytes(mc.endianness, mc.wordOrder, value)...)
-	}
-
-	err = mc.writeRegisters(ctx, unitId, addr, payload)
-
-	return
-}
-
-// Writes a single 64-bit register.
-func (mc *ModbusClient) WriteUint64(ctx context.Context, unitId uint8, addr uint16, value uint64) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	err = mc.writeRegisters(ctx, unitId, addr, uint64ToBytes(mc.endianness, mc.wordOrder, value))
-
-	return
-}
-
-// Writes multiple 64-bit float registers.
-func (mc *ModbusClient) WriteFloat64s(ctx context.Context, unitId uint8, addr uint16, values []float64) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	var payload []byte
-
-	// turn registers to bytes
-	for _, value := range values {
-		payload = append(payload, float64ToBytes(mc.endianness, mc.wordOrder, value)...)
-	}
-
-	err = mc.writeRegisters(ctx, unitId, addr, payload)
-
-	return
-}
-
-// Writes a single 64-bit float register.
-func (mc *ModbusClient) WriteFloat64(ctx context.Context, unitId uint8, addr uint16, value float64) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	err = mc.writeRegisters(ctx, unitId, addr, float64ToBytes(mc.endianness, mc.wordOrder, value))
-
-	return
-}
-
-// Writes the given slice of bytes to 16-bit registers starting at addr.
-// A per-register byteswap is performed if endianness is set to LittleEndian.
-// Odd byte quantities are padded with a null byte to fall on 16-bit register boundaries.
-func (mc *ModbusClient) WriteBytes(ctx context.Context, unitId uint8, addr uint16, values []byte) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	err = mc.writeBytes(ctx, unitId, addr, values, true)
-
-	return
-}
-
-// Writes the given slice of bytes to 16-bit registers starting at addr.
-// No byte or word reordering is performed: bytes are pushed to the wire as-is,
-// allowing the caller to handle encoding/endianness/word order manually.
-// Odd byte quantities are padded with a null byte to fall on 16-bit register boundaries.
-func (mc *ModbusClient) WriteRawBytes(ctx context.Context, unitId uint8, addr uint16, values []byte) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	err = mc.writeBytes(ctx, unitId, addr, values, false)
-
-	return
-}
-
-// WriteInt16 writes a single 16-bit signed register (FC06). Encoding is controlled by SetEncoding.
-func (mc *ModbusClient) WriteInt16(ctx context.Context, unitId uint8, addr uint16, value int16) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	err = mc.writeRegisters(ctx, unitId, addr, uint16ToBytes(mc.endianness, uint16(value)))
-	return
-}
-
-// WriteInt16s writes multiple 16-bit signed registers (FC16). Encoding is controlled by SetEncoding.
-func (mc *ModbusClient) WriteInt16s(ctx context.Context, unitId uint8, addr uint16, values []int16) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	var payload []byte
-	for _, v := range values {
-		payload = append(payload, uint16ToBytes(mc.endianness, uint16(v))...)
-	}
-	if len(payload) == 0 {
-		return ErrUnexpectedParameters
-	}
-	return mc.writeRegisters(ctx, unitId, addr, payload)
-}
-
-// WriteInt32 writes a single 32-bit signed value to two consecutive registers (FC16). Encoding is controlled by SetEncoding.
-func (mc *ModbusClient) WriteInt32(ctx context.Context, unitId uint8, addr uint16, value int32) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	err = mc.writeRegisters(ctx, unitId, addr, uint32ToBytes(mc.endianness, mc.wordOrder, uint32(value)))
-	return
-}
-
-// WriteInt32s writes multiple 32-bit signed values (FC16). Each value occupies 2 registers. Encoding is controlled by SetEncoding.
-func (mc *ModbusClient) WriteInt32s(ctx context.Context, unitId uint8, addr uint16, values []int32) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	var payload []byte
-	for _, v := range values {
-		payload = append(payload, uint32ToBytes(mc.endianness, mc.wordOrder, uint32(v))...)
-	}
-	if len(payload) == 0 {
-		return ErrUnexpectedParameters
-	}
-	return mc.writeRegisters(ctx, unitId, addr, payload)
-}
-
-// WriteInt48 writes a single 48-bit signed value to three consecutive registers (FC16). Encoding is controlled by SetEncoding.
-func (mc *ModbusClient) WriteInt48(ctx context.Context, unitId uint8, addr uint16, value int64) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	err = mc.writeRegisters(ctx, unitId, addr, uint48ToBytes(mc.endianness, mc.wordOrder, uint64(value)))
-	return
-}
-
-// WriteInt48s writes multiple 48-bit signed values (FC16). Each value occupies 3 registers. Encoding is controlled by SetEncoding.
-func (mc *ModbusClient) WriteInt48s(ctx context.Context, unitId uint8, addr uint16, values []int64) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	var payload []byte
-	for _, v := range values {
-		payload = append(payload, uint48ToBytes(mc.endianness, mc.wordOrder, uint64(v))...)
-	}
-	if len(payload) == 0 {
-		return ErrUnexpectedParameters
-	}
-	return mc.writeRegisters(ctx, unitId, addr, payload)
-}
-
-// WriteInt64 writes a single 64-bit signed value to four consecutive registers (FC16). Encoding is controlled by SetEncoding.
-func (mc *ModbusClient) WriteInt64(ctx context.Context, unitId uint8, addr uint16, value int64) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	err = mc.writeRegisters(ctx, unitId, addr, uint64ToBytes(mc.endianness, mc.wordOrder, uint64(value)))
-	return
-}
-
-// WriteInt64s writes multiple 64-bit signed values (FC16). Each value occupies 4 registers. Encoding is controlled by SetEncoding.
-func (mc *ModbusClient) WriteInt64s(ctx context.Context, unitId uint8, addr uint16, values []int64) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	var payload []byte
-	for _, v := range values {
-		payload = append(payload, uint64ToBytes(mc.endianness, mc.wordOrder, uint64(v))...)
-	}
-	if len(payload) == 0 {
-		return ErrUnexpectedParameters
-	}
-	return mc.writeRegisters(ctx, unitId, addr, payload)
-}
-
-// WriteAscii writes a string as ASCII to registers (FC16). High byte of each register = first character, low = second.
-// Trailing spaces are not written; odd-length strings are padded with one zero byte. Same convention as ReadAscii.
-func (mc *ModbusClient) WriteAscii(ctx context.Context, unitId uint8, addr uint16, s string) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	s = strings.TrimRight(s, " ")
-	if len(s) == 0 {
-		return ErrUnexpectedParameters
-	}
-	return mc.writeRegisters(ctx, unitId, addr, asciiToBytes(s))
-}
-
-// WriteAsciiFixed writes a fixed-width ASCII string to registers (FC16) without trimming. Same byte layout as ReadAsciiFixed.
-// Odd-length strings are padded with one zero byte.
-func (mc *ModbusClient) WriteAsciiFixed(ctx context.Context, unitId uint8, addr uint16, s string) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	if len(s) == 0 {
-		return ErrUnexpectedParameters
-	}
-	return mc.writeRegisters(ctx, unitId, addr, asciiToBytes(s))
-}
-
-// WriteAsciiReverse writes a string as ASCII with byte order reversed per 16-bit word (FC16). Same convention as ReadAsciiReverse.
-func (mc *ModbusClient) WriteAsciiReverse(ctx context.Context, unitId uint8, addr uint16, s string) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	if len(s) == 0 {
-		return ErrUnexpectedParameters
-	}
-	return mc.writeRegisters(ctx, unitId, addr, asciiToBytesReverse(s))
-}
-
-// WriteBCD writes a string of decimal digits (0-9) as BCD, one byte per digit (FC16). Returns an error if s contains non-digits.
-func (mc *ModbusClient) WriteBCD(ctx context.Context, unitId uint8, addr uint16, s string) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	b, err := bcdToBytes(s)
-	if err != nil {
-		return err
-	}
-	if len(b) == 0 {
-		return ErrUnexpectedParameters
-	}
-	return mc.writeRegisters(ctx, unitId, addr, b)
-}
-
-// WritePackedBCD writes a string of decimal digits (0-9) as packed BCD, two digits per byte (FC16). Returns an error if s contains non-digits.
-// Odd byte count is padded with a zero nibble so the payload is register-aligned.
-func (mc *ModbusClient) WritePackedBCD(ctx context.Context, unitId uint8, addr uint16, s string) (err error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	b, err := packedBCDToBytes(s)
-	if err != nil {
-		return err
-	}
-	if len(b) == 0 {
-		return ErrUnexpectedParameters
-	}
-	if len(b)%2 == 1 {
-		b = append(b, 0)
-	}
-	return mc.writeRegisters(ctx, unitId, addr, b)
-}
-
-// WriteUint8s writes quantity bytes to registers (FC16) in raw wire order. No byte reordering. quantity must be greater than zero.
-func (mc *ModbusClient) WriteUint8s(ctx context.Context, unitId uint8, addr uint16, values []uint8) (err error) {
-	if len(values) == 0 {
-		return ErrUnexpectedParameters
-	}
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	return mc.writeBytes(ctx, unitId, addr, values, false)
-}
-
-// WriteIPAddr writes 4 bytes as an IPv4 address to 2 registers (FC16) in raw wire order.
-func (mc *ModbusClient) WriteIPAddr(ctx context.Context, unitId uint8, addr uint16, ip net.IP) (err error) {
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return ErrUnexpectedParameters
-	}
-	return mc.WriteUint8s(ctx, unitId, addr, ip4)
-}
-
-// WriteIPv6Addr writes 16 bytes as an IPv6 address to 8 registers (FC16) in raw wire order.
-func (mc *ModbusClient) WriteIPv6Addr(ctx context.Context, unitId uint8, addr uint16, ip net.IP) (err error) {
-	ip16 := ip.To16()
-	if ip16 == nil {
-		return ErrUnexpectedParameters
-	}
-	return mc.WriteUint8s(ctx, unitId, addr, ip16)
-}
-
-// WriteEUI48 writes 6 bytes as a MAC/EUI-48 address to 3 registers (FC16) in raw wire order.
-func (mc *ModbusClient) WriteEUI48(ctx context.Context, unitId uint8, addr uint16, mac net.HardwareAddr) (err error) {
-	if mac == nil || len(mac) != 6 {
-		return ErrUnexpectedParameters
-	}
-	return mc.WriteUint8s(ctx, unitId, addr, mac)
 }
 
 // Performs a combined read/write in a single Modbus transaction (function code 23).
 // The write is executed on the server before the read.
-// writeValues are encoded using the client's current endianness setting.
-// The returned slice contains the registers read, also decoded with the
-// current endianness setting.
+// writeValues are encoded as big-endian (wire order).
+// The returned slice contains the registers read, also as big-endian.
 //
 // Limits (per spec):
 //
 //	readQty:  1–125 (0x7D)
 //	writeQty: 1–121 (0x79), implied by len(writeValues)
-func (mc *ModbusClient) ReadWriteMultipleRegisters(ctx context.Context, unitId uint8, readAddr, readQty, writeAddr uint16, writeValues []uint16) (values []uint16, err error) {
+func (mc *ModbusClient) ReadWriteMultipleRegisters(ctx context.Context, unitID uint8, readAddr, readQty, writeAddr uint16, writeValues []uint16) (values []uint16, err error) {
 	var req *pdu
 	var res *pdu
 	var writeQty uint16
@@ -2104,7 +1294,7 @@ func (mc *ModbusClient) ReadWriteMultipleRegisters(ctx context.Context, unitId u
 	}
 
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCReadWriteMultipleRegs,
 	}
 
@@ -2120,7 +1310,7 @@ func (mc *ModbusClient) ReadWriteMultipleRegisters(ctx context.Context, unitId u
 	req.payload = append(req.payload, byte(writeQty*2))
 	// write register values
 	for _, v := range writeValues {
-		req.payload = append(req.payload, uint16ToBytes(mc.endianness, v)...)
+		req.payload = append(req.payload, uint16ToBytes(BigEndian, v)...)
 	}
 
 	res, err = mc.executeRequest(ctx, req)
@@ -2139,7 +1329,7 @@ func (mc *ModbusClient) ReadWriteMultipleRegisters(ctx context.Context, unitId u
 			err = ErrProtocolError
 			return
 		}
-		values = bytesToUint16s(mc.endianness, res.payload[1:])
+		values = bytesToUint16s(BigEndian, res.payload[1:])
 
 	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
@@ -2161,7 +1351,7 @@ func (mc *ModbusClient) ReadWriteMultipleRegisters(ctx context.Context, unitId u
 // as big-endian uint16 values exactly as they arrive from the device.
 // The FIFO queue may contain at most 31 registers; an exception response is
 // returned by the server if the count exceeds 31.
-func (mc *ModbusClient) ReadFIFOQueue(ctx context.Context, unitId uint8, addr uint16) (values []uint16, err error) {
+func (mc *ModbusClient) ReadFIFOQueue(ctx context.Context, unitID uint8, addr uint16) (values []uint16, err error) {
 	var req *pdu
 	var res *pdu
 	var byteCount uint16
@@ -2171,7 +1361,7 @@ func (mc *ModbusClient) ReadFIFOQueue(ctx context.Context, unitId uint8, addr ui
 	defer mc.lock.Unlock()
 
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCReadFIFOQueue,
 		payload:      uint16ToBytes(BigEndian, addr),
 	}
@@ -2226,7 +1416,7 @@ func (mc *ModbusClient) ReadFIFOQueue(ctx context.Context, unitId uint8, addr ui
 // diagnostic (use DiagnosticSubFunction constants). data is optional request
 // data (sub-function-specific; use nil or empty for none). The response echoes
 // the sub-function and returns sub-function-specific data.
-func (mc *ModbusClient) Diagnostics(ctx context.Context, unitId uint8, subFunction DiagnosticSubFunction, data []byte) (dr *DiagnosticResponse, err error) {
+func (mc *ModbusClient) Diagnostics(ctx context.Context, unitID uint8, subFunction DiagnosticSubFunction, data []byte) (dr *DiagnosticResponse, err error) {
 	var req *pdu
 	var res *pdu
 
@@ -2234,7 +1424,7 @@ func (mc *ModbusClient) Diagnostics(ctx context.Context, unitId uint8, subFuncti
 	defer mc.lock.Unlock()
 
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCDiagnostics,
 		payload:      uint16ToBytes(BigEndian, uint16(subFunction)),
 	}
@@ -2272,7 +1462,7 @@ func (mc *ModbusClient) Diagnostics(ctx context.Context, unitId uint8, subFuncti
 
 // ReportServerId requests the Report Server ID (FC 0x11). The response contains
 // device-specific server ID, run indicator status, and optional additional data.
-func (mc *ModbusClient) ReportServerId(ctx context.Context, unitId uint8) (rs *ReportServerIdResponse, err error) {
+func (mc *ModbusClient) ReportServerId(ctx context.Context, unitID uint8) (rs *ReportServerIdResponse, err error) {
 	var req *pdu
 	var res *pdu
 
@@ -2280,7 +1470,7 @@ func (mc *ModbusClient) ReportServerId(ctx context.Context, unitId uint8) (rs *R
 	defer mc.lock.Unlock()
 
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCReportServerID,
 	}
 
@@ -2327,7 +1517,7 @@ func (mc *ModbusClient) ReportServerId(ctx context.Context, unitId uint8) (rs *R
 //	FileNumber   must be 1–0xFFFF
 //	RecordNumber must be 0–0x270F (decimal 0–9999)
 //	Total request byte count must not exceed 0xF5 (at most 35 sub-requests)
-func (mc *ModbusClient) ReadFileRecords(ctx context.Context, unitId uint8, requests []FileRecordRequest) (records [][]uint16, err error) {
+func (mc *ModbusClient) ReadFileRecords(ctx context.Context, unitID uint8, requests []FileRecordRequest) (records [][]uint16, err error) {
 	var req *pdu
 	var res *pdu
 
@@ -2369,7 +1559,7 @@ func (mc *ModbusClient) ReadFileRecords(ctx context.Context, unitId uint8, reque
 
 	// build the request PDU
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCReadFileRecord,
 		payload:      []byte{byte(byteCount)},
 	}
@@ -2464,7 +1654,7 @@ func (mc *ModbusClient) ReadFileRecords(ctx context.Context, unitId uint8, reque
 //	FileNumber   must be 1–0xFFFF
 //	RecordNumber must be 0–0x270F (decimal 0–9999)
 //	Total request data length must be in the range 0x09–0xFB
-func (mc *ModbusClient) WriteFileRecords(ctx context.Context, unitId uint8, records []FileRecord) (err error) {
+func (mc *ModbusClient) WriteFileRecords(ctx context.Context, unitID uint8, records []FileRecord) (err error) {
 	var req *pdu
 	var res *pdu
 
@@ -2509,7 +1699,7 @@ func (mc *ModbusClient) WriteFileRecords(ctx context.Context, unitId uint8, reco
 
 	// build the request PDU
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCWriteFileRecord,
 		payload:      []byte{byte(reqDataLen)},
 	}
@@ -2568,57 +1758,31 @@ func (mc *ModbusClient) WriteFileRecords(ctx context.Context, unitId uint8, reco
 }
 
 /*** unexported methods ***/
-// Reads one or multiple 16-bit registers (function code 03 or 04) as bytes.
-func (mc *ModbusClient) readBytes(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType, observeEndianness bool) (values []byte, err error) {
-	// read enough registers to get the requested number of bytes
-	// (2 bytes per reg)
+// Reads one or multiple 16-bit registers (function code 03 or 04) as bytes (wire order, no swap).
+func (mc *ModbusClient) readBytes(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) (values []byte, err error) {
 	var regCount = (quantity / 2) + (quantity % 2)
-
-	values, err = mc.readRegisters(ctx, unitId, addr, regCount, regType)
+	values, err = mc.readRegisters(ctx, unitID, addr, regCount, regType)
 	if err != nil {
 		return
 	}
-
-	// swap bytes on register boundaries if requested by the caller
-	// and endianness is set to little endian
-	if observeEndianness && mc.endianness == LittleEndian {
-		for i := 0; i < len(values); i += 2 {
-			values[i], values[i+1] = values[i+1], values[i]
-		}
-	}
-
-	// pop the last byte on odd quantities
 	if quantity%2 == 1 {
 		values = values[0 : len(values)-1]
 	}
-
 	return
 }
 
-// Writes the given slice of bytes to 16-bit registers starting at addr.
-func (mc *ModbusClient) writeBytes(ctx context.Context, unitId uint8, addr uint16, values []byte, observeEndianness bool) (err error) {
-	// pad odd quantities to make for full registers
+// Writes the given slice of bytes to 16-bit registers (wire order, no swap).
+func (mc *ModbusClient) writeBytes(ctx context.Context, unitID uint8, addr uint16, values []byte) (err error) {
 	if len(values)%2 == 1 {
 		values = append(values, 0x00)
 	}
-
-	// swap bytes on register boundaries if requested by the caller
-	// and endianness is set to little endian
-	if observeEndianness && mc.endianness == LittleEndian {
-		for i := 0; i < len(values); i += 2 {
-			values[i], values[i+1] = values[i+1], values[i]
-		}
-	}
-
-	err = mc.writeRegisters(ctx, unitId, addr, values)
-
-	return
+	return mc.writeRegisters(ctx, unitID, addr, values)
 }
 
 // Reads and returns quantity booleans.
 // Digital inputs are read if di is true, otherwise coils are read.
 // Callers must hold mc.lock before invoking this method.
-func (mc *ModbusClient) readBools(ctx context.Context, unitId uint8, addr uint16, quantity uint16, di bool) (values []bool, err error) {
+func (mc *ModbusClient) readBools(ctx context.Context, unitID uint8, addr uint16, quantity uint16, di bool) (values []bool, err error) {
 	var req *pdu
 	var res *pdu
 	var expectedLen int
@@ -2643,7 +1807,7 @@ func (mc *ModbusClient) readBools(ctx context.Context, unitId uint8, addr uint16
 
 	// create and fill in the request object
 	req = &pdu{
-		unitId: unitId,
+		unitID: unitID,
 	}
 
 	if di {
@@ -2705,13 +1869,13 @@ func (mc *ModbusClient) readBools(ctx context.Context, unitId uint8, addr uint16
 
 // Reads and returns quantity registers of type regType, as bytes.
 // Callers must hold mc.lock before invoking this method.
-func (mc *ModbusClient) readRegisters(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (bytes []byte, err error) {
+func (mc *ModbusClient) readRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) (bytes []byte, err error) {
 	var req *pdu
 	var res *pdu
 
 	// create and fill in the request object
 	req = &pdu{
-		unitId: unitId,
+		unitID: unitID,
 	}
 
 	switch regType {
@@ -2791,13 +1955,13 @@ func (mc *ModbusClient) readRegisters(ctx context.Context, unitId uint8, addr ui
 }
 
 // Writes a single coil (function code 05) using the specified payload.
-func (mc *ModbusClient) writeCoil(ctx context.Context, unitId uint8, addr uint16, payload uint16) (err error) {
+func (mc *ModbusClient) writeCoil(ctx context.Context, unitID uint8, addr uint16, payload uint16) (err error) {
 	var req *pdu
 	var res *pdu
 
 	// create and fill in the request object
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCWriteSingleCoil,
 	}
 
@@ -2844,7 +2008,7 @@ func (mc *ModbusClient) writeCoil(ctx context.Context, unitId uint8, addr uint16
 // Writes multiple registers starting from base address addr.
 // Register values are passed as bytes, each value being exactly 2 bytes.
 // Callers must hold mc.lock before invoking this method.
-func (mc *ModbusClient) writeRegisters(ctx context.Context, unitId uint8, addr uint16, values []byte) (err error) {
+func (mc *ModbusClient) writeRegisters(ctx context.Context, unitID uint8, addr uint16, values []byte) (err error) {
 	var req *pdu
 	var res *pdu
 	var payloadLength uint16
@@ -2873,7 +2037,7 @@ func (mc *ModbusClient) writeRegisters(ctx context.Context, unitId uint8, addr u
 
 	// create and fill in the request object
 	req = &pdu{
-		unitId:       unitId,
+		unitID:       unitID,
 		functionCode: FCWriteMultipleRegisters,
 	}
 
@@ -2921,6 +2085,27 @@ func (mc *ModbusClient) writeRegisters(ctx context.Context, unitId uint8, addr u
 	return
 }
 
+// readRegistersForCodec reads count registers and returns them as []uint16 in wire order.
+// Used by ReadWithCodec and ReadWithRuntimeCodec so lock/read/convert logic lives in one place.
+func (mc *ModbusClient) readRegistersForCodec(ctx context.Context, unitID uint8, addr uint16, count uint16, regType RegType) ([]uint16, error) {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+	mbPayload, err := mc.readRegisters(ctx, unitID, addr, count, regType)
+	if err != nil {
+		return nil, err
+	}
+	return bytesToUint16s(BigEndian, mbPayload), nil
+}
+
+// writeRegistersForCodec writes regs to the given address in wire order.
+// Used by WriteWithCodec and WriteWithRuntimeCodec so lock/write logic lives in one place.
+func (mc *ModbusClient) writeRegistersForCodec(ctx context.Context, unitID uint8, addr uint16, regs []uint16) error {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+	payload := uint16sToBytes(BigEndian, regs)
+	return mc.writeRegisters(ctx, unitID, addr, payload)
+}
+
 // executeRequest sends req and returns the response, transparently applying the
 // configured RetryPolicy and reporting outcomes to ClientMetrics.
 //
@@ -2936,14 +2121,14 @@ func (mc *ModbusClient) executeRequest(ctx context.Context, req *pdu) (res *pdu,
 	start := time.Now()
 
 	if metrics != nil {
-		metrics.OnRequest(req.unitId, req.functionCode)
+		metrics.OnRequest(req.unitID, req.functionCode)
 	}
 
 	for attempt := 0; ; attempt++ {
 		res, err = mc.executeOnce(ctx, req)
 		if err == nil {
 			if metrics != nil {
-				metrics.OnResponse(req.unitId, req.functionCode, time.Since(start))
+				metrics.OnResponse(req.unitID, req.functionCode, time.Since(start))
 			}
 			return
 		}
@@ -2983,7 +2168,7 @@ func (mc *ModbusClient) executeRequest(ctx context.Context, req *pdu) (res *pdu,
 				mc.lock.Lock()
 				err = ctx.Err()
 				if metrics != nil {
-					metrics.OnTimeout(req.unitId, req.functionCode, time.Since(start))
+					metrics.OnTimeout(req.unitID, req.functionCode, time.Since(start))
 				}
 				return
 			case <-timer.C:
@@ -3005,10 +2190,10 @@ func (mc *ModbusClient) executeRequest(ctx context.Context, req *pdu) (res *pdu,
 
 	// report the final error
 	if metrics != nil {
-		if errors.Is(err, ErrRequestTimedOut) {
-			metrics.OnTimeout(req.unitId, req.functionCode, time.Since(start))
+		if errors.Is(err, ErrRequestTimedOut) || errors.Is(err, context.DeadlineExceeded) {
+			metrics.OnTimeout(req.unitID, req.functionCode, time.Since(start))
 		} else {
-			metrics.OnError(req.unitId, req.functionCode, time.Since(start), err)
+			metrics.OnError(req.unitID, req.functionCode, time.Since(start), err)
 		}
 	}
 
@@ -3019,6 +2204,9 @@ func (mc *ModbusClient) executeRequest(ctx context.Context, req *pdu) (res *pdu,
 // For pool transports the main lock is temporarily released during I/O.
 // Callers must hold mc.lock on entry; the lock is guaranteed held on return.
 func (mc *ModbusClient) executeOnce(ctx context.Context, req *pdu) (res *pdu, err error) {
+	if mc.pool == nil && mc.transport == nil {
+		return nil, ErrClientNotOpen
+	}
 	if mc.pool != nil {
 		// release the main lock for the duration of network I/O so that
 		// goroutines sharing this client can use different pool connections concurrently.
@@ -3040,13 +2228,13 @@ func (mc *ModbusClient) executeOnce(ctx context.Context, req *pdu) (res *pdu, er
 	mc.lastResponseTransactionID = res.responseTransactionID
 
 	// make sure the source unit id matches that of the request
-	if (res.functionCode&0x80) == 0x00 && res.unitId != req.unitId {
+	if (res.functionCode&0x80) == 0x00 && res.unitID != req.unitID {
 		err = ErrBadUnitId
 		return
 	}
 	// accept errors from gateway devices (using special unit id #255)
 	if (res.functionCode&0x80) == 0x80 &&
-		(res.unitId != req.unitId && res.unitId != 0xff) {
+		(res.unitID != req.unitID && res.unitID != 0xff) {
 		err = ErrBadUnitId
 		return
 	}

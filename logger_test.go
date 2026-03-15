@@ -33,3 +33,12 @@ func TestServerCustomLogger(t *testing.T) {
 		t.Errorf("unexpected logger output '%s'", buf.String())
 	}
 }
+
+func TestNopLogger(t *testing.T) {
+	l := NopLogger()
+	// All methods should be no-ops and not panic.
+	l.Debugf("")
+	l.Infof("")
+	l.Warnf("")
+	l.Errorf("")
+}

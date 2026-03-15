@@ -7,8 +7,10 @@ help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 BIN_DIR := bin # Output directory for generated binaries
-# Use all packages except /examples (multiple main programs in one folder)
+# All packages except /examples (for lint/vet)
 PKGS := $(shell go list ./... | grep -v '/examples$$' | sed 's,^github.com/otfabric/modbus,.,')
+# Core library only: tests and coverage run on . only (exclude cmd and examples)
+TEST_PKGS := .
 
 all: build ## Default target: build cmd + examples apps
 
@@ -46,13 +48,13 @@ vet: ## Run go vet on project packages
 	@echo "Running go vet on packages: $(PKGS)"
 	@go vet $(PKGS)
 
-test: ## Run all tests on project packages
-	@echo "Running tests on packages: $(PKGS)"
-	@go test $(PKGS)
+test: ## Run tests on core library only
+	@echo "Running tests on packages: $(TEST_PKGS)"
+	@go test $(TEST_PKGS)
 
-coverage: ## Run tests with coverage (writes coverage.out)
+coverage: ## Run tests with coverage on core library only (writes coverage.out)
 	@echo "Running coverage"
-	@go test -count=1 -race -coverprofile=coverage.out -covermode=atomic ./...
+	@go test -count=1 -race -coverprofile=coverage.out -covermode=atomic $(TEST_PKGS)
 
 cover: coverage ## Open coverage report in browser
 	@echo "Opening coverage report"

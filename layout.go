@@ -93,20 +93,26 @@ var (
 	Layout16_12 = MustNewRegisterLayout(1, 1, 2)
 )
 
-// 32-bit (2 registers).
+// 32-bit (2 registers). Full set: 4321 (big-endian), 3412 (byte-swap), 2143 (word-swap), 1234 (little-endian).
 var (
 	Layout32_4321 = MustNewRegisterLayout(2, 4, 3, 2, 1)
+	Layout32_3412 = MustNewRegisterLayout(2, 3, 4, 1, 2)
 	Layout32_2143 = MustNewRegisterLayout(2, 2, 1, 4, 3)
+	Layout32_1234 = MustNewRegisterLayout(2, 1, 2, 3, 4)
 )
 
-// 48-bit (3 registers).
+// 48-bit (3 registers). Full set: 654321, 563412, 214365, 123456.
 var (
 	Layout48_654321 = MustNewRegisterLayout(3, 6, 5, 4, 3, 2, 1)
+	Layout48_563412 = MustNewRegisterLayout(3, 5, 6, 3, 4, 1, 2)
 	Layout48_214365 = MustNewRegisterLayout(3, 2, 1, 4, 3, 6, 5)
+	Layout48_123456 = MustNewRegisterLayout(3, 1, 2, 3, 4, 5, 6)
 )
 
-// 64-bit (4 registers).
+// 64-bit (4 registers). Full set: 87654321, 78563412, 21436587, 12345678.
 var (
 	Layout64_87654321 = MustNewRegisterLayout(4, 8, 7, 6, 5, 4, 3, 2, 1)
+	Layout64_78563412 = MustNewRegisterLayout(4, 7, 8, 5, 6, 3, 4, 1, 2)
 	Layout64_21436587 = MustNewRegisterLayout(4, 2, 1, 4, 3, 6, 5, 8, 7)
+	Layout64_12345678 = MustNewRegisterLayout(4, 1, 2, 3, 4, 5, 6, 7, 8)
 )

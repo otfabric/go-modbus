@@ -3,6 +3,7 @@ package modbus
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 )
@@ -38,6 +39,8 @@ func bytesToUint16(endianness Endianness, in []byte) (out uint16) {
 	return
 }
 
+// bytesToUint16s converts bytes to uint16s in the given byte order. len(in) must be even;
+// otherwise the final slice index would be out of range (callers must ensure aligned input).
 func bytesToUint16s(endianness Endianness, in []byte) (out []uint16) {
 	for i := 0; i < len(in); i += 2 {
 		out = append(out, bytesToUint16(endianness, in[i:i+2]))
@@ -436,6 +439,85 @@ func packedBCDToBytes(s string) ([]byte, error) {
 			lo = s[i+1] - '0'
 		}
 		out[i/2] = (hi << 4) | lo
+	}
+	return out, nil
+}
+
+// bytesToSignedPackedBCD decodes packed BCD with trailing-nibble sign: last nibble 0xC/0xD/0xF = negative.
+// Returns a signed digit string (e.g. "-1234" or "1234"). Magnitude uses all nibbles except the sign nibble when negative.
+func bytesToSignedPackedBCD(in []byte) (string, error) {
+	if len(in) == 0 {
+		return "", nil
+	}
+	lastByte := in[len(in)-1]
+	lastNibble := lastByte & 0x0f
+	negative := lastNibble == 0x0c || lastNibble == 0x0d || lastNibble == 0x0f
+	var sb strings.Builder
+	for i, b := range in {
+		hi, lo := b>>4, b&0x0f
+		if hi > 9 {
+			return "", fmt.Errorf("modbus: invalid signed packed BCD nibble at byte %d high: %d", i, hi)
+		}
+		sb.WriteByte('0' + hi)
+		isLastNibble := i == len(in)-1 && negative
+		if !isLastNibble {
+			if lo > 9 {
+				return "", fmt.Errorf("modbus: invalid signed packed BCD nibble at byte %d low: %d", i, lo)
+			}
+			sb.WriteByte('0' + lo)
+		} else if lo != 0x0c && lo != 0x0d && lo != 0x0f {
+			// Positive: last nibble is a digit
+			if lo > 9 {
+				return "", fmt.Errorf("modbus: invalid signed packed BCD nibble at byte %d low: %d", i, lo)
+			}
+			sb.WriteByte('0' + lo)
+		}
+	}
+	s := sb.String()
+	s = strings.TrimLeft(s, "0")
+	if s == "" {
+		s = "0"
+	}
+	if negative {
+		return "-" + s, nil
+	}
+	return s, nil
+}
+
+// signedPackedBCDToBytes encodes a signed digit string (optional leading "-") as packed BCD with trailing sign nibble.
+// totalNibbles includes the sign nibble: negative uses (totalNibbles-1) digits + 0xC; positive uses all totalNibbles as digits.
+func signedPackedBCDToBytes(s string, totalNibbles int) ([]byte, error) {
+	negative := strings.HasPrefix(s, "-")
+	if negative {
+		s = strings.TrimPrefix(s, "-")
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return nil, errBCDDigit
+		}
+	}
+	digitCount := totalNibbles
+	if negative {
+		digitCount = totalNibbles - 1
+	}
+	if len(s) > digitCount {
+		s = s[len(s)-digitCount:]
+	}
+	for len(s) < digitCount {
+		s = "0" + s
+	}
+	byteCount := (totalNibbles + 1) / 2
+	out := make([]byte, byteCount)
+	for i := 0; i < len(s); i += 2 {
+		hi := s[i] - '0'
+		lo := byte(0)
+		if i+1 < len(s) {
+			lo = s[i+1] - '0'
+		}
+		out[i/2] = (hi << 4) | lo
+	}
+	if negative {
+		out[byteCount-1] = (out[byteCount-1] & 0xf0) | 0x0c
 	}
 	return out, nil
 }

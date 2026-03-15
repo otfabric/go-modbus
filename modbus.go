@@ -18,7 +18,7 @@ type MEIType uint8
 //
 
 type pdu struct {
-	unitId                uint8
+	unitID                uint8
 	functionCode          FunctionCode
 	payload               []byte
 	responseTransactionID uint16 // set by TCP transport on response; 0 for RTU
@@ -269,6 +269,7 @@ const (
 
 var (
 	ErrConfigurationError             = errors.New("modbus: configuration error")
+	ErrClientNotOpen                  = errors.New("modbus: client is not open")
 	ErrRequestTimedOut                = errors.New("modbus: request timed out")
 	ErrIllegalFunction                = errors.New("modbus: illegal function")
 	ErrIllegalDataAddress             = errors.New("modbus: illegal data address")

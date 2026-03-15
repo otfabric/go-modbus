@@ -11,12 +11,12 @@ import (
 // sunSpecMarkerBytes is "SunS" as two big-endian registers: 0x5375, 0x6E53.
 var sunSpecMarkerBytes = []byte{0x04, 0x53, 0x75, 0x6E, 0x53}
 
-func writeMBAPRegisters(conn net.Conn, txid []byte, unitId, fc byte, regs []uint16) error {
+func writeMBAPRegisters(conn net.Conn, txid []byte, unitID, fc byte, regs []uint16) error {
 	payload := []byte{byte(len(regs) * 2)}
 	for _, r := range regs {
 		payload = append(payload, byte(r>>8), byte(r))
 	}
-	return writeMBAPNormal(conn, txid, unitId, fc, payload)
+	return writeMBAPNormal(conn, txid, unitID, fc, payload)
 }
 
 // TestDetectSunSpec_FoundAtZero verifies detection when the server returns the SunS marker at base 0.
@@ -39,18 +39,18 @@ func TestDetectSunSpec_FoundAtZero(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if addr == 0 && qty == 2 {
-				_ = writeMBAPNormal(sock, txid, unitId, fc, sunSpecMarkerBytes)
+				_ = writeMBAPNormal(sock, txid, unitID, fc, sunSpecMarkerBytes)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -82,6 +82,58 @@ func TestDetectSunSpec_FoundAtZero(t *testing.T) {
 	}
 }
 
+// TestDetectSunSpec_AllProbesFail_ReturnsError verifies that when every probe fails (e.g. transport/exception),
+// DetectSunSpec returns an error so "device not SunSpec" is not confused with "could not read at all".
+func TestDetectSunSpec_AllProbesFail_ReturnsError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		sock, _ := ln.Accept()
+		if sock == nil {
+			return
+		}
+		defer func() { _ = sock.Close() }()
+		for {
+			frame, err := readMBAPFrame(sock)
+			if err != nil {
+				return
+			}
+			txid := frame[0:2]
+			unitID := frame[6]
+			fc := frame[7]
+			// Always return exception so no probe gets a successful read
+			_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
+		}
+	}()
+
+	client, err := NewClient(&ClientConfiguration{
+		URL:     "tcp://" + ln.Addr().String(),
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	res, err := client.DetectSunSpec(context.Background(), &SunSpecOptions{UnitID: 1, BaseAddresses: []uint16{0}})
+	if err == nil {
+		t.Fatal("DetectSunSpec expected error when all probes fail")
+	}
+	if res == nil || len(res.Attempts) == 0 {
+		t.Error("expected partial result with attempts when all probes fail")
+	}
+	if res != nil && res.Detected {
+		t.Error("expected Detected false when all probes fail")
+	}
+}
+
 // TestDetectSunSpec_NotFound verifies that when no candidate has the marker, result is Detected false and error is nil.
 func TestDetectSunSpec_NotFound(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -102,10 +154,10 @@ func TestDetectSunSpec_NotFound(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			// Return non-SunSpec data for any read
-			_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{0x0000, 0x0000})
+			_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{0x0000, 0x0000})
 		}
 	}()
 
@@ -153,18 +205,18 @@ func TestDetectSunSpec_NilOpts(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if addr == 50000 && qty == 2 {
-				_ = writeMBAPNormal(sock, txid, unitId, fc, sunSpecMarkerBytes)
+				_ = writeMBAPNormal(sock, txid, unitID, fc, sunSpecMarkerBytes)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -250,27 +302,27 @@ func TestReadSunSpecModelHeaders_SimpleChain(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty != 2 {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataValue))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 				continue
 			}
 			switch addr {
 			case 2:
 				// First model: ID 1, length 2
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{1, 2})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{1, 2})
 			case 6:
 				// End model: 0xFFFF, 0
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{0xFFFF, 0})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{0xFFFF, 0})
 			default:
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -322,27 +374,27 @@ func TestDiscoverSunSpec_Full(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty != 2 {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataValue))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 				continue
 			}
 			switch addr {
 			case 0:
-				_ = writeMBAPNormal(sock, txid, unitId, fc, sunSpecMarkerBytes)
+				_ = writeMBAPNormal(sock, txid, unitID, fc, sunSpecMarkerBytes)
 			case 2:
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{1, 2})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{1, 2})
 			case 6:
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{0xFFFF, 0})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{0xFFFF, 0})
 			default:
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -399,34 +451,34 @@ func TestDiscoverSunSpec_PartialResults(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty != 2 {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataValue))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 				continue
 			}
 			switch addr {
 			case 0:
-				_ = writeMBAPNormal(sock, txid, unitId, fc, sunSpecMarkerBytes)
+				_ = writeMBAPNormal(sock, txid, unitID, fc, sunSpecMarkerBytes)
 			case 2:
 				// First model: ID 1, length 2
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{1, 2})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{1, 2})
 			case 6:
 				// Fail the second read (where end model would be) so we get partial + error
 				readCount++
 				if readCount == 1 {
-					_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+					_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 				} else {
-					_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{0xFFFF, 0})
+					_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{0xFFFF, 0})
 				}
 			default:
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -508,24 +560,24 @@ func TestReadSunSpecModelHeaders_LengthZeroNonEnd(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty != 2 {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataValue))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 				continue
 			}
 			switch addr {
 			case 2:
 				// Malformed: ID 1, length 0 (not end model)
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{1, 0})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{1, 0})
 			default:
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -575,23 +627,23 @@ func TestReadSunSpecModelHeaders_AddressOverflow(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty != 2 {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataValue))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 				continue
 			}
 			// Base 65532: first header at 65534; model length 3 gives end-exclusive 65539, which overflows
 			if addr == 65534 {
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{1, 3})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{1, 3})
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -641,28 +693,28 @@ func TestReadSunSpecModelHeaders_MaxModelsLimit(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty != 2 {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataValue))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 				continue
 			}
 			// Model 1 len 2 at 2, then model 2 len 2 at 6, then end at 10
 			switch addr {
 			case 2:
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{1, 2})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{1, 2})
 			case 6:
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{2, 2})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{2, 2})
 			case 10:
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{0xFFFF, 0})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{0xFFFF, 0})
 			default:
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -713,25 +765,25 @@ func TestReadSunSpecModelHeaders_MaxAddressSpanExceeded(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty != 2 {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataValue))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 				continue
 			}
 			switch addr {
 			case 2:
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{1, 2})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{1, 2})
 			case 6:
-				_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{2, 100})
+				_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{2, 100})
 			default:
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -782,18 +834,18 @@ func TestDetectSunSpec_CustomBaseAddresses(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if addr == 99 && qty == 2 {
-				_ = writeMBAPNormal(sock, txid, unitId, fc, sunSpecMarkerBytes)
+				_ = writeMBAPNormal(sock, txid, unitID, fc, sunSpecMarkerBytes)
 			} else {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -842,23 +894,23 @@ func TestDetectSunSpec_FirstProbeExceptionThenMatch(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			if fc != byte(FCReadHoldingRegisters) {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalFunction))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 				continue
 			}
 			addr := int(frame[8])<<8 | int(frame[9])
 			qty := int(frame[10])<<8 | int(frame[11])
 			if qty != 2 {
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataValue))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 				continue
 			}
 			switch addr {
 			case 40000:
-				_ = writeMBAPNormal(sock, txid, unitId, fc, sunSpecMarkerBytes)
+				_ = writeMBAPNormal(sock, txid, unitID, fc, sunSpecMarkerBytes)
 			default:
-				_ = writeMBAPException(sock, txid, unitId, fc, byte(exIllegalDataAddress))
+				_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 			}
 		}
 	}()
@@ -1002,10 +1054,10 @@ func TestDiscoverSunSpec_NotDetected(t *testing.T) {
 				return
 			}
 			txid := frame[0:2]
-			unitId := frame[6]
+			unitID := frame[6]
 			fc := frame[7]
 			// Return non-SunSpec data for all reads
-			_ = writeMBAPRegisters(sock, txid, unitId, fc, []uint16{0x0000, 0x0000})
+			_ = writeMBAPRegisters(sock, txid, unitID, fc, []uint16{0x0000, 0x0000})
 		}
 	}()
 

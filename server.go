@@ -168,6 +168,9 @@ type ModbusServer struct {
 // interface.
 func NewServer(conf *ServerConfiguration, reqHandler RequestHandler) (
 	ms *ModbusServer, err error) {
+	if conf == nil {
+		return nil, ErrConfigurationError
+	}
 	var serverType string
 	var splitURL []string
 
@@ -433,7 +436,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 		}
 
 		if ms.metrics != nil {
-			ms.metrics.OnRequest(req.unitId, req.functionCode)
+			ms.metrics.OnRequest(req.unitID, req.functionCode)
 			reqStart = time.Now()
 		}
 
@@ -468,7 +471,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 				coils, err = ms.handler.HandleCoils(ctx, &CoilsRequest{
 					ClientAddr: clientAddr,
 					ClientRole: clientRole,
-					UnitId:     req.unitId,
+					UnitId:     req.unitID,
 					Addr:       addr,
 					Quantity:   quantity,
 					IsWrite:    false,
@@ -479,7 +482,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 					ctx, &DiscreteInputsRequest{
 						ClientAddr: clientAddr,
 						ClientRole: clientRole,
-						UnitId:     req.unitId,
+						UnitId:     req.unitID,
 						Addr:       addr,
 						Quantity:   quantity,
 					})
@@ -500,7 +503,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 
 			// assemble a response PDU
 			res = &pdu{
-				unitId:       req.unitId,
+				unitID:       req.unitID,
 				functionCode: req.functionCode,
 				payload:      []byte{0},
 			}
@@ -535,7 +538,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			_, err = ms.handler.HandleCoils(ctx, &CoilsRequest{
 				ClientAddr: clientAddr,
 				ClientRole: clientRole,
-				UnitId:     req.unitId,
+				UnitId:     req.unitID,
 				Addr:       addr,
 				Quantity:   1,    // request for a single coil
 				IsWrite:    true, // this is a write request
@@ -548,7 +551,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 
 			// assemble a response PDU
 			res = &pdu{
-				unitId:       req.unitId,
+				unitID:       req.unitID,
 				functionCode: req.functionCode,
 			}
 
@@ -603,7 +606,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			_, err = ms.handler.HandleCoils(ctx, &CoilsRequest{
 				ClientAddr: clientAddr,
 				ClientRole: clientRole,
-				UnitId:     req.unitId,
+				UnitId:     req.unitID,
 				Addr:       addr,
 				Quantity:   quantity,
 				IsWrite:    true, // this is a write request
@@ -616,7 +619,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 
 			// assemble a response PDU
 			res = &pdu{
-				unitId:       req.unitId,
+				unitID:       req.unitID,
 				functionCode: req.functionCode,
 			}
 
@@ -657,7 +660,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 					ctx, &HoldingRegistersRequest{
 						ClientAddr: clientAddr,
 						ClientRole: clientRole,
-						UnitId:     req.unitId,
+						UnitId:     req.unitID,
 						Addr:       addr,
 						Quantity:   quantity,
 						IsWrite:    false,
@@ -668,7 +671,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 					ctx, &InputRegistersRequest{
 						ClientAddr: clientAddr,
 						ClientRole: clientRole,
-						UnitId:     req.unitId,
+						UnitId:     req.unitID,
 						Addr:       addr,
 						Quantity:   quantity,
 					})
@@ -689,7 +692,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 
 			// assemble a response PDU
 			res = &pdu{
-				unitId:       req.unitId,
+				unitID:       req.unitID,
 				functionCode: req.functionCode,
 				payload:      []byte{0},
 			}
@@ -718,7 +721,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 				ctx, &HoldingRegistersRequest{
 					ClientAddr: clientAddr,
 					ClientRole: clientRole,
-					UnitId:     req.unitId,
+					UnitId:     req.unitID,
 					Addr:       addr,
 					Quantity:   1,    // request for a single register
 					IsWrite:    true, // request is a write
@@ -731,7 +734,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 
 			// assemble a response PDU
 			res = &pdu{
-				unitId:       req.unitId,
+				unitID:       req.unitID,
 				functionCode: req.functionCode,
 			}
 
@@ -784,7 +787,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 				ctx, &HoldingRegistersRequest{
 					ClientAddr: clientAddr,
 					ClientRole: clientRole,
-					UnitId:     req.unitId,
+					UnitId:     req.unitID,
 					Addr:       addr,
 					Quantity:   quantity,
 					IsWrite:    true, // this is a write request
@@ -796,7 +799,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 
 			// assemble a response PDU
 			res = &pdu{
-				unitId:       req.unitId,
+				unitID:       req.unitID,
 				functionCode: req.functionCode,
 			}
 
@@ -809,7 +812,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 		default:
 			res = &pdu{
 				// reply with the request target unit ID
-				unitId: req.unitId,
+				unitID: req.unitID,
 				// set the error bit
 				functionCode: FunctionCode(uint8(req.functionCode) | 0x80),
 				// set the exception code to illegal function to indicate that
@@ -835,22 +838,22 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 					"protocol error, closing link (client address: '%s')",
 					clientAddr)
 				if ms.metrics != nil {
-					ms.metrics.OnError(req.unitId, req.functionCode, time.Since(reqStart), err)
+					ms.metrics.OnError(req.unitID, req.functionCode, time.Since(reqStart), err)
 				}
 				_ = t.Close()
 				return
 			} else {
 				if ms.metrics != nil {
-					ms.metrics.OnError(req.unitId, req.functionCode, time.Since(reqStart), err)
+					ms.metrics.OnError(req.unitID, req.functionCode, time.Since(reqStart), err)
 				}
 				res = &pdu{
-					unitId:       req.unitId,
+					unitID:       req.unitID,
 					functionCode: FunctionCode(uint8(req.functionCode) | 0x80),
 					payload:      []byte{byte(mapErrorToExceptionCode(err))},
 				}
 			}
 		} else if ms.metrics != nil {
-			ms.metrics.OnResponse(req.unitId, req.functionCode, time.Since(reqStart))
+			ms.metrics.OnResponse(req.unitID, req.functionCode, time.Since(reqStart))
 		}
 
 		// write the response to the transport

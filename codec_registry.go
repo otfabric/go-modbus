@@ -1,11 +1,11 @@
 package modbus
 
-// Discovery exposes a curated subset of common codec widths (e.g. text: 1, 2, 4, 8
-// registers; bytes: 2, 4, 6, 8, 16 bytes). It does not list every valid width:
-// NewAsciiCodec(3) and NewBytesCodec(10) work, but "ascii/registers:3" and
-// "bytes/bytes:10" may not appear in the registry. Constructors define what is
-// possible; registration defines what is discoverable. Use discovery for UI/CLI
-// or when you do not know the width in advance.
+// Discovery exposes a curated subset of common codec widths (e.g. text/UTF-16:
+// 1, 2, 3, 4, 6, 8, 12, 16, 20, 32, 48, 64 registers; bytes: 2, 4, 6, 8, 10, 12,
+// 14, 16, 20, 24, 32, 48, 64 bytes). Not every valid width is registered;
+// constructors accept any valid width. Constructors define what is valid;
+// registration defines what is discoverable. Use discovery for UI/CLI or when
+// you do not know the width in advance.
 
 // descriptorCopy returns a deep copy of d so callers cannot mutate shared Layouts.
 func descriptorCopy(d CodecDescriptor) CodecDescriptor {
