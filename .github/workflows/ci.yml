@@ -7,11 +7,19 @@ on:
   pull_request:
     branches: ["**"]
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   ci:
-    name: Lint, Vet & Test
+    name: Lint, Vet & Test (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.21", "1.22", "1.23"]
 
     steps:
       - name: Checkout
@@ -20,8 +28,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go-version }}
           cache: true
+
+      - name: Verify module
+        run: go mod tidy && git diff --exit-code
 
       - name: Download dependencies
         run: go mod download
@@ -33,10 +44,51 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
+        if: matrix.go-version == '1.21'
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.10.1
           args: --timeout=5m
 
       - name: Test
+        run: go test -count=1 -timeout=120s ./...
+
+      - name: Race test
         run: go test -count=1 -timeout=120s -race ./...
+
+      - name: Coverage
+        if: matrix.go-version == '1.21'
+        run: |
+          go test -count=1 -race -coverprofile=coverage.out -covermode=atomic .
+          go tool cover -func=coverage.out | tee coverage.txt
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Add coverage summary
+        if: matrix.go-version == '1.21'
+        run: |
+          echo "## Coverage Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifacts
+        if: matrix.go-version == '1.21'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-go-${{ matrix.go-version }}
+          path: |
+            coverage.out
+            coverage.txt
+            coverage.html
+
+      - name: Upload coverage to Codecov
+        if: matrix.go-version == '1.21'
+        uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true
+          files: coverage.out
+          flags: unittests
+          name: go-modbus
+          fail_ci_if_error: false
+          verbose: true
