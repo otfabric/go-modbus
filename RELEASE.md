@@ -1,3 +1,113 @@
+# Release v1.0.0
+
+**Date:** 2026-03-16
+**Previous release:** v0.4.2
+
+## Summary
+
+**Major release.** The library reaches API stability with a comprehensive architectural refactor, full Modbus protocol compliance, and a clean package structure. The monolithic client and server have been split into focused files; internal subsystems (`adu`, `transport`, `session`, `protocol`, `logging`) are properly encapsulated in `internal/` packages; the `codec` and `sunspec` subpackages are standalone importable modules. All public type names have been streamlined (`Config`, `Client`, `Server`, `ServerConfig`) and legacy helpers removed. Protocol compliance now covers all standard Modbus function codes including FC07, FC0B, FC0C client and server support, tightened FC43/14 validation, and comprehensive FC08 diagnostic wrappers.
+
+## Breaking changes
+
+### Renamed types
+
+| Old name | New name | Notes |
+|---|---|---|
+| `ClientConfiguration` | `Config` | Flat config struct |
+| `ModbusClient` | `Client` | |
+| `NewClient(*ClientConfiguration)` | `New(Config)` | Now takes value, not pointer |
+| `ServerConfiguration` | `ServerConfig` | |
+| `ModbusServer` | `Server` | |
+| `NewServer(*ServerConfiguration, ...)` | `NewServer(*ServerConfig, ...)` | |
+| `ReportServerIdResponse` | `ReportServerIDResponse` | Consistent Go naming |
+
+### Moved to subpackages
+
+| Old location (root) | New location | Import path |
+|---|---|---|
+| `ReadWithCodec`, `WriteWithCodec`, all codec types | `codec/` | `github.com/otfabric/modbus/codec` |
+| `DetectSunSpec`, `ReadSunSpecModelHeaders`, `DiscoverSunSpec` | `sunspec/` | `github.com/otfabric/modbus/sunspec` |
+
+Root-package convenience methods on `Client` still exist for SunSpec, delegating to the subpackage.
+
+### Removed
+
+- **SetEncoding** — Removed. Byte and word order are defined per-codec via `RegisterLayout`.
+- **ReadBytes / WriteBytes** — Use `ReadRegisterBytes` / `WriteRegisterBytes` for raw byte transport; use codecs for typed interpretation.
+- **All legacy typed read/write helpers** — `ReadUint16(s)`, `ReadUint32(s)`, `ReadFloat32(s)`, `WriteInt16(s)`, `WriteAscii`, `WriteBCD`, etc. Use `ReadRegisters` / `WriteRegisters` for raw access; use `codec.ReadFromClient` / `codec.WriteToClient` for typed access.
+- **client_runtime.go / client_codec.go** — Runtime and codec client helpers moved into `codec/client.go`.
+
+### Changed
+
+- **Logger default** — `Config.Logger` defaults to a no-op logger (logging disabled) instead of `slog.Default()`. Use `NewStdLogger`, `NewSlogLogger`, or `NewFieldLogger` to enable logging.
+- **Config.DialTimeout** — New field. Zero uses sensible defaults (5s TCP/UDP, 15s TLS). Does not apply to serial RTU.
+- **NewConfig()** — New constructor that accepts `TransportConfig`, `ExecutionConfig`, and `ObservabilityConfig` for structured configuration as an alternative to the flat `Config` literal.
+- **Error types** — `ExceptionError`, `ProtocolError`, `ParameterError`, and `ConfigurationError` are now type aliases re-exported from `internal/protocol`. Behaviour is identical; `errors.Is` and `errors.As` work as before.
+
+## Added
+
+### Modbus protocol compliance (FC07, FC0B, FC0C)
+
+- **ReadExceptionStatus** (FC07) — Client method returning the 8-bit exception status coil output. Server-side `ExceptionStatusHandler` optional interface.
+- **GetCommEventCounter** (FC0B) — Client method returning `*CommEventCounterResponse` (Status + EventCount). Server-side `CommEventCounterHandler` optional interface.
+- **GetCommEventLog** (FC0C) — Client method returning `*CommEventLogResponse` (Status + EventCount + MessageCount + Events). Server-side `CommEventLogHandler` optional interface.
+- **RTU response length** — `ExpectedRTUResponseLength` now handles FC0B (fixed 4-byte) and FC0C (byte-count-prefixed), with exception entries for both.
+
+### FC08 Diagnostics — typed convenience wrappers
+
+- `DiagnosticForceListenOnlyMode` — Sub-function 0x0004; no response expected (serial-line semantics).
+- `DiagnosticClearCounters` — Sub-function 0x000A; validates 2-byte echo.
+- `DiagnosticBusCommunicationErrorCount`, `DiagnosticBusExceptionErrorCount`, `DiagnosticServerMessageCount`, `DiagnosticServerNoResponseCount`, `DiagnosticServerNAKCount`, `DiagnosticServerBusyCount`, `DiagnosticBusCharacterOverrunCount` — Each returns a `uint16` counter with 2-byte payload validation.
+- `DiagnosticClearOverrunCounterAndFlag` — Sub-function 0x0014; validates 2-byte echo.
+
+### FC43/14 (Read Device Identification) — tightened validation
+
+- **Conformity level** validated against spec-allowed values (0x01–0x03, 0x81–0x83).
+- **MoreFollows + NextObjectID** consistency check (NextObjectID must be 0x00 when MoreFollows is 0x00).
+- **Individual access** enforces MoreFollows = 0x00 and exactly one object.
+- `SupportsStreamAccess()` and `SupportsIndividualAccess()` helpers on `DeviceIdentification`.
+- MEI type 13 (CANopen General Reference) explicitly documented as unsupported.
+
+### Server optional handlers (FC07, FC0B, FC0C)
+
+- `ExceptionStatusHandler`, `CommEventCounterHandler`, `CommEventLogHandler` — Follow the existing optional-handler pattern (`MaskWriteHandler`, `ReadWriteHandler`). If not implemented, server returns `Illegal Function`.
+
+### Architecture refactor
+
+- **Client split** — `client.go` (config, lifecycle), `client_exec.go` (request execution), `client_bits.go` (coil/discrete ops), `client_registers.go` (register ops), `client_device_id.go` (FC43), `client_diagnostics.go` (FC07/FC08/FC0B/FC0C), `client_file.go` (FC20/FC21), `client_probe.go` (device detection).
+- **Server split** — `server.go` (config, interfaces), `server_transport.go` (dispatch), `server_bits.go` (coil/DI handling), `server_registers.go` (register handling).
+- **Internal packages** — `internal/adu` (MBAP, RTU CRC, wire encoding), `internal/transport` (TCP, RTU), `internal/session` (engine, pool, retry), `internal/protocol` (constants, FC, errors, detection), `internal/logging` (prefixed adapter).
+- **Codec subpackage** — `codec/` is a standalone public package with `codec.ReadFromClient` / `codec.WriteToClient`, `codec.RegisterLayout`, all codec constructors, runtime codecs, and discovery.
+- **SunSpec subpackage** — `sunspec/` is a standalone public package with `sunspec.Detect`, `sunspec.ReadModelHeaders`, `sunspec.Discover`.
+- **CLI restructured** — `cmd/modbus-cli/` split into `main.go`, `parser.go`, `execute.go`, `scan.go`, `help.go`.
+- **ARCHITECTURE.md** — New document describing the package layout, dependency graph, ownership rules, locking model, and request/response flow.
+
+### Transport-neutral policy
+
+All function codes are supported on every transport (TCP, TLS, UDP, RTU, RTU-over-TCP/UDP). The spec labels FC07, FC08, FC0B, FC0C as "Serial Line only," but gateways make them reachable over any lower layer. The library does not restrict any FC by transport type.
+
+### Protocol validation
+
+- `protocol_validate.go` — Centralised request validation helpers used by client methods.
+- `protocol_limits_test.go` — Explicit tests for global Modbus PDU/ADU size limits (MBAP max 254, RTU max 256, PDU max 253, TCP ADU max 260).
+
+### Tests
+
+- `client_diagnostics_test.go` — FC07, FC0B, FC0C client tests (happy path, exceptions, malformed payloads).
+- `server_serial_fc_test.go` — Server dispatch tests for FC07/FC0B/FC0C with and without optional handlers.
+- `fc43_test.go` — Expanded with conformity level validation, MoreFollows/NextObjectID, individual access constraints, bad object ID behaviour (stream restart from 0, individual exception 02), `SupportsStreamAccess`/`SupportsIndividualAccess` helpers.
+- `protocol_limits_test.go` — MBAP bounds, RTU frame max, PDU max, TCP ADU max, protocol ID validation, quantity constants.
+- `coverage_extra_test.go` — Additional coverage for edge cases across the codebase.
+
+### Documentation
+
+- **README.md** — Updated FC tables (client and server), transport-neutral policy note, MEI 43/13 note, API tiers table, five-tier architecture description.
+- **API.md** — New sections for FC07/FC0B/FC0C, FC08 convenience wrappers, conformity level helpers, FC43 validation rules, MEI 43/13, server optional handler interfaces (FC07/FC0B/FC0C). Updated table of contents.
+- **ARCHITECTURE.md** — New file documenting package layout, dependency graph, ownership rules, client locking model, and codec/SunSpec architecture.
+- **CODECS.md** — Minor alignment with codec subpackage move.
+
+---
+
 # Release v0.4.2
 
 **Date:** 2026-03-17
@@ -216,7 +326,7 @@ Align the library with common Modbus/TCP and Wireshark dissector behaviour: spec
 - **Standard port constants** — `PortModbusTCP` (502) and `PortModbusTLS` (802) for use in URLs or documentation. Modbus RTU over TCP has no standard port.
 - **MBAP length validation** — TCP transport rejects MBAP length &lt; 2 or &gt; 254 and returns an error wrapping `ErrInvalidMBAPLength` (received length included in the message). Validation applied on both receive and send.
 - **Function codes** — `FCReadExceptionStatus` (0x07), `FCGetCommEventCounters` (0x0B), `FCGetCommEventLog` (0x0C) added to known FCs and `KnownFunctionCodes()`. FC07 supported in RTU response length handling.
-- **LastTransactionID()** — Client method returns the MBAP transaction ID of the last successful TCP response (0 for RTU/non-TCP). Useful for diagnostics and correlating with packet captures.
+- **LastObservedTransactionID()** — Client method returns the MBAP transaction ID of the last successful TCP response (0 for RTU/non-TCP). Useful for diagnostics and correlating with packet captures. (Renamed from `LastTransactionID()` for clarity.)
 - **RTU PDU length rules** — Comment block in `expectedResponseLenth` documents response length rules per FC for spec/dissector alignment.
 
 ### Changed
@@ -226,7 +336,7 @@ Align the library with common Modbus/TCP and Wireshark dissector behaviour: spec
 
 ### Unchanged
 
-- All existing client/server behaviour and API contracts unchanged. New constants and `LastTransactionID()` are additive.
+- All existing client/server behaviour and API contracts unchanged. New constants and `LastObservedTransactionID()` are additive.
 
 ---
 

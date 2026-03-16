@@ -19,7 +19,7 @@ import (
  */
 
 func main() {
-	var client *modbus.ModbusClient
+	var client *modbus.Client
 	var err error
 	var clientKeyPair tls.Certificate
 	var serverCertPool *x509.CertPool
@@ -44,7 +44,7 @@ func main() {
 
 	// create a client targeting host secure-plc on port 802 using
 	// modbus TCP over TLS (MBAPS)
-	client, err = modbus.NewClient(&modbus.ClientConfiguration{
+	client, err = modbus.New(modbus.Config{
 		// tcp+tls is the moniker for MBAPS (modbus/tcp encapsulated in
 		// TLS),
 		// 802/tcp is the IANA-registered port for MBAPS.

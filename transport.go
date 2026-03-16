@@ -1,7 +1,5 @@
 package modbus
 
-import "context"
-
 type transportType uint
 
 const (
@@ -12,10 +10,3 @@ const (
 	modbusTCPOverTLS transportType = 5
 	modbusTCPOverUDP transportType = 6
 )
-
-type transport interface {
-	Close() error
-	ExecuteRequest(context.Context, *pdu) (*pdu, error)
-	ReadRequest() (*pdu, error)
-	WriteResponse(*pdu) error
-}

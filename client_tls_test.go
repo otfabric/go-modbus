@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -198,7 +199,7 @@ yEU+HMj419vJHZRyHwuxy9aJLDErxg==
 // TestTCPOVerTLSClient tests the TLS layer of the modbus client.
 func TestTCPoverTLSClient(t *testing.T) {
 	var err error
-	var client *ModbusClient
+	var client *Client
 	var serverKeyPair tls.Certificate
 	var clientKeyPair tls.Certificate
 	var clientCp *x509.CertPool
@@ -239,34 +240,34 @@ func TestTCPoverTLSClient(t *testing.T) {
 
 	// attempt to create a client without specifying any TLS configuration
 	// parameter: should fail
-	_, err = NewClient(&ClientConfiguration{
+	_, err = New(Config{
 		URL: fmt.Sprintf("tcp+tls://%s", serverHostPort),
 	})
-	if err != ErrConfigurationError {
-		t.Errorf("NewClient() should have failed with %v, got: %v",
+	if !errors.Is(err, ErrConfigurationError) {
+		t.Errorf("New() should have failed with %v, got: %v",
 			ErrConfigurationError, err)
 	}
 
 	// attempt to create a client without specifying any TLS server
 	// cert/CA: should fail
-	_, err = NewClient(&ClientConfiguration{
+	_, err = New(Config{
 		URL:           fmt.Sprintf("tcp+tls://%s", serverHostPort),
 		TLSClientCert: &clientKeyPair,
 	})
-	if err != ErrConfigurationError {
-		t.Errorf("NewClient() should have failed with %v, got: %v",
+	if !errors.Is(err, ErrConfigurationError) {
+		t.Errorf("New() should have failed with %v, got: %v",
 			ErrConfigurationError, err)
 	}
 
 	// attempt to create a client with both client cert+key and server
 	// cert/CA: should succeed
-	client, err = NewClient(&ClientConfiguration{
+	client, err = New(Config{
 		URL:           fmt.Sprintf("tcp+tls://%s", serverHostPort),
 		TLSClientCert: &clientKeyPair,
 		TLSRootCAs:    clientCp,
 	})
 	if err != nil {
-		t.Errorf("NewClient() should have succeeded, got: %v", err)
+		t.Errorf("New() should have succeeded, got: %v", err)
 	}
 
 	// connect to the server: should fail with a TLS error as the server cert
@@ -343,8 +344,8 @@ func TestTCPoverTLSClient(t *testing.T) {
 
 func TestTLSClientOnServerTimeout(t *testing.T) {
 	var err error
-	var client *ModbusClient
-	var server *ModbusServer
+	var client *Client
+	var server *Server
 	var serverKeyPair tls.Certificate
 	var clientKeyPair tls.Certificate
 	var clientCp *x509.CertPool
@@ -384,7 +385,7 @@ func TestTLSClientOnServerTimeout(t *testing.T) {
 		t.Errorf("failed to load test server cert into cert pool")
 	}
 
-	server, err = NewServer(&ServerConfiguration{
+	server, err = NewServer(&ServerConfig{
 		URL:           "tcp+tls://[::1]:5802",
 		MaxClients:    10,
 		TLSServerCert: &serverKeyPair,
@@ -402,7 +403,7 @@ func TestTLSClientOnServerTimeout(t *testing.T) {
 	}
 
 	// create the modbus client
-	client, err = NewClient(&ClientConfiguration{
+	client, err = New(Config{
 		URL:           "tcp+tls://localhost:5802",
 		TLSClientCert: &clientKeyPair,
 		TLSRootCAs:    clientCp,

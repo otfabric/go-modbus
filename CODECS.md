@@ -1,6 +1,6 @@
 # Codecs — Typed register read/write
 
-This document lists and explains all **codecs** implemented in `github.com/otfabric/modbus`. Codecs provide typed encode/decode between Modbus registers (`[]uint16`) and Go values. Use them with **ReadWithCodec** / **WriteWithCodec** (or **ReadWithRuntimeCodec** / **WriteWithRuntimeCodec** when the type is not known at compile time).
+This document lists and explains all **codecs** implemented in `github.com/otfabric/modbus/codec`. Codecs provide typed encode/decode between Modbus registers (`[]uint16`) and Go values. Use them with **codec.ReadFromClient** / **codec.WriteToClient** (or **codec.ReadRuntimeFromClient** / **codec.WriteRuntimeToClient** when the type is not known at compile time).
 
 - **Transport** remains register-native: you read/write raw registers or raw bytes; the codec interprets them.
 - **Layout** (byte and word order) is part of the codec. Numeric codecs take a `RegisterLayout`; text and byte codecs have a fixed or parameterized width.
@@ -236,30 +236,32 @@ Families: `integer`, `float`, `text`, `bcd`, `bytes`, `network`, `hardware_addre
 **Typed (compile-time type known):**
 
 ```go
-codec, err := NewUint32Codec(Layout32_4321)
+import "github.com/otfabric/modbus/codec"
+
+c, err := codec.NewUint32Codec(codec.Layout32_4321)
 if err != nil { ... }
-v, err := ReadWithCodec(client, ctx, unitID, addr, HoldingRegister, codec)
+v, err := codec.ReadFromClient(client, ctx, unitID, addr, modbus.HoldingRegister, c)
 // or
-err = WriteWithCodec(client, ctx, unitID, addr, value, codec)
+err = codec.WriteToClient(client, ctx, unitID, addr, value, c)
 ```
 
-**Convenience for uint32:** **ReadUint32WithLayout** / **WriteUint32WithLayout** take a layout and call the codec internally.
+**Convenience for uint32:** **codec.ReadUint32FromClient** / **codec.WriteUint32ToClient** take a layout and call the codec internally.
 
 **Runtime (type unknown at compile time, e.g. CLI or descriptor-driven):**
 
 ```go
-rc, ok, err := RuntimeCodecByID("uint32/layout:4321")
+rc, ok, err := codec.RuntimeCodecByID("uint32/layout:4321")
 if err != nil || !ok { ... }
-anyVal, err := ReadWithRuntimeCodec(client, ctx, unitID, addr, HoldingRegister, rc)
+anyVal, err := codec.ReadRuntimeFromClient(client, ctx, unitID, addr, modbus.HoldingRegister, rc)
 ```
 
 **Offline (tests, tooling):**
 
 ```go
-decoded, err := DecodeRegisters(regs, codec)
-encoded, err := EncodeRegisters(value, codec)
+decoded, err := codec.DecodeRegisters(regs, c)
+encoded, err := codec.EncodeRegisters(value, c)
 ```
 
-**Date/time.** Use the **time codecs** (e.g. `NewDateTime2S2000Codec()`, `NewDateTimeYMDhmsUTCCodec()`, `NewDateTimeIEC870UTCCodec()`) for epoch-s2000, calendar YMDhms, and IEC 60870-5 CP56Time2a. See [§ 5 Time codecs](#5-time-codecs).
+**Date/time.** Use the **time codecs** (e.g. `codec.NewDateTime2S2000Codec()`, `codec.NewDateTimeYMDhmsUTCCodec()`, `codec.NewDateTimeIEC870UTCCodec()`) for epoch-s2000, calendar YMDhms, and IEC 60870-5 CP56Time2a. See [§ 5 Time codecs](#5-time-codecs).
 
 For full API details, see [API.md § 11 Codec API](API.md#11-codec-api).

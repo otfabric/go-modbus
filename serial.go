@@ -3,6 +3,7 @@ package modbus
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/otfabric/go-serial"
@@ -10,9 +11,9 @@ import (
 )
 
 // serialPortWrapper wraps a serial.Port (i.e. physical port) to
-// 1) satisfy the rtuLink interface and
-// 2) add Read() deadline/timeout support.
+// add Read() deadline/timeout support. All methods are safe for concurrent use.
 type serialPortWrapper struct {
+	mu       sync.Mutex
 	conf     *serialPortConfig
 	port     serial.Port
 	deadline time.Time
@@ -39,6 +40,9 @@ func newSerialPortWrapper(conf *serialPortConfig) (spw *serialPortWrapper) {
 }
 
 func (spw *serialPortWrapper) Open() error {
+	spw.mu.Lock()
+	defer spw.mu.Unlock()
+
 	if spw.conf == nil {
 		return fmt.Errorf("modbus: nil serial port config")
 	}
@@ -102,6 +106,9 @@ func (spw *serialPortWrapper) Open() error {
 // Close closes the serial port. It is safe to call if Open() failed; in that case port is nil and Close returns nil.
 // The wrapper clears its port reference after Close returns so that later Read/Write calls return ErrSerialPortNotOpen.
 func (spw *serialPortWrapper) Close() error {
+	spw.mu.Lock()
+	defer spw.mu.Unlock()
+
 	if spw.port == nil {
 		return nil
 	}
@@ -125,30 +132,45 @@ func (spw *serialPortWrapper) Close() error {
 // as many times as necessary until either enough bytes have been read or an
 // error is returned (ErrRequestTimedOut or any other i/o error).
 func (spw *serialPortWrapper) Read(rxbuf []byte) (int, error) {
-	if spw.port == nil {
+	spw.mu.Lock()
+	p := spw.port
+	dl := spw.deadline
+	spw.mu.Unlock()
+
+	if p == nil {
 		return 0, ErrSerialPortNotOpen
 	}
-	if !spw.deadline.IsZero() && time.Now().After(spw.deadline) {
+	if !dl.IsZero() && time.Now().After(dl) {
 		return 0, ErrRequestTimedOut
 	}
 
-	n, err := spw.port.Read(rxbuf)
+	n, err := p.Read(rxbuf)
 	if err != nil && errors.Is(err, serial.ErrTimeout) {
 		return n, nil
 	}
 	return n, err
 }
 
-// Write sends the bytes over the wire.
+// Write sends the bytes over the wire. Unlike Read, Write does not honor
+// the deadline set by SetDeadline — it always writes immediately. This is
+// intentional: the RTU transport only needs deadline control on the receive
+// path to implement inter-frame timeouts.
 func (spw *serialPortWrapper) Write(txbuf []byte) (int, error) {
-	if spw.port == nil {
+	spw.mu.Lock()
+	p := spw.port
+	spw.mu.Unlock()
+
+	if p == nil {
 		return 0, ErrSerialPortNotOpen
 	}
-	return spw.port.Write(txbuf)
+	return p.Write(txbuf)
 }
 
-// SetDeadline sets the deadline for Read. Zero time means no deadline yet.
+// SetDeadline sets the deadline for Read only. Write is unaffected.
+// A zero time removes any existing deadline.
 func (spw *serialPortWrapper) SetDeadline(deadline time.Time) error {
+	spw.mu.Lock()
 	spw.deadline = deadline
+	spw.mu.Unlock()
 	return nil
 }

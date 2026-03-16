@@ -69,7 +69,7 @@ func bitfieldMockServer(t *testing.T) (addr string, cleanup func()) {
 func TestReadRegisterBit(t *testing.T) {
 	addr, cleanup := bitfieldMockServer(t)
 	defer cleanup()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestReadRegisterBit(t *testing.T) {
 func TestReadRegisterBits(t *testing.T) {
 	addr, cleanup := bitfieldMockServer(t)
 	defer cleanup()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestReadRegisterBits(t *testing.T) {
 func TestWriteRegisterBit(t *testing.T) {
 	addr, cleanup := bitfieldMockServer(t)
 	defer cleanup()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestWriteRegisterBit(t *testing.T) {
 func TestUpdateRegisterMask(t *testing.T) {
 	addr, cleanup := bitfieldMockServer(t)
 	defer cleanup()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

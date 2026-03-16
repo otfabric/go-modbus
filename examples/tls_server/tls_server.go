@@ -92,7 +92,7 @@ import (
 func main() {
 	var err error
 	var eh *exampleHandler
-	var server *modbus.ModbusServer
+	var server *modbus.Server
 	var serverKeyPair tls.Certificate
 	var clientCertPool *x509.CertPool
 	var ticker *time.Ticker
@@ -122,7 +122,7 @@ func main() {
 	}
 
 	// create the server object
-	server, err = modbus.NewServer(&modbus.ServerConfiguration{
+	server, err = modbus.NewServer(&modbus.ServerConfig{
 		// listen on localhost port 5802
 		URL: "tcp+tls://localhost:5802",
 		// accept 10 concurrent connections max.

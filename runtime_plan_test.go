@@ -6,10 +6,12 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/otfabric/modbus/codec"
 )
 
 func TestValidateRuntimeDecodePlan_Valid(t *testing.T) {
-	rc := MustRuntimeCodecByID("uint32/layout:4321")
+	rc := codec.MustRuntimeCodecByID("uint32/layout:4321")
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 0, Quantity: 4, RegType: HoldingRegister},
 		Items: []RuntimeDecodeItem{
@@ -23,7 +25,7 @@ func TestValidateRuntimeDecodePlan_Valid(t *testing.T) {
 }
 
 func TestValidateRuntimeDecodePlan_InvalidWindowQuantity(t *testing.T) {
-	rc := MustRuntimeCodecByID("uint32/layout:4321")
+	rc := codec.MustRuntimeCodecByID("uint32/layout:4321")
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 0, Quantity: 0, RegType: HoldingRegister},
 		Items:  []RuntimeDecodeItem{{Name: "x", Offset: 0, Codec: rc}},
@@ -45,7 +47,7 @@ func TestValidateRuntimeDecodePlan_InvalidWindowQuantity(t *testing.T) {
 }
 
 func TestValidateRuntimeDecodePlan_ItemSpillsPastWindow(t *testing.T) {
-	rc := MustRuntimeCodecByID("uint32/layout:4321")
+	rc := codec.MustRuntimeCodecByID("uint32/layout:4321")
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 0, Quantity: 2, RegType: HoldingRegister},
 		Items:  []RuntimeDecodeItem{{Name: "x", Offset: 1, Codec: rc}},
@@ -65,7 +67,7 @@ func TestValidateRuntimeDecodePlan_ItemSpillsPastWindow(t *testing.T) {
 }
 
 func TestValidateRuntimeDecodePlan_DuplicateNames(t *testing.T) {
-	rc := MustRuntimeCodecByID("uint16/layout:21")
+	rc := codec.MustRuntimeCodecByID("uint16/layout:21")
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 0, Quantity: 2, RegType: HoldingRegister},
 		Items: []RuntimeDecodeItem{
@@ -135,7 +137,7 @@ func TestExecuteRuntimeDecodePlanOffline_ValidatesPlan(t *testing.T) {
 }
 
 func TestExecuteRuntimeDecodePlanOffline_RegsWrongLength(t *testing.T) {
-	rc := MustRuntimeCodecByID("uint32/layout:4321")
+	rc := codec.MustRuntimeCodecByID("uint32/layout:4321")
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 0, Quantity: 2, RegType: HoldingRegister},
 		Items:  []RuntimeDecodeItem{{Name: "x", Offset: 0, Codec: rc}},
@@ -160,7 +162,7 @@ func TestExecuteRuntimeDecodePlanOffline_RegsWrongLength(t *testing.T) {
 }
 
 func TestExecuteRuntimeDecodePlanOffline_Success(t *testing.T) {
-	rc := MustRuntimeCodecByID("uint32/layout:4321")
+	rc := codec.MustRuntimeCodecByID("uint32/layout:4321")
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 100, Quantity: 4, RegType: HoldingRegister},
 		Items: []RuntimeDecodeItem{
@@ -195,21 +197,21 @@ func TestExecuteRuntimeDecodePlanOffline_Success(t *testing.T) {
 
 // failingRuntimeDecoder is a test decoder that always returns an error from DecodeRegistersAny.
 type failingRuntimeDecoder struct {
-	spec RegisterSpec
+	spec codec.RegisterSpec
 }
 
-func (failingRuntimeDecoder) ID() string                   { return "test/fail" }
-func (failingRuntimeDecoder) Name() string                 { return "fail" }
-func (f failingRuntimeDecoder) RegisterSpec() RegisterSpec { return f.spec }
-func (failingRuntimeDecoder) ByteSpec() ByteSpec           { return ByteSpec{Count: 2} }
-func (failingRuntimeDecoder) ValueKind() CodecValueKind    { return CodecValueUint16 }
+func (failingRuntimeDecoder) ID() string                         { return "test/fail" }
+func (failingRuntimeDecoder) Name() string                       { return "fail" }
+func (f failingRuntimeDecoder) RegisterSpec() codec.RegisterSpec { return f.spec }
+func (failingRuntimeDecoder) ByteSpec() codec.ByteSpec           { return codec.ByteSpec{Count: 2} }
+func (failingRuntimeDecoder) ValueKind() codec.CodecValueKind    { return codec.CodecValueUint16 }
 func (failingRuntimeDecoder) DecodeRegistersAny([]uint16) (any, error) {
 	return nil, errors.New("decode failed")
 }
 
 func TestExecuteRuntimeDecodePlanOffline_OneItemFailsDecode(t *testing.T) {
-	rc := MustRuntimeCodecByID("uint32/layout:4321")
-	failDecoder := &failingRuntimeDecoder{spec: RegisterSpec{Count: 2}}
+	rc := codec.MustRuntimeCodecByID("uint32/layout:4321")
+	failDecoder := &failingRuntimeDecoder{spec: codec.RegisterSpec{Count: 2}}
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 0, Quantity: 4, RegType: HoldingRegister},
 		Items: []RuntimeDecodeItem{
@@ -245,7 +247,7 @@ func TestExecuteRuntimeDecodePlan_TransportFailure(t *testing.T) {
 			_ = sock.Close()
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 50 * time.Millisecond})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +255,7 @@ func TestExecuteRuntimeDecodePlan_TransportFailure(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	rc := MustRuntimeCodecByID("uint32/layout:4321")
+	rc := codec.MustRuntimeCodecByID("uint32/layout:4321")
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 0, Quantity: 2, RegType: HoldingRegister},
 		Items:  []RuntimeDecodeItem{{Name: "x", Offset: 0, Codec: rc}},
@@ -300,7 +302,7 @@ func TestExecuteRuntimeDecodePlan_Integration(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -309,7 +311,7 @@ func TestExecuteRuntimeDecodePlan_Integration(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	rc := MustRuntimeCodecByID("uint32/layout:4321")
+	rc := codec.MustRuntimeCodecByID("uint32/layout:4321")
 	plan := RuntimeDecodePlan{
 		Window: ReadWindow{Addr: 0, Quantity: 4, RegType: HoldingRegister},
 		Items: []RuntimeDecodeItem{

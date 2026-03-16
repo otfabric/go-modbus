@@ -9,7 +9,7 @@ All examples assume `import "github.com/otfabric/modbus"`.
 
 1. [Transport modes and URL schemes](#1-transport-modes-and-url-schemes)
 2. [Client](#2-client)
-   - [Configuration](#21-clientconfiguration)
+   - [Configuration](#21-config)
    - [Lifecycle](#22-lifecycle)
    - [Read operations](#23-read-operations)
    - [Write operations](#24-write-operations)
@@ -17,12 +17,13 @@ All examples assume `import "github.com/otfabric/modbus"`.
    - [Device identification (FC43)](#26-device-identification-fc43)
    - [Modbus device detection](#27-modbus-device-detection)
    - [SunSpec discovery](#28-sunspec-discovery)
-   - [Diagnostics and Report Server ID (FC08/0x11)](#29-diagnostics-and-report-server-id-fc080x11)
+   - [Serial-line FCs and Diagnostics (FC07/FC08/FC0B/FC0C/FC11)](#29-serial-line-function-codes-and-diagnostics-fc07fc08fc0bfc0cfc11)
 3. [Server](#3-server)
-   - [Configuration](#31-serverconfiguration)
+   - [Configuration](#31-serverconfig)
    - [Lifecycle](#32-lifecycle)
    - [RequestHandler interface](#33-requesthandler-interface)
    - [Request types](#34-request-types)
+   - [Optional handler interfaces (FC07, FC0B, FC0C, FC22, FC23)](#35-optional-handler-interfaces-fc07-fc0b-fc0c-fc22-fc23)
 4. [Errors](#4-errors)
 5. [Logging](#5-logging)
 6. [Metrics](#6-metrics)
@@ -36,7 +37,7 @@ All examples assume `import "github.com/otfabric/modbus"`.
 
 ## 1. Transport modes and URL schemes
 
-The `URL` field in both `ClientConfiguration` and `ServerConfiguration` encodes the
+The `URL` field in both `Config` and `ServerConfig` encodes the
 transport type and the address using the `<scheme>://<address>` format.
 
 | Scheme | Transport | Client | Server |
@@ -54,10 +55,10 @@ transport type and the address using the `<scheme>://<address>` format.
 
 ## 2. Client
 
-### 2.1 `ClientConfiguration`
+### 2.1 `Config`
 
 ```go
-type ClientConfiguration struct {
+type Config struct {
     // URL encodes the transport type and target address (required).
     // Examples: "tcp://plc.local:502", "rtu:///dev/ttyUSB0", "tcp+tls://plc.local:802"
     URL string
@@ -79,6 +80,11 @@ type ClientConfiguration struct {
     // 300 ms for RTU, 1 s for all TCP/UDP modes.
     Timeout time.Duration
 
+    // DialTimeout is the maximum time to establish a connection (TCP dial, TLS
+    // handshake, UDP dial). 0 uses a sensible default: 5 s for TCP/UDP, 15 s for TLS.
+    // Does not apply to serial (RTU) transports.
+    DialTimeout time.Duration
+
     // TLSClientCert is the client-side TLS certificate and private key (tcp+tls only).
     // Required: mutual TLS authentication is mandatory per the MBAPS spec.
     TLSClientCert *tls.Certificate
@@ -87,8 +93,8 @@ type ClientConfiguration struct {
     // certificate (tcp+tls only). Required.
     TLSRootCAs *x509.CertPool
 
-    // Logger is the sink for log output. If nil, slog.Default() is used.
-    // Build a value with NewStdLogger, NewSlogLogger, or NopLogger.
+    // Logger is the sink for log output. If nil (default), logging is disabled
+    // (no-op logger). Build a value with NewStdLogger, NewSlogLogger, or NopLogger.
     Logger Logger
 
     // RetryPolicy controls automatic retry of failed requests.
@@ -110,22 +116,67 @@ type ClientConfiguration struct {
 }
 ```
 
+**Configuration grouping** — for larger setups, use grouped sub-structs:
+
+```go
+type TransportConfig struct {
+    URL, Speed, DataBits, Parity, StopBits, DialTimeout, TLSClientCert, TLSRootCAs
+}
+
+type ExecutionConfig struct {
+    Timeout, RetryPolicy, MinConns, MaxConns
+}
+
+type ObservabilityConfig struct {
+    Logger, Metrics
+}
+
+func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) Config
+```
+
 ### 2.2 Lifecycle
 
 ```go
-func NewClient(conf *ClientConfiguration) (*ModbusClient, error)
-func (mc *ModbusClient) Open() error
-func (mc *ModbusClient) Close() error
-func (mc *ModbusClient) LastTransactionID() uint16
+func New(conf Config) (*Client, error)
+func ValidateConfig(conf Config) error
+func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) Config
+func (mc *Client) Open() error
+func (mc *Client) Close() error
+func (mc *Client) Info() ClientInfo
+func (mc *Client) LastObservedTransactionID() uint16
 ```
 
-`NewClient` validates the URL and configuration but does **not** open a network
-connection. Call `Open` to establish the transport. `Open` is idempotent — calling
-it on an already-open client is a no-op. `Close` closes all connections (or drains
-the pool when `MaxConns > 1`). `LastTransactionID` returns the MBAP transaction ID of the last successful TCP response; it is 0 for RTU and other non-TCP transports. Useful for diagnostics and correlating with packet captures.
+`New` validates the URL and configuration but does **not** open a network
+connection. It returns typed `*ConfigurationError` values on failure.
+`ValidateConfig` runs the same validation without creating a client — useful
+for CLIs and config-driven systems. `NewConfig` builds a `Config` from grouped
+sub-configurations — a convenience alternative to the flat struct literal.
+Call `Open` to establish the transport. `Open` is idempotent — calling it on an
+already-open client is a no-op. `Close` closes all connections (or drains the
+pool when `MaxConns > 1`).
+
+**Config auto-correction:** `MaxConns > 1` on non-poolable transports (RTU, TCP+TLS)
+is silently clamped to 1 with a warning log message.
+
+`Info` returns a `ClientInfo` snapshot:
 
 ```go
-client, err := modbus.NewClient(&modbus.ClientConfiguration{
+type ClientInfo struct {
+    IsOpen      bool          // active transport/connection
+    Endpoint    string        // resolved target address
+    Transport   TransportKind // "rtu", "tcp", "tcp+tls", "udp", "rtuovertcp", "rtuoverudp"
+    PoolEnabled bool          // true when MaxConns > 1 AND transport supports pooling
+    MaxConns    int           // configured maximum connections
+}
+```
+
+`LastObservedTransactionID` returns the MBAP transaction ID of the last successful
+TCP response; it is 0 for RTU and other non-TCP transports. In pooled/concurrent
+use (`MaxConns > 1`), this is a shared diagnostic value and is not correlated to
+any specific request.
+
+```go
+client, err := modbus.New(modbus.Config{
     URL:     "tcp://192.168.1.10:502",
     Timeout: 2 * time.Second,
 })
@@ -144,7 +195,7 @@ defer client.Close()
 cert, _ := tls.LoadX509KeyPair("client.crt", "client.key")
 pool, _ := modbus.LoadCertPool("ca.crt")
 
-client, err := modbus.NewClient(&modbus.ClientConfiguration{
+client, err := modbus.New(modbus.Config{
     URL:           "tcp+tls://plc.local:802",
     TLSClientCert: &cert,
     TLSRootCAs:    pool,
@@ -157,7 +208,7 @@ client, err := modbus.NewClient(&modbus.ClientConfiguration{
 All read methods share the same signature preamble:
 
 ```go
-func (mc *ModbusClient) <Method>(ctx context.Context, unitID uint8, addr uint16, ...) (..., error)
+func (mc *Client) <Method>(ctx context.Context, unitID uint8, addr uint16, ...) (..., error)
 ```
 
 `ctx` propagates cancellation and deadlines. If the context carries a deadline it
@@ -168,16 +219,16 @@ overrides the configured `Timeout`. `unitID` is the Modbus slave/unit ID (1–24
 
 ```go
 // FC01 — read one coil
-func (mc *ModbusClient) ReadCoil(ctx context.Context, unitID uint8, addr uint16) (bool, error)
+func (mc *Client) ReadCoil(ctx context.Context, unitID uint8, addr uint16) (bool, error)
 
 // FC01 — read multiple coils (quantity ≤ 2000)
-func (mc *ModbusClient) ReadCoils(ctx context.Context, unitID uint8, addr uint16, quantity uint16) ([]bool, error)
+func (mc *Client) ReadCoils(ctx context.Context, unitID uint8, addr uint16, quantity uint16) ([]bool, error)
 
 // FC02 — read one discrete input
-func (mc *ModbusClient) ReadDiscreteInput(ctx context.Context, unitID uint8, addr uint16) (bool, error)
+func (mc *Client) ReadDiscreteInput(ctx context.Context, unitID uint8, addr uint16) (bool, error)
 
 // FC02 — read multiple discrete inputs (quantity ≤ 2000)
-func (mc *ModbusClient) ReadDiscreteInputs(ctx context.Context, unitID uint8, addr uint16, quantity uint16) ([]bool, error)
+func (mc *Client) ReadDiscreteInputs(ctx context.Context, unitID uint8, addr uint16, quantity uint16) ([]bool, error)
 ```
 
 ```go
@@ -189,10 +240,10 @@ coils, err := client.ReadCoils(ctx, 1, 0x0000, 8)
 
 ```go
 // FC03/FC04 — read one register as uint16
-func (mc *ModbusClient) ReadRegister(ctx context.Context, unitID uint8, addr uint16, regType RegType) (uint16, error)
+func (mc *Client) ReadRegister(ctx context.Context, unitID uint8, addr uint16, regType RegType) (uint16, error)
 
 // FC03/FC04 — read multiple registers as []uint16 (quantity ≤ 125)
-func (mc *ModbusClient) ReadRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) ([]uint16, error)
+func (mc *Client) ReadRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) ([]uint16, error)
 ```
 
 `regType` is `HoldingRegister` (FC03) or `InputRegister` (FC04).
@@ -201,7 +252,18 @@ func (mc *ModbusClient) ReadRegisters(ctx context.Context, unitID uint8, addr ui
 val, err := client.ReadRegister(ctx, 1, 0x1000, modbus.HoldingRegister)
 ```
 
-For typed reads (32/64-bit, float, ASCII, BCD, IP, etc.) use the **codec API**: `ReadWithCodec[T](mc, ctx, unitID, addr, regType, codec)`. See [§ 11 Codec API](#11-codec-api).
+For typed reads (32/64-bit, float, ASCII, BCD, IP, etc.) use the **codec API**: `codec.ReadFromClient[T](mc, ctx, unitID, addr, regType, dec)`. See [§ 11 Codec API](#11-codec-api).
+
+#### Convenience aliases
+
+```go
+func (mc *Client) ReadHoldingRegister(ctx context.Context, unitID uint8, addr uint16) (uint16, error)
+func (mc *Client) ReadHoldingRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16) ([]uint16, error)
+func (mc *Client) ReadInputRegister(ctx context.Context, unitID uint8, addr uint16) (uint16, error)
+func (mc *Client) ReadInputRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16) ([]uint16, error)
+```
+
+These are convenience wrappers for `ReadRegister` and `ReadRegisters` with the `RegType` pre-set.
 
 #### Raw bytes
 
@@ -209,10 +271,10 @@ For typed reads (32/64-bit, float, ASCII, BCD, IP, etc.) use the **codec API**: 
 
 ```go
 // FC03/FC04 — read registers as bytes in wire order (no reordering)
-func (mc *ModbusClient) ReadRawBytes(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) ([]byte, error)
+func (mc *Client) ReadRegisterBytes(ctx context.Context, unitID uint8, addr uint16, byteCount uint16, regType RegType) ([]byte, error)
 ```
 
-**Quantity** is the number of bytes to read (the library reads `ceil(quantity/2)` registers). To read N registers, pass `quantity = N*2`. Bytes are returned in wire order. Odd quantity is valid (e.g. quantity 3 reads 2 registers and returns exactly 3 bytes, with the trailing padding byte trimmed).
+**byteCount** is the number of bytes to read (the library reads `ceil(byteCount/2)` registers). To read N registers, pass `byteCount = N*2`. Bytes are returned in wire order. Odd byteCount is valid (e.g. byteCount 3 reads 2 registers and returns exactly 3 bytes, with the trailing padding byte trimmed).
 
 #### Bitfield / masked register operations
 
@@ -220,16 +282,16 @@ Many devices expose booleans and enums inside holding (or input) registers rathe
 
 ```go
 // FC03/FC04 — read one bit from a register (bitIndex 0 = LSB, 15 = MSB)
-func (mc *ModbusClient) ReadRegisterBit(ctx context.Context, unitID uint8, addr uint16, bitIndex uint8, regType RegType) (bool, error)
+func (mc *Client) ReadRegisterBit(ctx context.Context, unitID uint8, addr uint16, bitIndex uint8, regType RegType) (bool, error)
 
 // FC03/FC04 — read count bits from one register starting at bitIndex (count 1–16, bitIndex+count ≤ 16)
-func (mc *ModbusClient) ReadRegisterBits(ctx context.Context, unitID uint8, addr uint16, bitIndex, count uint8, regType RegType) ([]bool, error)
+func (mc *Client) ReadRegisterBits(ctx context.Context, unitID uint8, addr uint16, bitIndex, count uint8, regType RegType) ([]bool, error)
 
 // FC03 + FC16 — read register, set or clear one bit, write back (holding registers only)
-func (mc *ModbusClient) WriteRegisterBit(ctx context.Context, unitID uint8, addr uint16, bitIndex uint8, value bool) error
+func (mc *Client) WriteRegisterBit(ctx context.Context, unitID uint8, addr uint16, bitIndex uint8, value bool) error
 
 // FC03 + FC16 — read-modify-write: newVal = (old & ^mask) | (value & mask) (holding registers only)
-func (mc *ModbusClient) UpdateRegisterMask(ctx context.Context, unitID uint8, addr uint16, mask, value uint16) error
+func (mc *Client) UpdateRegisterMask(ctx context.Context, unitID uint8, addr uint16, mask, value uint16) error
 ```
 
 - **ReadRegisterBit** — Reads one register and returns `(reg>>bitIndex)&1 != 0`. Use for status bits, alarm bits, or single enum bits. `bitIndex > 15` returns `ErrUnexpectedParameters`.
@@ -237,32 +299,59 @@ func (mc *ModbusClient) UpdateRegisterMask(ctx context.Context, unitID uint8, ad
 - **WriteRegisterBit** — Read-modify-write: reads the holding register, sets or clears the bit at `bitIndex`, writes back. Other bits unchanged. `bitIndex > 15` returns `ErrUnexpectedParameters`.
 - **UpdateRegisterMask** — Read-modify-write: only the bits set in `mask` are updated to the corresponding bits in `value`; all other bits are preserved. Use for control words and mode fields without affecting adjacent bits.
 
+#### Atomic mask write (FC22)
+
+```go
+// FC22 (0x16) — server-side atomic read-modify-write: result = (current AND andMask) OR (orMask AND NOT andMask)
+func (mc *Client) MaskWriteRegister(ctx context.Context, unitID uint8, addr uint16, andMask, orMask uint16) error
+```
+
+Unlike `WriteRegisterBit` and `UpdateRegisterMask` (which do client-side read-modify-write using FC03+FC16), `MaskWriteRegister` is a single atomic operation on the server. Use it when concurrent clients or asynchronous device firmware may modify the same register, and atomicity matters.
+
+**Example — set bit 3 without disturbing other bits:**
+
+```go
+err := client.MaskWriteRegister(ctx, 1, 0x0010,
+    0xFFFF,  // AND mask: keep all bits
+    0x0008,  // OR mask:  set bit 3
+)
+```
+
+**Example — clear bits 4–7:**
+
+```go
+err := client.MaskWriteRegister(ctx, 1, 0x0010,
+    0xFF0F,  // AND mask: clear bits 4–7
+    0x0000,  // OR mask:  no bits to set
+)
+```
+
 ### 2.4 Write operations
 
 #### Coils
 
 ```go
 // FC05 — write one coil (true → 0xFF00, false → 0x0000)
-func (mc *ModbusClient) WriteCoil(ctx context.Context, unitID uint8, addr uint16, value bool) error
+func (mc *Client) WriteCoil(ctx context.Context, unitID uint8, addr uint16, value bool) error
 
 // FC05 — write one coil with an arbitrary 16-bit payload (non-standard; use sparingly)
-func (mc *ModbusClient) WriteCoilValue(ctx context.Context, unitID uint8, addr uint16, payload uint16) error
+func (mc *Client) WriteCoilRaw(ctx context.Context, unitID uint8, addr uint16, payload uint16) error
 
 // FC15 — write multiple coils (quantity ≤ 1968)
-func (mc *ModbusClient) WriteCoils(ctx context.Context, unitID uint8, addr uint16, values []bool) error
+func (mc *Client) WriteCoils(ctx context.Context, unitID uint8, addr uint16, values []bool) error
 ```
 
 #### 16-bit registers
 
 ```go
 // FC06 — write one 16-bit register
-func (mc *ModbusClient) WriteRegister(ctx context.Context, unitID uint8, addr uint16, value uint16) error
+func (mc *Client) WriteRegister(ctx context.Context, unitID uint8, addr uint16, value uint16) error
 
 // FC16 — write multiple 16-bit registers (quantity ≤ 123)
-func (mc *ModbusClient) WriteRegisters(ctx context.Context, unitID uint8, addr uint16, values []uint16) error
+func (mc *Client) WriteRegisters(ctx context.Context, unitID uint8, addr uint16, values []uint16) error
 ```
 
-For typed writes (32/64-bit, float, ASCII, BCD, IP, etc.) use the **codec API**: `WriteWithCodec[T](mc, ctx, unitID, addr, value, codec)`. See [§ 11 Codec API](#11-codec-api).
+For typed writes (32/64-bit, float, ASCII, BCD, IP, etc.) use the **codec API**: `codec.WriteToClient[T](mc, ctx, unitID, addr, value, enc)`. See [§ 11 Codec API](#11-codec-api).
 
 #### Raw bytes
 
@@ -270,7 +359,7 @@ For typed writes (32/64-bit, float, ASCII, BCD, IP, etc.) use the **codec API**:
 
 ```go
 // FC16 — write bytes into registers in wire order (no reordering)
-func (mc *ModbusClient) WriteRawBytes(ctx context.Context, unitID uint8, addr uint16, values []byte) error
+func (mc *Client) WriteRegisterBytes(ctx context.Context, unitID uint8, addr uint16, values []byte) error
 ```
 
 Odd-length byte slices are zero-padded to the next register boundary (implicit register-boundary handling).
@@ -287,7 +376,7 @@ are holding registers. Request and response use raw `[]uint16` register values.
 // FC23 — write writeValues starting at writeAddr, then read readQty registers
 // starting at readAddr, atomically.
 // readQty  ≤ 125 (0x7D), len(writeValues) ≤ 121 (0x79)
-func (mc *ModbusClient) ReadWriteMultipleRegisters(
+func (mc *Client) ReadWriteMultipleRegisters(
     ctx         context.Context,
     unitID      uint8,
     readAddr    uint16,
@@ -317,7 +406,7 @@ than 31 entries.
 ```go
 // FC24 — read the FIFO queue at the given pointer address.
 // Returns up to 31 uint16 values (queue count ≤ 31).
-func (mc *ModbusClient) ReadFIFOQueue(
+func (mc *Client) ReadFIFOQueue(
     ctx    context.Context,
     unitID uint8,
     addr   uint16,
@@ -349,7 +438,7 @@ type FileRecordRequest struct {
 // FC20 — read one or more groups of file records.
 // Returns one []uint16 slice per sub-request, in the same order.
 // Register data is returned in big-endian wire order.
-func (mc *ModbusClient) ReadFileRecords(
+func (mc *Client) ReadFileRecords(
     ctx      context.Context,
     unitID   uint8,
     requests []FileRecordRequest,
@@ -387,7 +476,7 @@ type FileRecord struct {
 
 // FC21 — write one or more groups of file records.
 // Register values are encoded as big-endian uint16 on the wire.
-func (mc *ModbusClient) WriteFileRecords(
+func (mc *Client) WriteFileRecords(
     ctx     context.Context,
     unitID  uint8,
     records []FileRecord,
@@ -423,7 +512,7 @@ Use **ReadAllDeviceIdentification** to fetch everything the device supports in o
 #### ReadAllDeviceIdentification — get all available identification
 
 ```go
-func (mc *ModbusClient) ReadAllDeviceIdentification(
+func (mc *Client) ReadAllDeviceIdentification(
     ctx    context.Context,
     unitID uint8,
 ) (*DeviceIdentification, error)
@@ -445,11 +534,11 @@ for _, obj := range di.Objects {
 #### ReadDeviceIdentification — category or single object
 
 ```go
-func (mc *ModbusClient) ReadDeviceIdentification(
-    ctx              context.Context,
-    unitID           uint8,
-    readDeviceIdCode uint8,
-    objectId         uint8,
+func (mc *Client) ReadDeviceIdentification(
+    ctx         context.Context,
+    unitID      uint8,
+    category    DeviceIDCategory,
+    startObject DeviceIDObjectID,
 ) (*DeviceIdentification, error)
 ```
 
@@ -459,35 +548,46 @@ Sends a FC43 / MEI 0x0E request for a specific category or one object. Pages thr
 
 | Constant | Value | Category |
 |----------|-------|----------|
-| `modbus.ReadDeviceIdBasic` | `0x01` | Basic (VendorName, ProductCode, MajorMinorRevision) |
-| `modbus.ReadDeviceIdRegular` | `0x02` | Regular (+ VendorUrl, ProductName, ModelName, UserApplicationName) |
-| `modbus.ReadDeviceIdExtended` | `0x03` | Extended (+ private objects 0x80–0xFF) |
-| `modbus.ReadDeviceIdIndividual` | `0x04` | Single object (set `objectId` to desired ID) |
+| `modbus.DeviceIDBasic` | `0x01` | Basic (VendorName, ProductCode, MajorMinorRevision) |
+| `modbus.DeviceIDRegular` | `0x02` | Regular (+ VendorUrl, ProductName, ModelName, UserApplicationName) |
+| `modbus.DeviceIDExtended` | `0x03` | Extended (+ private objects 0x80–0xFF) |
+| `modbus.DeviceIDIndividual` | `0x04` | Single object (set `startObject` to desired ID) |
 
-For stream access (Basic/Regular/Extended), pass `objectId` as `0x00` to start from the first object. For Individual, pass the desired object ID. If you request a higher category than the device supports, it responds at its actual conformity level.
+For stream access (Basic/Regular/Extended), pass `startObject` as `0x00` to start from the first object. For Individual, pass the desired object ID. If you request a higher category than the device supports, it responds at its actual conformity level.
 
 **Response types:**
 
 ```go
+type DeviceIDCategory uint8
+
+const (
+    DeviceIDBasic      DeviceIDCategory = 0x01
+    DeviceIDRegular    DeviceIDCategory = 0x02
+    DeviceIDExtended   DeviceIDCategory = 0x03
+    DeviceIDIndividual DeviceIDCategory = 0x04
+)
+
+type DeviceIDObjectID uint8
+
 type DeviceIdentification struct {
-    ReadDeviceIdCode uint8   // echo of requested (or actual) category
-    ConformityLevel  uint8   // 0x01/0x02/0x03 or 0x81/0x82/0x83 (stream + individual)
-    MoreFollows      uint8   // 0x00 = last page, 0xFF = more pages
-    NextObjectId     uint8   // next object to request when MoreFollows == 0xFF
-    Objects          []DeviceIdentificationObject
+    Category        DeviceIDCategory
+    ConformityLevel uint8
+    MoreFollows     bool
+    NextObjectID    DeviceIDObjectID
+    Objects         []DeviceIdentificationObject
 }
 
 type DeviceIdentificationObject struct {
-    Id    uint8  // object identifier (0x00–0x06 standard, 0x80–0xFF vendor)
-    Name  string // human-readable label (e.g. "VendorName", "Extended")
-    Value string // decoded UTF-8 value
+    ID    DeviceIDObjectID
+    Name  string
+    Value string
 }
 ```
 
 **Example — basic only:**
 
 ```go
-di, err := client.ReadDeviceIdentification(ctx, 1, modbus.ReadDeviceIdBasic, 0x00)
+di, err := client.ReadDeviceIdentification(ctx, 1, modbus.DeviceIDBasic, 0x00)
 if err != nil {
     log.Fatal(err)
 }
@@ -499,154 +599,197 @@ for _, obj := range di.Objects {
 **Example — single object (individual access):**
 
 ```go
-di, err := client.ReadDeviceIdentification(ctx, 1, modbus.ReadDeviceIdIndividual, 0x04)
+di, err := client.ReadDeviceIdentification(ctx, 1, modbus.DeviceIDIndividual, 0x04)
 if err != nil {
     log.Fatal(err)
 }
 // di.Objects has one element: ProductName (0x04)
 ```
 
+#### Conformity level helpers
+
+```go
+// SupportsStreamAccess reports whether the device conformity level indicates
+// support for stream access (Basic, Regular, or Extended categories).
+// True for conformity levels 0x01, 0x02, 0x03, 0x81, 0x82, 0x83.
+func (di *DeviceIdentification) SupportsStreamAccess() bool
+
+// SupportsIndividualAccess reports whether the device conformity level
+// indicates support for individual object access (category 0x04).
+// True for conformity levels 0x81, 0x82, 0x83.
+func (di *DeviceIdentification) SupportsIndividualAccess() bool
+```
+
+#### Validation rules (FC43/14)
+
+The client enforces the following Modbus-spec validation on FC43 responses:
+
+- **Conformity level** must be one of `0x01, 0x02, 0x03, 0x81, 0x82, 0x83`. Other values
+  produce a `*ProtocolError`.
+- When **MoreFollows** is `0x00` (no continuation), **NextObjectID** must also be `0x00`.
+- For **Individual access** (category `0x04`): `MoreFollows` must be `0x00` and exactly one
+  object must be returned.
+- Requesting an unknown object ID via stream access causes the device to restart from
+  object 0; individual access for an unknown ID returns `ErrIllegalDataAddress`.
+
+#### MEI type 13 (CANopen)
+
+FC43 sub-type 13 (0x0D) is intentionally unsupported. It targets CANopen device profiles
+and has no practical use in typical Modbus deployments. Only MEI type 14 (0x0E, Read
+Device Identification) is implemented.
+
 ---
 
 ### 2.7 Modbus device detection
 
-**HasUnitReadFunction** probes the given unit with a single read-style function code and returns whether the unit responded with a structurally valid Modbus response (normal or exception). Supported FCs: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20. For any other FC returns `(false, ErrUnexpectedParameters)`. Use after **Open()**.
+**SupportsFunction** probes the given unit with a single read-style function code and returns whether the unit responded with a structurally valid Modbus response (normal or exception). Supported FCs: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20. For any other FC returns `(false, ErrUnexpectedParameters)`. Use after **Open()**.
+
+Error classification: returns `(false, nil)` for expected probe-negative outcomes (timeout, Modbus exception, gateway target failure); returns `(false, err)` for real transport/client errors (broken socket, bad CRC, bad unit ID, client not open). Context cancellation returns `(false, ctx.Err())`.
 
 ```go
-func (mc *ModbusClient) HasUnitReadFunction(ctx context.Context, unitID uint8, fc FunctionCode) (bool, error)
+func (mc *Client) SupportsFunction(ctx context.Context, unitID uint8, fc FunctionCode) (bool, error)
 ```
 
-**HasUnitIdentifyFunction** reports whether the unit supports Read Device Identification (FC43). Equivalent to `HasUnitReadFunction(ctx, unitID, FCEncapsulatedInterface)`. Use after **Open()**.
+**SupportsDeviceIdentification** reports whether the unit supports Read Device Identification (FC43). Equivalent to `SupportsFunction(ctx, unitID, FCEncapsulatedInterface)`. Use after **Open()**.
 
 ```go
-func (mc *ModbusClient) HasUnitIdentifyFunction(ctx context.Context, unitID uint8) (bool, error)
+func (mc *Client) SupportsDeviceIdentification(ctx context.Context, unitID uint8) (bool, error)
+```
+
+**ProbeFunction** provides detailed probe diagnostics. Unlike `SupportsFunction`,
+it never returns a non-nil error for expected probe-negative outcomes — those are
+captured in the `ProbeResult`. Only context cancellation and unsupported probe FCs
+return a non-nil error.
+
+```go
+func (mc *Client) ProbeFunction(ctx context.Context, unitID uint8, fc FunctionCode) (ProbeResult, error)
+
+type ProbeOutcome uint8
+
+const (
+    ProbeSupported        ProbeOutcome = iota // valid normal response
+    ProbeException                            // Modbus exception
+    ProbeTimeout                              // no response (timeout/gateway)
+    ProbeTransportError                       // broken socket, corruption
+    ProbeValidationFailed                     // response received but invalid
+)
+
+type ProbeResult struct {
+    Outcome       ProbeOutcome
+    Supported     bool          // true only when Outcome == ProbeSupported
+    ExceptionCode ExceptionCode // set when Outcome == ProbeException
+    Err           error         // underlying error for Timeout/TransportError
+    ResponseFC    FunctionCode  // response FC (set when a response was received)
+    RawPayload    []byte        // raw response payload (non-exception responses)
+    Reason        string        // short explanation for non-success outcomes
+}
 ```
 
 ---
 
 ### 2.8 SunSpec discovery
 
-The library provides transport-level **read-only** SunSpec discovery helpers: detect the SunSpec "SunS" marker, probe candidate base addresses, and enumerate the model chain (model ID and length only). These APIs do not modify device state. They do **not** implement point decoding, scale factors, or schema-driven parsing; that belongs in a higher-level SunSpec library.
+Transport-level **read-only** SunSpec discovery helpers live in the `sunspec` subpackage (`import "github.com/otfabric/modbus/sunspec"`). They detect the SunSpec "SunS" marker, probe candidate base addresses, and enumerate the model chain (model ID and length only). These APIs do not modify device state and do **not** implement point decoding, scale factors, or schema-driven parsing; that belongs in a higher-level SunSpec library.
 
-**Defaults when `opts` is nil:** `RegType = HoldingRegister`, `BaseAddresses` = `SunSpecDefaultBaseAddresses` (official candidates 0, 40000, 50000 plus adjacent offsets 1, 39999, 40001, 49999, 50001 for 0-based/1-based compatibility), `MaxModels = 256`. UnitID zero is treated as 1. "Not SunSpec" is **not** an error: detection returns `Detected: false` with `error == nil`. Reaching **MaxModels** stops enumeration and returns the models collected so far **without error** (normal truncation). Invalid options (unsupported RegType, empty BaseAddresses) return `ErrUnexpectedParameters`. UnitID may be 0–255 (e.g. when the device is behind a Modbus gateway).
-
-#### Types
-
-```go
-type SunSpecOptions struct {
-    UnitID         uint8    // Modbus slave/unit ID (0–255); gateway use supported
-    RegType        RegType  // default HoldingRegister
-    BaseAddresses  []uint16 // default: 0, 40000, 50000 + adjacent 1, 39999, 40001, 49999, 50001
-    MaxModels      int      // guard; 0 = 256
-    MaxAddressSpan uint16   // max (end − base) for model chain; 0 = no limit
-}
-
-type SunSpecProbeAttempt struct {
-    BaseAddress uint16
-    RegType     RegType
-    Registers   []uint16 // len 2 when read succeeded
-    Matched     bool
-    Error       error
-}
-
-type SunSpecDetectionResult struct {
-    Detected    bool
-    UnitID      uint8
-    RegType     RegType
-    BaseAddress uint16
-    Marker      [2]uint16
-    Attempts    []SunSpecProbeAttempt
-}
-
-type SunSpecModelHeader struct {
-    ID           uint16
-    Length       uint16   // payload length in registers (excl. 2-reg header)
-    StartAddress uint16
-    EndAddress   uint16
-    NextAddress  uint16
-    HeaderRaw    [2]uint16
-    IsEndModel   bool
-}
-
-type SunSpecDiscoveryResult struct {
-    Detection SunSpecDetectionResult
-    Models    []SunSpecModelHeader
-}
-```
-
-#### DetectSunSpec
-
-Probes each candidate base address: reads 2 registers and checks for the SunSpec marker (reg 0 = 0x5375, reg 1 = 0x6E53). Returns a structured result; only returns a non-nil error for invalid options, context cancellation, or inability to produce a result. Uses the same request path as other client methods (lock per read, retries, metrics).
-
-```go
-func (mc *ModbusClient) DetectSunSpec(ctx context.Context, opts *SunSpecOptions) (*SunSpecDetectionResult, error)
-```
-
-#### ReadSunSpecModelHeaders
-
-Walks the model chain starting at `baseAddress + 2`, reading 2 registers per model (ID, length). Stops at the end model (ID 0xFFFF, length 0) or when guards trigger. **Reaching MaxModels** stops enumeration and returns the models collected so far **without error**. Returns **partial model results** plus `ErrSunSpecModelChainInvalid` for malformed or non-progressing chains (e.g. length 0 with ID ≠ 0xFFFF, or `baseAddress+2` overflow), or `ErrSunSpecModelChainLimitExceeded` when the chain exceeds `MaxAddressSpan`. Uses **big-endian** for marker and headers. Uses the same request path as other client methods (lock per read, retries, metrics).
-
-```go
-func (mc *ModbusClient) ReadSunSpecModelHeaders(
-    ctx context.Context,
-    opts *SunSpecOptions,
-    baseAddress uint16,
-) ([]SunSpecModelHeader, error)
-```
-
-#### DiscoverSunSpec
-
-Convenience: runs DetectSunSpec and, if detected, ReadSunSpecModelHeaders. Single call for fingerprinting and inventory.
-
-```go
-func (mc *ModbusClient) DiscoverSunSpec(ctx context.Context, opts *SunSpecOptions) (*SunSpecDiscoveryResult, error)
-```
-
-**Example — detect only:**
-
-```go
-res, err := client.DetectSunSpec(ctx, &modbus.SunSpecOptions{UnitID: 1})
-if err != nil {
-    return err
-}
-if !res.Detected {
-    fmt.Println("not sunspec")
-    return nil
-}
-fmt.Printf("sunspec at base %d\n", res.BaseAddress)
-```
-
-**Example — detect and list models:**
-
-```go
-disc, err := client.DiscoverSunSpec(ctx, &modbus.SunSpecOptions{UnitID: 1})
-if err != nil {
-    return err
-}
-if !disc.Detection.Detected {
-    fmt.Println("not sunspec")
-    return nil
-}
-for _, m := range disc.Models {
-    if m.IsEndModel {
-        fmt.Printf("END at %d\n", m.StartAddress)
-        continue
-    }
-    fmt.Printf("model=%d start=%d end=%d len=%d\n",
-        m.ID, m.StartAddress, m.EndAddress, m.Length)
-}
-```
+See the `sunspec` package documentation for the full API (`sunspec.DetectSunSpec`, `sunspec.ReadSunSpecModelHeaders`, `sunspec.DiscoverSunSpec`).
 
 ---
 
-### 2.9 Diagnostics and Report Server ID (FC08/0x11)
+### 2.9 Serial-line function codes and Diagnostics (FC07/FC08/FC0B/FC0C/FC11)
+
+> **Transport-neutral policy:** The Modbus spec labels FC07, FC08, FC0B, and FC0C as
+> "Serial Line only," but real-world gateways routinely forward these PDUs over TCP/UDP.
+> This library supports all function codes on every transport and does not restrict any FC
+> by transport type.
+
+#### Read Exception Status (FC 0x07)
+
+Reads the eight exception status outputs (coils) from the device. Returns a single byte
+where each bit represents one exception coil (vendor-defined meaning).
+
+```go
+func (mc *Client) ReadExceptionStatus(ctx context.Context, unitID uint8) (status uint8, err error)
+```
+
+**Example:**
+
+```go
+status, err := client.ReadExceptionStatus(ctx, 1)
+if err != nil {
+    log.Fatal(err)
+}
+// status bits 0-7 represent vendor-defined exception coils
+```
+
+#### Get Comm Event Counter (FC 0x0B)
+
+Reads the device status and event counter for successful message completions on the
+serial line. Useful for determining whether the device has processed a message.
+
+```go
+func (mc *Client) GetCommEventCounter(
+    ctx    context.Context,
+    unitID uint8,
+) (*CommEventCounterResponse, error)
+```
+
+```go
+type CommEventCounterResponse struct {
+    Status     uint16
+    EventCount uint16
+}
+```
+
+**Example:**
+
+```go
+cr, err := client.GetCommEventCounter(ctx, 1)
+if err != nil {
+    log.Fatal(err)
+}
+// cr.Status: 0x0000 = not busy, 0xFFFF = busy
+// cr.EventCount: increments on each successful message completion
+```
+
+#### Get Comm Event Log (FC 0x0C)
+
+Reads the device status, event count, message count, and a variable-length event log
+from the device.
+
+```go
+func (mc *Client) GetCommEventLog(
+    ctx    context.Context,
+    unitID uint8,
+) (*CommEventLogResponse, error)
+```
+
+```go
+type CommEventLogResponse struct {
+    Status       uint16
+    EventCount   uint16
+    MessageCount uint16
+    Events       []byte
+}
+```
+
+**Example:**
+
+```go
+cl, err := client.GetCommEventLog(ctx, 1)
+if err != nil {
+    log.Fatal(err)
+}
+// cl.Events contains 0-64 event bytes (most recent first)
+```
+
+#### Diagnostics (FC 0x08)
 
 #### Diagnostics (FC 0x08)
 
 Sends a Diagnostics request with a sub-function code and optional data. The response echoes the sub-function and returns sub-function-specific data. Use **DiagnosticSubFunction** constants for well-known sub-functions.
 
 ```go
-func (mc *ModbusClient) Diagnostics(
+func (mc *Client) Diagnostics(
     ctx        context.Context,
     unitID     uint8,
     subFunction DiagnosticSubFunction,
@@ -712,34 +855,66 @@ if err != nil {
 Requests the device-specific server ID, run indicator status, and optional additional data.
 
 ```go
-func (mc *ModbusClient) ReportServerId(ctx context.Context, unitID uint8) (*ReportServerIdResponse, error)
+func (mc *Client) ReportServerID(ctx context.Context, unitID uint8) (*ReportServerIDResponse, error)
 ```
 
 ```go
-type ReportServerIdResponse struct {
-    ByteCount uint8  // number of following bytes
-    Data      []byte // server ID, run indicator (0x00=OFF, 0xFF=ON), optional additional data
+type ReportServerIDResponse struct {
+    Data               []byte
+    RunIndicatorStatus *bool  // parsed from last byte: true=ON (0xFF), false=OFF (0x00); nil if not present
 }
 ```
 
 **Example:**
 
 ```go
-rs, err := client.ReportServerId(ctx, 1)
+rs, err := client.ReportServerID(ctx, 1)
 if err != nil {
     log.Fatal(err)
 }
-// rs.Data[0] often is server ID byte; last byte often is run indicator; layout is device-specific
+// rs.Data contains server ID and optional additional data; rs.RunIndicatorStatus indicates ON/OFF when present
 ```
+
+#### Convenience helpers
+
+```go
+// FC08 sub-function 0x0000 — loopback test; returns the echoed value.
+func (mc *Client) DiagnosticLoopback(ctx context.Context, unitID uint8, value uint16) (uint16, error)
+
+// FC08 sub-function 0x0002 — read the diagnostic register.
+func (mc *Client) DiagnosticRegister(ctx context.Context, unitID uint8) (uint16, error)
+
+// FC08 sub-function 0x0004 — force the device into listen-only mode (no responses).
+// No response is expected; the method returns nil on success.
+func (mc *Client) DiagnosticForceListenOnlyMode(ctx context.Context, unitID uint8) error
+
+// FC08 sub-function 0x000A — clear all counters and the diagnostic register.
+func (mc *Client) DiagnosticClearCounters(ctx context.Context, unitID uint8) error
+
+// FC08 sub-function 0x000B — read the bus message count.
+func (mc *Client) BusMessageCount(ctx context.Context, unitID uint8) (uint16, error)
+
+// FC08 counter sub-functions — each returns a single uint16 counter value.
+func (mc *Client) DiagnosticBusCommunicationErrorCount(ctx context.Context, unitID uint8) (uint16, error)
+func (mc *Client) DiagnosticBusExceptionErrorCount(ctx context.Context, unitID uint8) (uint16, error)
+func (mc *Client) DiagnosticServerMessageCount(ctx context.Context, unitID uint8) (uint16, error)
+func (mc *Client) DiagnosticServerNoResponseCount(ctx context.Context, unitID uint8) (uint16, error)
+func (mc *Client) DiagnosticServerNAKCount(ctx context.Context, unitID uint8) (uint16, error)
+func (mc *Client) DiagnosticServerBusyCount(ctx context.Context, unitID uint8) (uint16, error)
+func (mc *Client) DiagnosticBusCharacterOverrunCount(ctx context.Context, unitID uint8) (uint16, error)
+```
+
+All counter wrappers validate that the response contains exactly 2 data bytes and return a
+`*ProtocolError` if the payload is malformed.
 
 ---
 
 ## 3. Server
 
-### 3.1 `ServerConfiguration`
+### 3.1 `ServerConfig`
 
 ```go
-type ServerConfiguration struct {
+type ServerConfig struct {
     // URL defines where to listen. e.g. "tcp://[::]:502", "tcp+tls://[::]:802"
     URL string
 
@@ -772,21 +947,38 @@ type ServerConfiguration struct {
 ### 3.2 Lifecycle
 
 ```go
-func NewServer(conf *ServerConfiguration, reqHandler RequestHandler) (*ModbusServer, error)
-func (ms *ModbusServer) Start() error
-func (ms *ModbusServer) Stop() error
+func NewServer(conf *ServerConfig, handler RequestHandler) (*Server, error)
+func ValidateServerConfig(conf *ServerConfig, handler RequestHandler) error
+
+func (ms *Server) Start() error
+func (ms *Server) Shutdown(ctx context.Context) error
+func (ms *Server) Stop() error
 ```
 
-`NewServer` validates the configuration. `Start` binds the listener and begins
-accepting connections. `Stop` closes the listener, closes all open client
-connections, and blocks until every in-flight handler goroutine has exited
-(backed by a `sync.WaitGroup`).
+`NewServer` validates the configuration and handler (handler must be non-nil).
+`ValidateServerConfig` runs the same validation without creating a server.
+`Start` binds the listener and begins accepting connections. `Shutdown(ctx)` stops
+accepting, cancels per-connection contexts, closes sockets, and blocks until all
+handler goroutines exit or `ctx` expires (returning `ctx.Err()`). `Stop()` is
+equivalent to `Shutdown(context.Background())` — it blocks indefinitely.
+
+**Supported function codes:** The server currently handles the following 8 FCs:
+FC01 (Read Coils), FC02 (Read Discrete Inputs), FC03 (Read Holding Registers),
+FC04 (Read Input Registers), FC05 (Write Single Coil), FC06 (Write Single Register),
+FC15 (Write Multiple Coils), FC16 (Write Multiple Registers). Any other FC receives
+an `Illegal Function` exception response. Advanced FCs (FC08, FC20/21, FC22, FC23,
+FC24, FC43) are not supported on the server side.
+
+**Panic recovery:** Handler panics are caught by the server. A panic in any handler
+method results in a `ServerDeviceFailure` exception response and a log entry; the
+client goroutine continues processing subsequent requests.
 
 ```go
-server, err := modbus.NewServer(&modbus.ServerConfiguration{
+server, err := modbus.NewServer(&modbus.ServerConfig{
     URL:        "tcp://[::]:502",
     MaxClients: 20,
 }, &myHandler{})
+
 if err != nil {
     log.Fatal(err)
 }
@@ -794,15 +986,24 @@ if err := server.Start(); err != nil {
     log.Fatal(err)
 }
 
-// graceful shutdown on SIGINT
+// bounded graceful shutdown on SIGINT
 <-sigCh
-server.Stop()
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+if err := server.Shutdown(ctx); err != nil {
+    log.Printf("shutdown: %v", err)
+}
 ```
 
 ### 3.3 `RequestHandler` interface
 
-Implement this interface and pass it to `NewServer`. All four methods receive the
-request context (currently `context.Background()`) and a request struct.
+Implement this interface and pass it to `NewServer`. Each connected client is
+served in its own goroutine, so handler methods may be called concurrently from
+different client goroutines. Implementations must be safe for concurrent use
+(e.g. use `sync.Mutex` or other synchronization when accessing shared state).
+
+A panic inside any handler method is recovered and logged with a full stack
+trace; the client receives a `ServerDeviceFailure` exception response.
 
 ```go
 type RequestHandler interface {
@@ -878,39 +1079,120 @@ func (h *myHandler) HandleInputRegisters(ctx context.Context, req *modbus.InputR
 
 ```go
 type CoilsRequest struct {
-    ClientAddr string   // source IP address of the client
-    ClientRole string   // role from the client TLS certificate (tcp+tls only)
-    UnitId     uint8    // target unit / slave ID
-    Addr       uint16   // first coil address
-    Quantity   uint16   // number of consecutive coils
-    IsWrite    bool     // true for FC05/FC15 (writes)
-    Args       []bool   // coil values for write requests (nil for reads)
+    ClientAddr   string       // source IP address of the client
+    ClientRole   string       // role from the client TLS certificate (tcp+tls only)
+    UnitID       uint8        // target unit / slave ID
+    FunctionCode FunctionCode // FC01, FC05, or FC15
+    Addr         uint16       // first coil address
+    Quantity     uint16       // number of consecutive coils
+    IsWrite      bool         // true for FC05/FC15 (writes)
+    Args         []bool       // coil values for write requests (nil for reads)
 }
 
 type DiscreteInputsRequest struct {
-    ClientAddr string
-    ClientRole string
-    UnitId     uint8
-    Addr       uint16
-    Quantity   uint16
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC02
+    Addr         uint16
+    Quantity     uint16
 }
 
 type HoldingRegistersRequest struct {
-    ClientAddr string
-    ClientRole string
-    UnitId     uint8
-    Addr       uint16
-    Quantity   uint16
-    IsWrite    bool     // true for FC06/FC16 (writes)
-    Args       []uint16 // register values for write requests (nil for reads)
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC03, FC06, or FC16
+    Addr         uint16
+    Quantity     uint16
+    IsWrite      bool         // true for FC06/FC16 (writes)
+    Args         []uint16     // register values for write requests (nil for reads)
 }
 
 type InputRegistersRequest struct {
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC04
+    Addr         uint16
+    Quantity     uint16
+}
+```
+
+### 3.5 Optional handler interfaces (FC07, FC0B, FC0C, FC22, FC23)
+
+FC07 (Read Exception Status), FC0B (Get Comm Event Counter), FC0C (Get Comm Event Log),
+FC22 (Mask Write Register) and FC23 (Read/Write Multiple Registers) use optional handler
+interfaces. If the `RequestHandler` also implements the corresponding interface, the
+server dispatches the FC to it; otherwise the server returns `Illegal Function`.
+
+#### Serial-line function codes (FC07, FC0B, FC0C)
+
+```go
+type ExceptionStatusHandler interface {
+    HandleExceptionStatus(ctx context.Context, req *ExceptionStatusRequest) (status uint8, err error)
+}
+
+type ExceptionStatusRequest struct {
     ClientAddr string
     ClientRole string
-    UnitId     uint8
-    Addr       uint16
-    Quantity   uint16
+    UnitID     uint8
+}
+
+type CommEventCounterHandler interface {
+    HandleCommEventCounter(ctx context.Context, req *CommEventCounterRequest) (status uint16, eventCount uint16, err error)
+}
+
+type CommEventCounterRequest struct {
+    ClientAddr string
+    ClientRole string
+    UnitID     uint8
+}
+
+type CommEventLogHandler interface {
+    HandleCommEventLog(ctx context.Context, req *CommEventLogRequest) (status uint16, eventCount uint16, messageCount uint16, events []byte, err error)
+}
+
+type CommEventLogRequest struct {
+    ClientAddr string
+    ClientRole string
+    UnitID     uint8
+}
+```
+
+These handlers follow the same transport-neutral policy as the client: they are dispatched
+regardless of transport type, since gateways commonly forward these PDUs over TCP/UDP.
+
+#### Register manipulation (FC22, FC23)
+
+```go
+type MaskWriteHandler interface {
+    HandleMaskWrite(ctx context.Context, req *MaskWriteRequest) error
+}
+
+type MaskWriteRequest struct {
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC22
+    Addr         uint16
+    AndMask      uint16
+    OrMask       uint16
+}
+
+type ReadWriteHandler interface {
+    HandleReadWriteRegisters(ctx context.Context, req *ReadWriteRegistersRequest) (readValues []uint16, err error)
+}
+
+type ReadWriteRegistersRequest struct {
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC23
+    ReadAddr     uint16
+    ReadQty      uint16
+    WriteAddr    uint16
+    WriteValues  []uint16
 }
 ```
 
@@ -925,7 +1207,7 @@ conditions and `errors.As` to access structured exception details.
 
 ```go
 var (
-    ErrConfigurationError      // invalid configuration passed to NewClient/NewServer
+    ErrConfigurationError      // invalid configuration passed to New/NewServer
     ErrClientNotOpen           // request before Open() or after Close()
     ErrRequestTimedOut         // request exceeded deadline or configured timeout
     ErrIllegalFunction         // Modbus exception 0x01
@@ -940,19 +1222,13 @@ var (
     ErrBadCRC                  // RTU CRC mismatch
     ErrShortFrame              // frame too short to decode
     ErrProtocolError           // malformed response
-    ErrBadUnitId               // response unit ID does not match request
-    ErrBadTransactionId        // TCP transaction ID mismatch
-    ErrUnknownProtocolId       // non-zero MBAP protocol identifier
+    ErrBadUnitID               // response unit ID does not match request
+    ErrBadTransactionID        // TCP transaction ID mismatch
+    ErrUnknownProtocolID       // non-zero MBAP protocol identifier
     ErrInvalidMBAPLength      // MBAP length &lt; 2 or &gt; 254 (error may wrap value)
     ErrUnexpectedParameters          // invalid arguments passed to a client method
     ErrSunSpecModelChainInvalid      // malformed or non-progressing SunSpec model chain
     ErrSunSpecModelChainLimitExceeded // SunSpec model chain exceeded MaxAddressSpan
-    ErrCodecRegisterCount            // register count does not match codec
-    ErrCodecByteCount                // byte count does not match codec
-    ErrCodecLayout                   // invalid layout for codec
-    ErrCodecValue                    // invalid value for encode/decode
-    ErrUnknownCodec                  // unknown codec ID (e.g. runtime registry lookup)
-    ErrEncodingError                 // codec encoding/byte validation error
 )
 ```
 
@@ -987,33 +1263,104 @@ if err != nil {
 }
 ```
 
-### Codec errors
+### `ProtocolError` — typed protocol diagnostics
 
-Codec operations use the same sentinels and add typed errors for diagnostics. Use `errors.As` to inspect them.
+Every protocol-level anomaly (bad byte count, truncated payload, echo mismatch,
+pagination inconsistency, unexpected FC, etc.) returns a `*ProtocolError` that
+wraps `ErrProtocolError` with the operation name and a human-readable reason.
 
 ```go
+type ProtocolError struct {
+    Op     string // e.g. "ReadDeviceIdentification", "checkResponseFC", "extractByteCountPayload"
+    Reason string // e.g. "byte count 5 does not match payload length 3"
+}
+```
+
+`errors.Is(err, modbus.ErrProtocolError)` still works because `ProtocolError`
+implements `Unwrap() error { return ErrProtocolError }`. Use `errors.As` for
+the detailed diagnostic message:
+
+```go
+var protoErr *modbus.ProtocolError
+if errors.As(err, &protoErr) {
+    log.Printf("protocol error in %s: %s", protoErr.Op, protoErr.Reason)
+}
+```
+
+### `ConfigurationError` — typed constructor diagnostics
+
+`New()` and `NewServer()` return `*ConfigurationError` wrapping `ErrConfigurationError`
+with the specific field and reason. `errors.Is(err, modbus.ErrConfigurationError)` still
+works; use `errors.As` for detailed diagnostics.
+
+```go
+type ConfigurationError struct {
+    Field  string // e.g. "URL", "TLSClientCert", "reqHandler"
+    Reason string // e.g. "required for tcp+tls scheme", "must not be nil"
+}
+```
+
+```go
+var cfgErr *modbus.ConfigurationError
+if errors.As(err, &cfgErr) {
+    log.Printf("config field %q: %s", cfgErr.Field, cfgErr.Reason)
+}
+```
+
+`ValidateConfig(conf)` and `ValidateServerConfig(conf, handler)` run the same
+validation without creating a client or server — useful for CLIs and config files.
+
+### `ParameterError` — typed validation diagnostics
+
+Every public method that receives invalid arguments returns a `*ParameterError`
+that wraps `ErrUnexpectedParameters` with the method name, parameter name, and reason.
+
+```go
+type ParameterError struct {
+    Method string // e.g. "ReadRegisters", "ReadFileRecords"
+    Param  string // e.g. "quantity", "bitIndex"
+    Reason string // e.g. "must be 1..125, got 0"
+}
+```
+
+`errors.Is(err, modbus.ErrUnexpectedParameters)` still works. Use `errors.As`
+for detailed diagnostics:
+
+```go
+var paramErr *modbus.ParameterError
+if errors.As(err, &paramErr) {
+    log.Printf("%s: parameter %q: %s", paramErr.Method, paramErr.Param, paramErr.Reason)
+}
+```
+
+### Codec errors
+
+Codec error sentinels and typed errors live in the `codec` subpackage (`import "github.com/otfabric/modbus/codec"`). Use `errors.Is` and `errors.As` to inspect them.
+
+```go
+// codec package sentinels
 var (
-    ErrCodecRegisterCount  // register count mismatch
-    ErrCodecByteCount      // byte count mismatch
-    ErrCodecLayout        // invalid layout
-    ErrCodecValue         // invalid value for encode/decode
-    ErrUnknownCodec       // unknown codec ID
-    ErrEncodingError      // byte-count or encoding validation
+    codec.ErrCodecRegisterCount  // register count mismatch
+    codec.ErrCodecByteCount      // byte count mismatch
+    codec.ErrCodecLayout         // invalid layout
+    codec.ErrCodecValue          // invalid value for encode/decode
+    codec.ErrUnknownCodec        // unknown codec ID
+    codec.ErrEncodingError       // byte-count or encoding validation
 )
 
 // Typed errors (errors.As for Codec, Expected, Actual, Layout, Reason)
-type CodecRegisterCountError struct { Codec string; Expected RegisterSpec; Actual uint16 }
-type CodecLayoutError struct { Codec string; Layout RegisterLayout; Reason string }
-type CodecByteCountError struct { Codec string; Expected ByteSpec; Actual uint16 }
-type CodecValueError struct { Codec string; Reason string }
+type codec.CodecRegisterCountError struct { Codec string; Expected RegisterSpec; Actual uint16 }
+type codec.CodecLayoutError struct { Codec string; Layout RegisterLayout; Reason string }
+type codec.CodecByteCountError struct { Codec string; Expected ByteSpec; Actual uint16 }
+type codec.CodecValueError struct { Codec string; Reason string }
 ```
 
 ---
 
 ## 5. Logging
 
-Both `ClientConfiguration` and `ServerConfiguration` accept a `Logger` interface.
-When the field is `nil`, the library uses `slog.Default()`.
+Both `Config` and `ServerConfig` accept a `Logger` interface.
+When the field is `nil` (default), logging is disabled (no-op logger).
 
 ```go
 type Logger interface {
@@ -1024,6 +1371,42 @@ type Logger interface {
 }
 ```
 
+### Structured logging (FieldLogger)
+
+For richer observability, the library supports `FieldLogger` — an optional extension
+of `Logger`. When the value assigned to `Config.Logger` also implements `FieldLogger`,
+internal log entries use structured key-value fields (e.g. `"component"`) instead of
+string-prefixed messages.
+
+```go
+type FieldLogger interface {
+    Logger
+    With(keysAndValues ...any) FieldLogger
+    DebugKV(msg string, keysAndValues ...any)
+    InfoKV(msg string, keysAndValues ...any)
+    WarnKV(msg string, keysAndValues ...any)
+    ErrorKV(msg string, keysAndValues ...any)
+}
+```
+
+### Context-aware logging (ContextLogger)
+
+For trace/span propagation and request-scoped log fields, `ContextLogger` is an
+optional extension that adds context-aware methods.
+
+```go
+type ContextLogger interface {
+    Logger
+    DebugContext(ctx context.Context, msg string, keysAndValues ...any)
+    InfoContext(ctx context.Context, msg string, keysAndValues ...any)
+    WarnContext(ctx context.Context, msg string, keysAndValues ...any)
+    ErrorContext(ctx context.Context, msg string, keysAndValues ...any)
+}
+```
+
+`NewSlogFieldLogger` returns a value that implements all three interfaces: `Logger`,
+`FieldLogger`, and `ContextLogger`.
+
 ### Built-in constructors
 
 ```go
@@ -1031,7 +1414,12 @@ type Logger interface {
 func NewStdLogger(l *log.Logger) Logger
 
 // Wrap any slog.Handler (slog.NewJSONHandler, slog.NewTextHandler, etc.)
+// Nil handler returns a no-op logger.
 func NewSlogLogger(h slog.Handler) Logger
+
+// Wrap a slog.Handler as a FieldLogger + ContextLogger with full structured KV support.
+// Nil handler returns a no-op field logger.
+func NewSlogFieldLogger(h slog.Handler) FieldLogger
 
 // Discard all log output (useful in tests).
 func NopLogger() Logger
@@ -1045,6 +1433,11 @@ conf.Logger = modbus.NewStdLogger(nil)
 
 // JSON to stderr using slog
 conf.Logger = modbus.NewSlogLogger(
+    slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}),
+)
+
+// Structured JSON with field-based logging
+conf.Logger = modbus.NewSlogFieldLogger(
     slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}),
 )
 
@@ -1065,25 +1458,51 @@ conf.Logger = &zapAdapter{l: zapLogger.Sugar()}
 
 ## 6. Metrics
 
-Attach metric callbacks via the `Metrics` field of `ClientConfiguration` or
-`ServerConfiguration`. All methods are called synchronously; implementations must
-be **non-blocking** (e.g. increment an atomic counter, send on a buffered channel).
+Attach metric callbacks via the `Metrics` field of `Config` or
+`ServerConfig`. All methods fire at the **request level** (not per-attempt —
+retries are internal to the client). All methods are called synchronously;
+implementations must be **non-blocking** (e.g. increment an atomic counter, send
+on a buffered channel).
 
 ### `ClientMetrics`
 
+Callbacks reflect **logical API outcomes** — the result the calling method actually
+returns. This means exception responses, protocol validation failures, echo mismatches,
+and byte-count errors are correctly reported as errors, not false successes.
+
 ```go
 type ClientMetrics interface {
-    // Called before the first attempt.
-    OnRequest(unitID uint8, functionCode uint8)
+    // Called once before the first attempt of a logical request.
+    OnRequest(unitID uint8, functionCode FunctionCode)
 
-    // Called after a successful round-trip (including any retry delays).
-    OnResponse(unitID uint8, functionCode uint8, duration time.Duration)
+    // Called when the logical request succeeds (all protocol validation passed).
+    OnResponse(unitID uint8, functionCode FunctionCode, duration time.Duration)
 
-    // Called when a request ultimately fails with a non-timeout error.
-    OnError(unitID uint8, functionCode uint8, duration time.Duration, err error)
+    // Called when the logical request fails with a non-timeout error
+    // (including protocol validation, exception responses, echo mismatches).
+    OnError(unitID uint8, functionCode FunctionCode, duration time.Duration, err error)
 
-    // Called when a request ultimately fails due to a timeout.
-    OnTimeout(unitID uint8, functionCode uint8, duration time.Duration)
+    // Called when the logical request fails due to a timeout.
+    OnTimeout(unitID uint8, functionCode FunctionCode, duration time.Duration)
+}
+```
+
+### `AttemptMetrics` (optional)
+
+For per-attempt visibility into retries and reconnects, implement `AttemptMetrics`
+on the same value assigned to `Config.Metrics`. If `Metrics` also implements
+`AttemptMetrics`, the library calls its methods for every individual attempt and
+dial within a retried request.
+
+```go
+type AttemptMetrics interface {
+    // Called after each transport attempt (including the first).
+    // attempt is 0-based. err is nil on success.
+    OnAttempt(unitID uint8, functionCode FunctionCode, attempt int, duration time.Duration, err error)
+
+    // Called when the engine re-dials the transport between retries.
+    // attempt is the retry attempt that triggered the dial. err is nil on success.
+    OnRetryDial(attempt int, duration time.Duration, err error)
 }
 ```
 
@@ -1124,7 +1543,7 @@ conf.Metrics = &promMetrics{}
 
 ## 7. Retry policy
 
-Control retry behaviour with the `RetryPolicy` field of `ClientConfiguration`.
+Control retry behaviour with the `RetryPolicy` field of `Config`.
 
 ```go
 type RetryPolicy interface {
@@ -1172,36 +1591,61 @@ conf.RetryPolicy = modbus.NewExponentialBackoff(modbus.ExponentialBackoffConfig{
 })
 ```
 
+### Retryability
+
+The built-in `ExponentialBackoff` policy only retries errors that are classified as
+transient transport failures. The `IsRetryable(err, retryTimeout)` classifier (in the
+`session` package, used internally) uses **positive classification**: only known
+transient errors are retried. Unknown/unclassified errors are **not** retried, to
+prevent hiding bugs or creating retry storms in production.
+
+**Retried** (transient transport failures): `io.EOF`, `io.ErrUnexpectedEOF`, broken
+pipe, connection reset, dial failures, `net.ErrClosed`, and (when `RetryOnTimeout` is
+true) `ErrRequestTimedOut`.
+
+**Never retried**: `context.Canceled`, `context.DeadlineExceeded`, `ErrClientNotOpen`,
+`ErrConfigurationError`, `ErrProtocolError`, `ErrBadCRC`, `ErrShortFrame`,
+`ErrBadTransactionID`, `ErrBadUnitID`, `ErrUnknownProtocolID`, `ErrInvalidMBAPLength`,
+`ErrUnexpectedParameters`, all Modbus exception responses (`*ExceptionError`), and
+**unknown/unclassified errors**.
+
+Custom `RetryPolicy` implementations may use different rules by inspecting the error
+directly.
+
 On each retry the client automatically:
 1. Closes the failed connection.
 2. Sleeps for the policy-specified delay, releasing the lock so other goroutines
    are not blocked.
 3. Dials a fresh connection before the next attempt.
 
+When a connection pool is active (`MaxConns > 1`), a retry may use a different
+underlying TCP connection. Metrics are request-level, not per-attempt — retries
+are internal to the engine.
+
 ---
 
 ## 8. Connection pool
 
 Enable a connection pool to allow concurrent goroutines to share a single
-`*ModbusClient` without serialising on a single connection.
+`*Client` without serialising on a single connection.
 
 ```go
-conf := &modbus.ClientConfiguration{
+client, _ := modbus.New(modbus.Config{
     URL:      "tcp://plc.local:502",
     MinConns: 2,   // pre-warm 2 connections during Open()
     MaxConns: 8,   // pool up to 8 concurrent connections
-}
-client, _ := modbus.NewClient(conf)
+})
 client.Open()
 ```
 
 - Applies to all TCP-based transports (`tcp`, `rtuovertcp`, `rtuoverudp`, `udp`).
 - RTU (serial) always uses a single connection; pooling is silently ignored.
 - When the pool is at capacity and all connections are in use, goroutines block
-  until one is returned, or until the context is cancelled.
+  until one is returned, until the context is cancelled, or until the pool is closed.
 - Failed connections are discarded; the pool dials replacements lazily on the next
   `acquire` call.
-- `Close()` drains and closes all idle pool connections.
+- `Close()` drains and closes all idle pool connections and wakes any goroutines
+  blocked waiting for an idle connection.
 
 ---
 
@@ -1218,7 +1662,7 @@ func LoadCertPool(filePath string) (*x509.CertPool, error)
 cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
 pool, err := modbus.LoadCertPool("client-ca.crt")
 
-server, err := modbus.NewServer(&modbus.ServerConfiguration{
+server, err := modbus.NewServer(&modbus.ServerConfig{
     URL:           "tcp+tls://[::]:802",
     TLSServerCert: &cert,
     TLSClientCAs:  pool,
@@ -1231,7 +1675,7 @@ server, err := modbus.NewServer(&modbus.ServerConfiguration{
 
 ### `Parity`
 
-Used in `ClientConfiguration.Parity` (RTU only).
+Used in `Config.Parity` (RTU only).
 
 | Constant | Value | Description |
 |---|---|---|
@@ -1349,37 +1793,45 @@ type Codec[T any] interface {
 
 `ID()` is stable for discovery and tests; `Name()` is human-readable.
 
-### 11.3 Transport: ReadWithCodec, WriteWithCodec
+### 11.3 Transport: codec.ReadFromClient, codec.WriteToClient
 
-These are **package-level** generic functions (Go methods cannot have type parameters). They use wire order (big-endian per register); layout is defined by the codec.
+These live in the `codec` subpackage (`import "github.com/otfabric/modbus/codec"`). They are **package-level** generic functions (Go methods cannot have type parameters). They accept a `codec.RegisterReader` / `codec.RegisterWriter` interface — `*modbus.Client` satisfies both. Wire order is big-endian per register; layout is defined by the codec.
 
 ```go
-func ReadWithCodec[T any](
-    mc *ModbusClient,
+// codec.RegisterReader / codec.RegisterWriter interfaces:
+type RegisterReader interface {
+    ReadRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) ([]uint16, error)
+}
+type RegisterWriter interface {
+    WriteRegisters(ctx context.Context, unitID uint8, addr uint16, values []uint16) error
+}
+
+func codec.ReadFromClient[T any](
+    r RegisterReader,
     ctx context.Context,
     unitID uint8,
     addr uint16,
     regType RegType,
-    codec Decoder[T],
+    dec Decoder[T],
 ) (T, error)
 
-func WriteWithCodec[T any](
-    mc *ModbusClient,
+func codec.WriteToClient[T any](
+    w RegisterWriter,
     ctx context.Context,
     unitID uint8,
     addr uint16,
     value T,
-    codec Encoder[T],
+    enc Encoder[T],
 ) error
 ```
 
-If `codec.RegisterSpec().Count == 0`, `ReadWithCodec` returns a `*CodecRegisterCountError`.
+If `dec.RegisterSpec().Count == 0`, `ReadFromClient` returns a `*CodecRegisterCountError`.
 
 **Convenience wrappers for uint32:**
 
 ```go
-func ReadUint32WithLayout(mc *ModbusClient, ctx context.Context, unitID uint8, addr uint16, regType RegType, layout RegisterLayout) (uint32, error)
-func WriteUint32WithLayout(mc *ModbusClient, ctx context.Context, unitID uint8, addr uint16, v uint32, layout RegisterLayout) error
+func codec.ReadUint32FromClient(r RegisterReader, ctx context.Context, unitID uint8, addr uint16, regType RegType, layout RegisterLayout) (uint32, error)
+func codec.WriteUint32ToClient(w RegisterWriter, ctx context.Context, unitID uint8, addr uint16, v uint32, layout RegisterLayout) error
 ```
 
 ### 11.4 Offline helpers
@@ -1536,7 +1988,7 @@ func FindCodecDescriptors(q CodecQuery) []CodecDescriptor
 
 ### 11.7 Codec errors (summary)
 
-Sentinels: `ErrCodecRegisterCount`, `ErrCodecLayout`, `ErrCodecValue`, `ErrCodecByteCount`, `ErrUnknownCodec`, `ErrEncodingError`. Typed: `*CodecRegisterCountError`, `*CodecLayoutError`, `*CodecByteCountError`, `*CodecValueError`; all implement `Unwrap()` to the appropriate sentinel. See [§ 4](#4-errors).
+All codec error sentinels and typed errors live in the `codec` subpackage. Sentinels: `codec.ErrCodecRegisterCount`, `codec.ErrCodecLayout`, `codec.ErrCodecValue`, `codec.ErrCodecByteCount`, `codec.ErrUnknownCodec`, `codec.ErrEncodingError`. Typed: `*codec.CodecRegisterCountError`, `*codec.CodecLayoutError`, `*codec.CodecByteCountError`, `*codec.CodecValueError`; all implement `Unwrap()` to the appropriate sentinel. See [§ 4](#4-errors).
 
 ### 11.8 Runtime codec API
 
@@ -1604,18 +2056,18 @@ IDs follow the same scheme as descriptors (e.g. `uint32/layout:4321`, `ascii/reg
 
 ### 11.10 Runtime transport and descriptor helpers
 
-**Client-bound** (perform a Modbus read or write using a runtime codec):
+**Client-bound** (perform a Modbus read or write using a runtime codec, in the `codec` subpackage):
 
 ```go
-func ReadWithRuntimeCodec(mc *ModbusClient, ctx context.Context, unitID uint8, addr uint16, regType RegType, codec RuntimeDecoder) (any, error)
-func WriteWithRuntimeCodec(mc *ModbusClient, ctx context.Context, unitID uint8, addr uint16, value any, codec RuntimeEncoder) error
+func codec.ReadRuntimeFromClient(r RegisterReader, ctx context.Context, unitID uint8, addr uint16, regType RegType, dec RuntimeDecoder) (any, error)
+func codec.WriteRuntimeToClient(w RegisterWriter, ctx context.Context, unitID uint8, addr uint16, value any, enc RuntimeEncoder) error
 ```
 
 **Offline** (decode/encode using a descriptor only; useful when you have a descriptor from discovery but no codec instance):
 
 ```go
-func DecodeWithDescriptor(regs []uint16, desc CodecDescriptor) (any, error)
-func EncodeWithDescriptor(value any, desc CodecDescriptor) ([]uint16, error)
+func codec.DecodeWithDescriptor(regs []uint16, desc CodecDescriptor) (any, error)
+func codec.EncodeWithDescriptor(value any, desc CodecDescriptor) ([]uint16, error)
 ```
 
 These instantiate a runtime codec from the descriptor internally. Type mismatch on encode returns `*CodecValueError`.
@@ -1668,7 +2120,7 @@ type RuntimeDecodeResult struct {
 
 ```go
 func ValidateRuntimeDecodePlan(plan RuntimeDecodePlan) error
-func ExecuteRuntimeDecodePlan(mc *ModbusClient, ctx context.Context, unitID uint8, plan RuntimeDecodePlan) (*RuntimeDecodeResult, error)
+func ExecuteRuntimeDecodePlan(mc *Client, ctx context.Context, unitID uint8, plan RuntimeDecodePlan) (*RuntimeDecodeResult, error)
 func ExecuteRuntimeDecodePlanOffline(regs []uint16, plan RuntimeDecodePlan) (*RuntimeDecodeResult, error)
 ```
 
