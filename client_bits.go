@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // Reads multiple coils (function code 01).

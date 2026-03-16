@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/otfabric/modbus"
+	"github.com/otfabric/go-modbus"
 )
 
 const (

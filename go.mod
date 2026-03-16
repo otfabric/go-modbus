@@ -1,4 +1,4 @@
-module github.com/otfabric/modbus
+module github.com/otfabric/go-modbus
 
 go 1.21
 

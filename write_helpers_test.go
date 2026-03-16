@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otfabric/modbus/codec"
+	"github.com/otfabric/go-modbus/codec"
 )
 
 // writeMockServer runs a TCP server that accepts FC06 and FC16 and responds with success (echo addr + value/qty).

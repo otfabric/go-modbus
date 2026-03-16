@@ -1,7 +1,7 @@
 package modbus
 
 import (
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 func uint16ToBytes(endianness Endianness, in uint16) (out []byte) {

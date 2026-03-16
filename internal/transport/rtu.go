@@ -7,9 +7,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/logging"
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/logging"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 // RTULink is the I/O interface for RTU (e.g. serial port or UDP adapter).

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/otfabric/modbus/codec"
+	"github.com/otfabric/go-modbus/codec"
 )
 
 //

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/logging"
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/logging"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 // --- RTU WriteResponse ---

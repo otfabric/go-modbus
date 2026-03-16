@@ -1,3 +1,39 @@
+# Release v1.0.1
+
+**Date:** 2026-03-16
+**Previous release:** v1.0.0
+
+## Summary
+
+**Module rename:** The Go module path has been changed from `github.com/otfabric/modbus` to `github.com/otfabric/go-modbus`. This aligns the repository name with the Go convention of prefixing Go-specific libraries with `go-`. No functional changes.
+
+## Changes
+
+### Changed
+
+- **Module path** — `go.mod` module declaration changed from `github.com/otfabric/modbus` to `github.com/otfabric/go-modbus`. All internal import paths updated accordingly.
+- **README.md** — Title, badge URLs, install command, TOC anchor, and all import examples updated to `go-modbus`.
+- **API.md / ARCHITECTURE.md / CODECS.md** — All import path references updated.
+- **CI** — Release workflow name updated to `otfabric/go-modbus`.
+
+### Migration
+
+Update your `go.mod` and all import paths:
+
+```
+github.com/otfabric/modbus       → github.com/otfabric/go-modbus
+github.com/otfabric/modbus/codec  → github.com/otfabric/go-modbus/codec
+github.com/otfabric/modbus/sunspec → github.com/otfabric/go-modbus/sunspec
+```
+
+The Go package name remains `modbus` (e.g. `modbus.New(...)`, `modbus.Config{...}`). Only the module and import paths change.
+
+### Unchanged
+
+- No API, behaviour, or functional changes. All types, functions, and constants are identical to v1.0.0.
+
+---
+
 # Release v1.0.0
 
 **Date:** 2026-03-16
@@ -25,8 +61,8 @@
 
 | Old location (root) | New location | Import path |
 |---|---|---|
-| `ReadWithCodec`, `WriteWithCodec`, all codec types | `codec/` | `github.com/otfabric/modbus/codec` |
-| `DetectSunSpec`, `ReadSunSpecModelHeaders`, `DiscoverSunSpec` | `sunspec/` | `github.com/otfabric/modbus/sunspec` |
+| `ReadWithCodec`, `WriteWithCodec`, all codec types | `codec/` | `github.com/otfabric/go-modbus/codec` |
+| `DetectSunSpec`, `ReadSunSpecModelHeaders`, `DiscoverSunSpec` | `sunspec/` | `github.com/otfabric/go-modbus/sunspec` |
 
 Root-package convenience methods on `Client` still exist for SunSpec, delegating to the subpackage.
 

@@ -3,15 +3,15 @@
 //
 // Users should import this package directly:
 //
-//	import "github.com/otfabric/modbus/sunspec"
+//	import "github.com/otfabric/go-modbus/sunspec"
 package sunspec
 
 import (
 	"context"
 	"errors"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 // RegType identifies the Modbus register type (holding or input).

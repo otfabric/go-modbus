@@ -3,7 +3,7 @@ package modbus
 import (
 	"fmt"
 
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // validateReadBitsRange validates addr/quantity for FC01 and FC02.

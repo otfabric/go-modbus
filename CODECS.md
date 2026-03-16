@@ -1,6 +1,6 @@
 # Codecs — Typed register read/write
 
-This document lists and explains all **codecs** implemented in `github.com/otfabric/modbus/codec`. Codecs provide typed encode/decode between Modbus registers (`[]uint16`) and Go values. Use them with **codec.ReadFromClient** / **codec.WriteToClient** (or **codec.ReadRuntimeFromClient** / **codec.WriteRuntimeToClient** when the type is not known at compile time).
+This document lists and explains all **codecs** implemented in `github.com/otfabric/go-modbus/codec`. Codecs provide typed encode/decode between Modbus registers (`[]uint16`) and Go values. Use them with **codec.ReadFromClient** / **codec.WriteToClient** (or **codec.ReadRuntimeFromClient** / **codec.WriteRuntimeToClient** when the type is not known at compile time).
 
 - **Transport** remains register-native: you read/write raw registers or raw bytes; the codec interprets them.
 - **Layout** (byte and word order) is part of the codec. Numeric codecs take a `RegisterLayout`; text and byte codecs have a fixed or parameterized width.
@@ -236,7 +236,7 @@ Families: `integer`, `float`, `text`, `bcd`, `bytes`, `network`, `hardware_addre
 **Typed (compile-time type known):**
 
 ```go
-import "github.com/otfabric/modbus/codec"
+import "github.com/otfabric/go-modbus/codec"
 
 c, err := codec.NewUint32Codec(codec.Layout32_4321)
 if err != nil { ... }

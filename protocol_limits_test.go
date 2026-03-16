@@ -3,8 +3,8 @@ package modbus
 import (
 	"testing"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 func TestProtocolSizeLimits_Constants(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 // ---------------------------------------------------------------------------

@@ -3,8 +3,8 @@ package transport
 import (
 	"testing"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 func TestAssembleMBAPFrame(t *testing.T) {

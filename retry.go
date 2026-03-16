@@ -3,7 +3,7 @@ package modbus
 import (
 	"time"
 
-	intsession "github.com/otfabric/modbus/internal/session"
+	intsession "github.com/otfabric/go-modbus/internal/session"
 )
 
 // RetryPolicy is the public alias for the internal/session.RetryPolicy.

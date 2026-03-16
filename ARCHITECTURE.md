@@ -6,7 +6,7 @@ and the ownership rules that govern it.
 ## Package layout
 
 ```
-github.com/otfabric/modbus          # public API — client, server, protocol types
+github.com/otfabric/go-modbus          # public API — client, server, protocol types
 ├── codec/                           # public codec package (numeric, text, time, …)
 ├── sunspec/                         # public SunSpec detection and discovery
 ├── internal/
@@ -87,7 +87,7 @@ The `session.Engine` executes them on the transport and returns `adu.Response`.
 All codec implementations live in the public `codec/` subpackage:
 
 ```go
-import "github.com/otfabric/modbus/codec"
+import "github.com/otfabric/go-modbus/codec"
 
 c, _ := codec.NewFloat32Codec(codec.Layout32_2143)
 v, err := codec.DecodeRegisters(regs, c)
@@ -101,7 +101,7 @@ These will be removed in a future release.
 SunSpec detection and discovery live in the public `sunspec/` subpackage:
 
 ```go
-import "github.com/otfabric/modbus/sunspec"
+import "github.com/otfabric/go-modbus/sunspec"
 
 result, err := sunspec.Detect(ctx, reader, &sunspec.Options{...})
 ```

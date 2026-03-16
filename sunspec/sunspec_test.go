@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 type mockReader struct {

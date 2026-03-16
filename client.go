@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/session"
-	inttrans "github.com/otfabric/modbus/internal/transport"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/session"
+	inttrans "github.com/otfabric/go-modbus/internal/transport"
 )
 
 type Parity uint

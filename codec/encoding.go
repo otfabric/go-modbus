@@ -7,7 +7,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 type Endianness = adu.Endianness

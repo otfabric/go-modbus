@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // Transport executes Modbus requests over a concrete link (TCP, RTU, etc.).

@@ -8,9 +8,9 @@ help: ## This help
 
 BIN_DIR := bin # Output directory for generated binaries
 # All packages except /examples (for lint/vet)
-PKGS := $(shell go list ./... | grep -v '/examples$$' | sed 's,^github.com/otfabric/modbus,.,')
+PKGS := $(shell go list ./... | grep -v '/examples$$' | sed 's,^github.com/otfabric/go-modbus,.,')
 # Core library + subpackages: tests and coverage (exclude cmd and examples)
-TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/cmd' | sed 's,^github.com/otfabric/modbus,.,')
+TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/cmd' | sed 's,^github.com/otfabric/go-modbus,.,')
 
 
 all: build ## Default target: build cmd + examples apps

@@ -10,8 +10,8 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
-	inttrans "github.com/otfabric/modbus/internal/transport"
+	"github.com/otfabric/go-modbus/internal/adu"
+	inttrans "github.com/otfabric/go-modbus/internal/transport"
 )
 
 // Accepts new client connections if the configured connection limit allows it.
