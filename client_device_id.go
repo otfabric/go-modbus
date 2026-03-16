@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // DeviceIDCategory selects the device identification category for FC43 requests.

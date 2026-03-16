@@ -1,11 +1,11 @@
-# modbus — Modbus Protocol Library
+# go-modbus — Modbus Protocol Library
 
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
-[![Go Report Card](https://goreportcard.com/badge/github.com/otfabric/modbus?cache=false)](https://goreportcard.com/report/github.com/otfabric/modbus)
-[![CI](https://github.com/otfabric/modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/modbus/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/otfabric/modbus/graph/badge.svg)](https://app.codecov.io/gh/otfabric/modbus)
-[![Release](https://img.shields.io/github/v/release/otfabric/modbus?display_name=tag)](https://github.com/otfabric/modbus/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/otfabric/go-modbus?cache=false)](https://goreportcard.com/report/github.com/otfabric/go-modbus)
+[![CI](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml)
+[![Codecov](https://codecov.io/gh/otfabric/go-modbus/graph/badge.svg)](https://app.codecov.io/gh/otfabric/go-modbus)
+[![Release](https://img.shields.io/github/v/release/otfabric/go-modbus?display_name=tag)](https://github.com/otfabric/go-modbus/releases)
 
 A production-ready Go implementation of the Modbus application protocol, providing both **client** and **server** capabilities. No C dependencies, no CGo — just Go.
 
@@ -22,7 +22,7 @@ metrics hooks — are built in.
 
 ## Table of Contents
 
-- [github.com/otfabric/modbus](#githubcomotfabricmodbus)
+- [github.com/otfabric/go-modbus](#githubcomotfabricgo-modbus)
   - [Table of Contents](#table-of-contents)
   - [API tiers](#api-tiers)
   - [Install](#install)
@@ -71,7 +71,7 @@ use case — you never need to use a higher tier.
 ## Install
 
 ```bash
-go get github.com/otfabric/modbus
+go get github.com/otfabric/go-modbus
 ```
 
 Requires **Go 1.21** or later.
@@ -167,7 +167,7 @@ deployments. Only MEI type 14 (0x0E, Read Device Identification) is implemented.
 
 ### Codec API
 
-The library provides a **codec-first** layer for typed register read/write with explicit layout and discovery. Codec functions live in the `codec` subpackage (`import "github.com/otfabric/modbus/codec"`):
+The library provides a **codec-first** layer for typed register read/write with explicit layout and discovery. Codec functions live in the `codec` subpackage (`import "github.com/otfabric/go-modbus/codec"`):
 
 - **Raw vs typed:** Use **ReadRegisters** / **WriteRegisters** or **ReadRegisterBytes** / **WriteRegisterBytes** for raw transport; use **codec.ReadFromClient** / **codec.WriteToClient** with a `Codec[T]` when the type and layout are known at compile time.
 - **Transport:** `codec.ReadFromClient[T]` and `codec.WriteToClient[T]` are package-level generic functions that read or write registers via a `codec.RegisterReader` / `codec.RegisterWriter` interface. The codec owns layout and interpretation. `*Client` satisfies both interfaces.

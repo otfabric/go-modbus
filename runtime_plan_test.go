@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otfabric/modbus/codec"
+	"github.com/otfabric/go-modbus/codec"
 )
 
 func TestValidateRuntimeDecodePlan_Valid(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/otfabric/modbus"
+	"github.com/otfabric/go-modbus"
 )
 
 /* Modbus TCP+TLS (MBAPS or Modbus Security) server example.

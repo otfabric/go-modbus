@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 type fakeTransport struct {

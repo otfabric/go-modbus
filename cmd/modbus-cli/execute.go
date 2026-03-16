@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/otfabric/modbus"
-	"github.com/otfabric/modbus/codec"
+	"github.com/otfabric/go-modbus"
+	"github.com/otfabric/go-modbus/codec"
 )
 
 // layoutName32 returns the 32-bit layout name for CLI codec selection (e.g. "4321").

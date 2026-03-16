@@ -11,8 +11,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/otfabric/modbus"
-	"github.com/otfabric/modbus/sunspec"
+	"github.com/otfabric/go-modbus"
+	"github.com/otfabric/go-modbus/sunspec"
 )
 
 // adapter satisfies sunspec.Reader using a ModbusClient.

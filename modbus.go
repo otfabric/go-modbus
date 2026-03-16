@@ -1,7 +1,7 @@
 package modbus
 
 import (
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 //

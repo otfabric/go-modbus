@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otfabric/modbus/codec"
+	"github.com/otfabric/go-modbus/codec"
 )
 
 // writeMBAPRegs sends an FC03/FC04 normal response with the given register bytes (payload only: byte count + data).

@@ -1,7 +1,7 @@
-# `github.com/otfabric/modbus` — Public API Reference
+# `github.com/otfabric/go-modbus` — Public API Reference
 
 This document covers every exported type, function, and interface in the library.
-All examples assume `import "github.com/otfabric/modbus"`.
+All examples assume `import "github.com/otfabric/go-modbus"`.
 
 ---
 
@@ -689,7 +689,7 @@ type ProbeResult struct {
 
 ### 2.8 SunSpec discovery
 
-Transport-level **read-only** SunSpec discovery helpers live in the `sunspec` subpackage (`import "github.com/otfabric/modbus/sunspec"`). They detect the SunSpec "SunS" marker, probe candidate base addresses, and enumerate the model chain (model ID and length only). These APIs do not modify device state and do **not** implement point decoding, scale factors, or schema-driven parsing; that belongs in a higher-level SunSpec library.
+Transport-level **read-only** SunSpec discovery helpers live in the `sunspec` subpackage (`import "github.com/otfabric/go-modbus/sunspec"`). They detect the SunSpec "SunS" marker, probe candidate base addresses, and enumerate the model chain (model ID and length only). These APIs do not modify device state and do **not** implement point decoding, scale factors, or schema-driven parsing; that belongs in a higher-level SunSpec library.
 
 See the `sunspec` package documentation for the full API (`sunspec.DetectSunSpec`, `sunspec.ReadSunSpecModelHeaders`, `sunspec.DiscoverSunSpec`).
 
@@ -1335,7 +1335,7 @@ if errors.As(err, &paramErr) {
 
 ### Codec errors
 
-Codec error sentinels and typed errors live in the `codec` subpackage (`import "github.com/otfabric/modbus/codec"`). Use `errors.Is` and `errors.As` to inspect them.
+Codec error sentinels and typed errors live in the `codec` subpackage (`import "github.com/otfabric/go-modbus/codec"`). Use `errors.Is` and `errors.As` to inspect them.
 
 ```go
 // codec package sentinels
@@ -1795,7 +1795,7 @@ type Codec[T any] interface {
 
 ### 11.3 Transport: codec.ReadFromClient, codec.WriteToClient
 
-These live in the `codec` subpackage (`import "github.com/otfabric/modbus/codec"`). They are **package-level** generic functions (Go methods cannot have type parameters). They accept a `codec.RegisterReader` / `codec.RegisterWriter` interface — `*modbus.Client` satisfies both. Wire order is big-endian per register; layout is defined by the codec.
+These live in the `codec` subpackage (`import "github.com/otfabric/go-modbus/codec"`). They are **package-level** generic functions (Go methods cannot have type parameters). They accept a `codec.RegisterReader` / `codec.RegisterWriter` interface — `*modbus.Client` satisfies both. Wire order is big-endian per register; layout is defined by the codec.
 
 ```go
 // codec.RegisterReader / codec.RegisterWriter interfaces:

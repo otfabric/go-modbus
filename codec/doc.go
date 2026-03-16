@@ -6,4 +6,4 @@ package codec
 //
 // Users should import this package directly:
 //
-//	import "github.com/otfabric/modbus/codec"
+//	import "github.com/otfabric/go-modbus/codec"

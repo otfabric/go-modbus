@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	inttrans "github.com/otfabric/modbus/internal/transport"
+	inttrans "github.com/otfabric/go-modbus/internal/transport"
 )
 
 // newTCPTransport returns a TCP transport implementing inttrans.Transport.

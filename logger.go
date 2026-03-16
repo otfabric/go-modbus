@@ -4,7 +4,7 @@ import (
 	"log"
 	"log/slog"
 
-	intlog "github.com/otfabric/modbus/internal/logging"
+	intlog "github.com/otfabric/go-modbus/internal/logging"
 )
 
 // Logger is the logging interface accepted by Config and ServerConfig.

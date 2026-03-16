@@ -9,7 +9,7 @@
 #  - Release notes: RELEASE.md first block (up to "---") or git log; adjust path/pattern if needed.
 #  - Runtime: add/skip setup (Go, Node, etc.) per repo.
 
-name: Release otfabric/modbus Library
+name: Release otfabric/go-modbus Library
 
 run-name: Release (${{ inputs.bump }}) from ${{ github.ref_name }}
 

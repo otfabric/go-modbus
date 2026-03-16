@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 // RetryPolicy controls whether and how a failed request is retried.

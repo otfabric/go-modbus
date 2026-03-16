@@ -3,7 +3,7 @@ package modbus
 import (
 	"context"
 
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // handleReadBools handles FC01 (ReadCoils) and FC02 (ReadDiscreteInputs).

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/otfabric/modbus"
+	"github.com/otfabric/go-modbus"
 )
 
 /*

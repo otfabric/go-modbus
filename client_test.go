@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/otfabric/modbus/codec"
+	"github.com/otfabric/go-modbus/codec"
 )
 
 // typedReadHandler is a minimal Modbus server handler that serves a fixed array

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/logging"
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/logging"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 // AttemptObserver receives callbacks for individual retry attempts and re-dials.

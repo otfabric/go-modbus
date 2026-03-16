@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/otfabric/modbus"
+	"github.com/otfabric/go-modbus"
 )
 
 func performBoolScan(ctx context.Context, client *modbus.Client, unitID uint8, isCoil bool, jsonOutput bool) {

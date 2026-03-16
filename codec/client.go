@@ -3,7 +3,7 @@ package codec
 import (
 	"context"
 
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 // RegType selects holding vs input registers for read operations.

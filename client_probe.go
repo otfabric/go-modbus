@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/otfabric/modbus/internal/adu"
-	"github.com/otfabric/modbus/internal/protocol"
+	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/protocol"
 )
 
 // runOneProbe runs a single detection probe.

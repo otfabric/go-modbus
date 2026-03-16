@@ -3,7 +3,7 @@ package modbus
 import (
 	"context"
 
-	"github.com/otfabric/modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // handleReadRegisters handles FC03 (ReadHoldingRegisters) and FC04 (ReadInputRegisters).

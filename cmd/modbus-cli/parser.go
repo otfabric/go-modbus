@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/otfabric/modbus"
+	"github.com/otfabric/go-modbus"
 )
 
 type operationKind uint
