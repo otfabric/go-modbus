@@ -3,6 +3,7 @@ package modbus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestReadDeviceIdentification_InvalidReadDeviceIdCode(t *testing.T) {
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -49,7 +50,7 @@ func TestReadDeviceIdentification_Exception(t *testing.T) {
 		txid, unitID, fc := req[0:2], req[6], req[7]
 		_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalFunction))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestReadDeviceIdentification_Exception(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIdBasic, 0x00)
+	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
 	if err == nil {
 		t.Fatal("expected exception error")
 	}
@@ -82,10 +83,10 @@ func TestReadDeviceIdentification_ProtocolError_PayloadTooShort(t *testing.T) {
 		_, _ = io.ReadFull(sock, req)
 		txid, unitID := req[0:2], req[6]
 		// Payload < 6 bytes
-		payload := []byte{byte(MEIReadDeviceIdentification), ReadDeviceIdBasic, 0x01, 0x00}
+		payload := []byte{byte(MEIReadDeviceIdentification), ReadDeviceIDBasic, 0x01, 0x00}
 		_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestReadDeviceIdentification_ProtocolError_PayloadTooShort(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIdBasic, 0x00)
+	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
 	if err == nil {
 		t.Fatal("expected protocol error")
 	}
@@ -118,10 +119,10 @@ func TestReadDeviceIdentification_ProtocolError_WrongMEI(t *testing.T) {
 		_, _ = io.ReadFull(sock, req)
 		txid, unitID := req[0:2], req[6]
 		// Wrong MEI type in response (0x00 instead of MEIReadDeviceIdentification)
-		payload := []byte{0x00, ReadDeviceIdBasic, 0x01, 0x00, 0x00, 0x00}
+		payload := []byte{0x00, ReadDeviceIDBasic, 0x01, 0x00, 0x00, 0x00}
 		_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -129,7 +130,7 @@ func TestReadDeviceIdentification_ProtocolError_WrongMEI(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIdBasic, 0x00)
+	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
 	if err == nil {
 		t.Fatal("expected protocol error")
 	}
@@ -160,14 +161,14 @@ func TestReadDeviceIdentification_MoreFollows(t *testing.T) {
 			reqCount++
 			if reqCount == 1 {
 				payload := []byte{
-					byte(MEIReadDeviceIdentification), ReadDeviceIdBasic,
+					byte(MEIReadDeviceIdentification), ReadDeviceIDBasic,
 					0x01, 0xff, 0x02, 0x01,
 					0x00, 0x02, 'A', 'B',
 				}
 				_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
 			} else {
 				payload := []byte{
-					byte(MEIReadDeviceIdentification), ReadDeviceIdBasic,
+					byte(MEIReadDeviceIdentification), ReadDeviceIDBasic,
 					0x01, 0x00, 0x00, 0x01,
 					0x02, 0x02, 0x00, 0x01,
 				}
@@ -176,7 +177,7 @@ func TestReadDeviceIdentification_MoreFollows(t *testing.T) {
 			}
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -184,18 +185,18 @@ func TestReadDeviceIdentification_MoreFollows(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	di, err := client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIdBasic, 0x00)
+	di, err := client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
 	if err != nil {
 		t.Fatalf("ReadDeviceIdentification: %v", err)
 	}
 	if len(di.Objects) != 2 {
 		t.Fatalf("expected 2 objects, got %d", len(di.Objects))
 	}
-	if di.Objects[0].Id != 0x00 || di.Objects[0].Value != "AB" {
-		t.Errorf("first object: Id=%d Value=%q", di.Objects[0].Id, di.Objects[0].Value)
+	if di.Objects[0].ID != 0x00 || di.Objects[0].Value != "AB" {
+		t.Errorf("first object: ID=%d Value=%q", di.Objects[0].ID, di.Objects[0].Value)
 	}
-	if di.Objects[1].Id != 0x02 || di.Objects[1].Name != "MajorMinorRevision" {
-		t.Errorf("second object: Id=%d Name=%q", di.Objects[1].Id, di.Objects[1].Name)
+	if di.Objects[1].ID != 0x02 || di.Objects[1].Name != "MajorMinorRevision" {
+		t.Errorf("second object: ID=%d Name=%q", di.Objects[1].ID, di.Objects[1].Name)
 	}
 }
 
@@ -213,20 +214,20 @@ func TestReadAllDeviceIdentification_Extended(t *testing.T) {
 		defer func() { _ = sock.Close() }()
 		req := make([]byte, 11)
 		_, _ = io.ReadFull(sock, req)
-		if req[7] != byte(FCEncapsulatedInterface) || req[9] != ReadDeviceIdExtended {
+		if req[7] != byte(FCEncapsulatedInterface) || req[9] != ReadDeviceIDExtended {
 			return
 		}
 		txid, unitID := req[0:2], req[6]
 		payload := []byte{
 			byte(MEIReadDeviceIdentification),
-			ReadDeviceIdExtended,
+			ReadDeviceIDExtended,
 			0x01, 0x00, 0x00,
 			0x01,
 			0x00, 0x02, 'A', 'B',
 		}
 		_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -238,8 +239,8 @@ func TestReadAllDeviceIdentification_Extended(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAllDeviceIdentification: %v", err)
 	}
-	if di.ReadDeviceIdCode != ReadDeviceIdExtended || len(di.Objects) != 1 {
-		t.Errorf("ReadDeviceIdCode=%d len(Objects)=%d", di.ReadDeviceIdCode, len(di.Objects))
+	if di.Category != DeviceIDExtended || len(di.Objects) != 1 {
+		t.Errorf("Category=%d len(Objects)=%d", di.Category, len(di.Objects))
 	}
 }
 
@@ -258,13 +259,13 @@ func TestReadDeviceIdentification_ThreeObjects(t *testing.T) {
 		defer func() { _ = sock.Close() }()
 		req := make([]byte, 11)
 		_, _ = io.ReadFull(sock, req)
-		if req[7] != byte(FCEncapsulatedInterface) || req[9] != ReadDeviceIdBasic {
+		if req[7] != byte(FCEncapsulatedInterface) || req[9] != ReadDeviceIDBasic {
 			return
 		}
 		txid, unitID := req[0:2], req[6]
 		payload := []byte{
 			byte(MEIReadDeviceIdentification),
-			ReadDeviceIdBasic,
+			ReadDeviceIDBasic,
 			0x01, 0x00, 0x00,
 			0x03,
 			0x00, 0x03, 'A', 'C', 'M',
@@ -273,7 +274,7 @@ func TestReadDeviceIdentification_ThreeObjects(t *testing.T) {
 		}
 		_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -281,22 +282,22 @@ func TestReadDeviceIdentification_ThreeObjects(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	di, err := client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIdBasic, 0x00)
+	di, err := client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
 	if err != nil {
 		t.Fatalf("ReadDeviceIdentification: %v", err)
 	}
 	if len(di.Objects) != 3 {
 		t.Fatalf("expected 3 objects, got %d", len(di.Objects))
 	}
-	if di.Objects[2].Id != 0x02 || di.Objects[2].Name != "MajorMinorRevision" {
-		t.Errorf("object 2: Id=%d Name=%q", di.Objects[2].Id, di.Objects[2].Name)
+	if di.Objects[2].ID != 0x02 || di.Objects[2].Name != "MajorMinorRevision" {
+		t.Errorf("object 2: ID=%d Name=%q", di.Objects[2].ID, di.Objects[2].Name)
 	}
 }
 
 func TestReadDeviceIdentification(t *testing.T) {
 	var err error
 	var ln net.Listener
-	var client *ModbusClient
+	var client *Client
 	var di *DeviceIdentification
 
 	ln, err = net.Listen("tcp", "127.0.0.1:0")
@@ -329,7 +330,7 @@ func TestReadDeviceIdentification(t *testing.T) {
 			req[4] != 0x00 || req[5] != 0x05 ||
 			req[7] != byte(FCEncapsulatedInterface) ||
 			req[8] != byte(MEIReadDeviceIdentification) ||
-			req[9] != ReadDeviceIdBasic || req[10] != 0x00 {
+			req[9] != ReadDeviceIDBasic || req[10] != 0x00 {
 			return
 		}
 
@@ -338,7 +339,7 @@ func TestReadDeviceIdentification(t *testing.T) {
 
 		payload = []byte{
 			byte(MEIReadDeviceIdentification),
-			ReadDeviceIdBasic,
+			ReadDeviceIDBasic,
 			0x01,
 			0x00,
 			0x00,
@@ -356,7 +357,7 @@ func TestReadDeviceIdentification(t *testing.T) {
 		}, payload...))
 	}()
 
-	client, err = NewClient(&ClientConfiguration{
+	client, err = New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 1 * time.Second,
 	})
@@ -370,13 +371,13 @@ func TestReadDeviceIdentification(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	di, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIdBasic, 0x00)
+	di, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
 	if err != nil {
 		t.Fatalf("ReadDeviceIdentification() should have succeeded, got: %v", err)
 	}
 
-	if di.ReadDeviceIdCode != 0x01 || di.ConformityLevel != 0x01 ||
-		di.MoreFollows != 0x00 || di.NextObjectId != 0x00 {
+	if di.Category != DeviceIDBasic || di.ConformityLevel != 0x01 ||
+		di.MoreFollows || di.NextObjectID != 0x00 {
 		t.Fatalf("unexpected FC43 header fields: %#v", di)
 	}
 
@@ -384,11 +385,11 @@ func TestReadDeviceIdentification(t *testing.T) {
 		t.Fatalf("expected 2 objects, got: %v", len(di.Objects))
 	}
 
-	if di.Objects[0].Id != 0x00 || di.Objects[0].Name != "VendorName" || di.Objects[0].Value != "ACM" {
+	if di.Objects[0].ID != 0x00 || di.Objects[0].Name != "VendorName" || di.Objects[0].Value != "ACM" {
 		t.Fatalf("unexpected first object: %#v", di.Objects[0])
 	}
 
-	if di.Objects[1].Id != 0x01 || di.Objects[1].Name != "ProductCode" || di.Objects[1].Value != "P1234" {
+	if di.Objects[1].ID != 0x01 || di.Objects[1].Name != "ProductCode" || di.Objects[1].Value != "P1234" {
 		t.Fatalf("unexpected second object: %#v", di.Objects[1])
 	}
 }
@@ -396,7 +397,7 @@ func TestReadDeviceIdentification(t *testing.T) {
 func TestReadDeviceIdentificationException(t *testing.T) {
 	var err error
 	var ln net.Listener
-	var client *ModbusClient
+	var client *Client
 
 	ln, err = net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -436,7 +437,7 @@ func TestReadDeviceIdentificationException(t *testing.T) {
 		})
 	}()
 
-	client, err = NewClient(&ClientConfiguration{
+	client, err = New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 1 * time.Second,
 	})
@@ -450,7 +451,7 @@ func TestReadDeviceIdentificationException(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIdBasic, 0x00)
+	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
 	if !errors.Is(err, ErrIllegalFunction) {
 		t.Fatalf("expected %v, got: %v", ErrIllegalFunction, err)
 	}
@@ -458,16 +459,317 @@ func TestReadDeviceIdentificationException(t *testing.T) {
 
 func TestReadDeviceIdentificationRejectsUnexpectedCode(t *testing.T) {
 	var err error
-	var client *ModbusClient
+	var client *Client
 
-	client, err = NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1"})
+	client, err = New(Config{URL: "tcp://127.0.0.1:1"})
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
 	_, err = client.ReadDeviceIdentification(context.Background(), 1, 0x00, 0x00)
-	if err != ErrUnexpectedParameters {
+	if !errors.Is(err, ErrUnexpectedParameters) {
 		t.Fatalf("expected %v, got: %v", ErrUnexpectedParameters, err)
+	}
+}
+
+func TestReadDeviceIdentification_InvalidConformityLevel(t *testing.T) {
+	for _, badLevel := range []byte{0x00, 0x04, 0x80, 0x84, 0xFF} {
+		t.Run(fmt.Sprintf("0x%02X", badLevel), func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("Listen: %v", err)
+			}
+			defer func() { _ = ln.Close() }()
+			go func() {
+				sock, _ := ln.Accept()
+				if sock == nil {
+					return
+				}
+				defer func() { _ = sock.Close() }()
+				req := make([]byte, 11)
+				_, _ = io.ReadFull(sock, req)
+				txid, unitID := req[0:2], req[6]
+				payload := []byte{
+					byte(MEIReadDeviceIdentification), ReadDeviceIDBasic,
+					badLevel, 0x00, 0x00, 0x01,
+					0x00, 0x03, 'A', 'C', 'M',
+				}
+				_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
+			}()
+			client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			if err := client.Open(); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+			_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
+			if err == nil {
+				t.Fatal("expected protocol error for invalid conformity level")
+			}
+			if !errors.Is(err, ErrProtocolError) {
+				t.Errorf("want ErrProtocolError, got %v", err)
+			}
+		})
+	}
+}
+
+func TestReadDeviceIdentification_ValidConformityLevels(t *testing.T) {
+	for _, level := range []byte{0x01, 0x02, 0x03, 0x81, 0x82, 0x83} {
+		t.Run(fmt.Sprintf("0x%02X", level), func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("Listen: %v", err)
+			}
+			defer func() { _ = ln.Close() }()
+			go func() {
+				sock, _ := ln.Accept()
+				if sock == nil {
+					return
+				}
+				defer func() { _ = sock.Close() }()
+				req := make([]byte, 11)
+				_, _ = io.ReadFull(sock, req)
+				txid, unitID := req[0:2], req[6]
+				payload := []byte{
+					byte(MEIReadDeviceIdentification), ReadDeviceIDBasic,
+					level, 0x00, 0x00, 0x01,
+					0x00, 0x03, 'A', 'C', 'M',
+				}
+				_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
+			}()
+			client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			if err := client.Open(); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+			di, err := client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if di.ConformityLevel != level {
+				t.Errorf("conformity level: got 0x%02X, want 0x%02X", di.ConformityLevel, level)
+			}
+		})
+	}
+}
+
+func TestReadDeviceIdentification_MoreFollowsZero_NextObjectIDNonZero(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		sock, _ := ln.Accept()
+		if sock == nil {
+			return
+		}
+		defer func() { _ = sock.Close() }()
+		req := make([]byte, 11)
+		_, _ = io.ReadFull(sock, req)
+		txid, unitID := req[0:2], req[6]
+		payload := []byte{
+			byte(MEIReadDeviceIdentification), ReadDeviceIDBasic,
+			0x01, 0x00, 0x05, 0x01, // MoreFollows=0x00 but NextObjectID=0x05
+			0x00, 0x03, 'A', 'C', 'M',
+		}
+		_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
+	}()
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	_, err = client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x00)
+	if err == nil {
+		t.Fatal("expected error for MoreFollows=0x00 with NextObjectID != 0x00")
+	}
+	if !errors.Is(err, ErrProtocolError) {
+		t.Errorf("want ErrProtocolError, got %v", err)
+	}
+}
+
+func TestReadDeviceIdentification_Individual_MoreFollowsFF(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		sock, _ := ln.Accept()
+		if sock == nil {
+			return
+		}
+		defer func() { _ = sock.Close() }()
+		req := make([]byte, 11)
+		_, _ = io.ReadFull(sock, req)
+		txid, unitID := req[0:2], req[6]
+		payload := []byte{
+			byte(MEIReadDeviceIdentification), ReadDeviceIDIndividual,
+			0x81, 0xFF, 0x01, 0x01, // MoreFollows=0xFF (invalid for individual)
+			0x00, 0x03, 'A', 'C', 'M',
+		}
+		_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
+	}()
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	_, err = client.ReadDeviceIdentification(context.Background(), 1, DeviceIDIndividual, 0x00)
+	if err == nil {
+		t.Fatal("expected error for individual access with MoreFollows=0xFF")
+	}
+	if !errors.Is(err, ErrProtocolError) {
+		t.Errorf("want ErrProtocolError, got %v", err)
+	}
+}
+
+func TestReadDeviceIdentification_Individual_MultipleObjects(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		sock, _ := ln.Accept()
+		if sock == nil {
+			return
+		}
+		defer func() { _ = sock.Close() }()
+		req := make([]byte, 11)
+		_, _ = io.ReadFull(sock, req)
+		txid, unitID := req[0:2], req[6]
+		payload := []byte{
+			byte(MEIReadDeviceIdentification), ReadDeviceIDIndividual,
+			0x81, 0x00, 0x00, 0x02, // NumberOfObjects=2 (invalid for individual)
+			0x00, 0x02, 'A', 'B',
+			0x01, 0x02, 'C', 'D',
+		}
+		_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
+	}()
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	_, err = client.ReadDeviceIdentification(context.Background(), 1, DeviceIDIndividual, 0x00)
+	if err == nil {
+		t.Fatal("expected error for individual access with NumberOfObjects != 1")
+	}
+	if !errors.Is(err, ErrProtocolError) {
+		t.Errorf("want ErrProtocolError, got %v", err)
+	}
+}
+
+func TestReadDeviceIdentification_StreamAccess_UnknownObjectID_RestartsFromZero(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		sock, _ := ln.Accept()
+		if sock == nil {
+			return
+		}
+		defer func() { _ = sock.Close() }()
+		req := make([]byte, 11)
+		_, _ = io.ReadFull(sock, req)
+		txid, unitID := req[0:2], req[6]
+		// Client requests startObject=0x80 (unknown). Server restarts from 0x00.
+		payload := []byte{
+			byte(MEIReadDeviceIdentification), ReadDeviceIDBasic,
+			0x01, 0x00, 0x00, 0x01,
+			0x00, 0x03, 'A', 'C', 'M', // object 0x00 returned despite 0x80 requested
+		}
+		_, _ = sock.Write(append([]byte{txid[0], txid[1], 0x00, 0x00, 0x00, byte(2 + len(payload)), unitID, byte(FCEncapsulatedInterface)}, payload...))
+	}()
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	di, err := client.ReadDeviceIdentification(context.Background(), 1, ReadDeviceIDBasic, 0x80)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(di.Objects) != 1 || di.Objects[0].ID != 0x00 {
+		t.Errorf("expected 1 object with ID 0x00, got %v", di.Objects)
+	}
+}
+
+func TestReadDeviceIdentification_IndividualAccess_UnknownObjectID_Exception02(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		sock, _ := ln.Accept()
+		if sock == nil {
+			return
+		}
+		defer func() { _ = sock.Close() }()
+		req := make([]byte, 11)
+		_, _ = io.ReadFull(sock, req)
+		txid, unitID := req[0:2], req[6]
+		_ = writeMBAPException(sock, txid, unitID, byte(FCEncapsulatedInterface), byte(exIllegalDataAddress))
+	}()
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	_, err = client.ReadDeviceIdentification(context.Background(), 1, DeviceIDIndividual, 0xFF)
+	if !errors.Is(err, ErrIllegalDataAddress) {
+		t.Errorf("want ErrIllegalDataAddress, got %v", err)
+	}
+}
+
+func TestDeviceIdentification_SupportsStreamAndIndividualAccess(t *testing.T) {
+	tests := []struct {
+		level          uint8
+		wantStream     bool
+		wantIndividual bool
+	}{
+		{0x01, true, false},
+		{0x02, true, false},
+		{0x03, true, false},
+		{0x81, true, true},
+		{0x82, true, true},
+		{0x83, true, true},
+		{0x00, false, false},
+		{0x04, false, false},
+	}
+	for _, tt := range tests {
+		di := &DeviceIdentification{ConformityLevel: tt.level}
+		if got := di.SupportsStreamAccess(); got != tt.wantStream {
+			t.Errorf("ConformityLevel=0x%02X: SupportsStreamAccess()=%v, want %v", tt.level, got, tt.wantStream)
+		}
+		if got := di.SupportsIndividualAccess(); got != tt.wantIndividual {
+			t.Errorf("ConformityLevel=0x%02X: SupportsIndividualAccess()=%v, want %v", tt.level, got, tt.wantIndividual)
+		}
 	}
 }
 
@@ -476,7 +778,7 @@ func TestReadDeviceIdentificationRejectsUnexpectedCode(t *testing.T) {
 func TestReadAllDeviceIdentification(t *testing.T) {
 	var err error
 	var ln net.Listener
-	var client *ModbusClient
+	var client *Client
 	var di *DeviceIdentification
 
 	ln, err = net.Listen("tcp", "127.0.0.1:0")
@@ -510,7 +812,7 @@ func TestReadAllDeviceIdentification(t *testing.T) {
 			req[4] != 0x00 || req[5] != 0x05 ||
 			req[7] != byte(FCEncapsulatedInterface) ||
 			req[8] != byte(MEIReadDeviceIdentification) ||
-			req[9] != ReadDeviceIdExtended || req[10] != 0x00 {
+			req[9] != ReadDeviceIDExtended || req[10] != 0x00 {
 			return
 		}
 
@@ -520,7 +822,7 @@ func TestReadAllDeviceIdentification(t *testing.T) {
 		// Simulate device that supports regular: basic (0x00–0x02) + VendorUrl (0x03), ProductName (0x04)
 		payload = []byte{
 			byte(MEIReadDeviceIdentification),
-			ReadDeviceIdExtended,
+			ReadDeviceIDExtended,
 			0x02, // conformity level: regular
 			0x00, 0x00,
 			0x05, // number of objects
@@ -540,7 +842,7 @@ func TestReadAllDeviceIdentification(t *testing.T) {
 		}, payload...))
 	}()
 
-	client, err = NewClient(&ClientConfiguration{
+	client, err = New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 1 * time.Second,
 	})
@@ -559,29 +861,29 @@ func TestReadAllDeviceIdentification(t *testing.T) {
 		t.Fatalf("ReadAllDeviceIdentification() should have succeeded, got: %v", err)
 	}
 
-	if di.ReadDeviceIdCode != ReadDeviceIdExtended || di.ConformityLevel != 0x02 ||
-		di.MoreFollows != 0x00 || di.NextObjectId != 0x00 {
-		t.Fatalf("unexpected FC43 header: ReadDeviceIdCode=%v ConformityLevel=%v MoreFollows=%v NextObjectId=%v",
-			di.ReadDeviceIdCode, di.ConformityLevel, di.MoreFollows, di.NextObjectId)
+	if di.Category != DeviceIDExtended || di.ConformityLevel != 0x02 ||
+		di.MoreFollows || di.NextObjectID != 0x00 {
+		t.Fatalf("unexpected FC43 header: Category=%v ConformityLevel=%v MoreFollows=%v NextObjectID=%v",
+			di.Category, di.ConformityLevel, di.MoreFollows, di.NextObjectID)
 	}
 
 	if len(di.Objects) != 5 {
 		t.Fatalf("expected 5 objects (basic + regular), got: %v", len(di.Objects))
 	}
 
-	if di.Objects[0].Id != 0x00 || di.Objects[0].Name != "VendorName" || di.Objects[0].Value != "ACM" {
+	if di.Objects[0].ID != 0x00 || di.Objects[0].Name != "VendorName" || di.Objects[0].Value != "ACM" {
 		t.Fatalf("object 0: got %#v", di.Objects[0])
 	}
-	if di.Objects[1].Id != 0x01 || di.Objects[1].Name != "ProductCode" || di.Objects[1].Value != "P1234" {
+	if di.Objects[1].ID != 0x01 || di.Objects[1].Name != "ProductCode" || di.Objects[1].Value != "P1234" {
 		t.Fatalf("object 1: got %#v", di.Objects[1])
 	}
-	if di.Objects[2].Id != 0x02 || di.Objects[2].Name != "MajorMinorRevision" || di.Objects[2].Value != "1.0" {
+	if di.Objects[2].ID != 0x02 || di.Objects[2].Name != "MajorMinorRevision" || di.Objects[2].Value != "1.0" {
 		t.Fatalf("object 2: got %#v", di.Objects[2])
 	}
-	if di.Objects[3].Id != 0x03 || di.Objects[3].Name != "VendorUrl" || di.Objects[3].Value != "https://x" {
+	if di.Objects[3].ID != 0x03 || di.Objects[3].Name != "VendorUrl" || di.Objects[3].Value != "https://x" {
 		t.Fatalf("object 3: got %#v", di.Objects[3])
 	}
-	if di.Objects[4].Id != 0x04 || di.Objects[4].Name != "ProductName" || di.Objects[4].Value != "MyProd" {
+	if di.Objects[4].ID != 0x04 || di.Objects[4].Name != "ProductName" || di.Objects[4].Value != "MyProd" {
 		t.Fatalf("object 4: got %#v", di.Objects[4])
 	}
 }

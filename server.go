@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -19,139 +18,179 @@ var modbusRoleOID asn1.ObjectIdentifier = asn1.ObjectIdentifier{
 }
 
 // Server configuration object.
-type ServerConfiguration struct {
-	// URL defines where to listen at e.g. tcp://[::]:502
-	URL string
-	// Timeout sets the idle session timeout (client connections will
-	// be closed if idle for this long)
-	Timeout time.Duration
-	// MaxClients sets the maximum number of concurrent client connections
-	MaxClients uint
-	// TLSServerCert sets the server-side TLS key pair (tcp+tls only)
-	TLSServerCert *tls.Certificate
-	// TLSClientCAs sets the list of CA certificates used to authenticate
-	// client connections (tcp+tls only). Leaf (i.e. client) certificates can
-	// also be used in case of self-signed certs, or if cert pinning is required.
-	TLSClientCAs *x509.CertPool
-	// TLSHandshakeTimeout sets the maximum time allowed to complete the TLS
-	// handshake for incoming connections. Defaults to 30 seconds when zero.
+type ServerConfig struct {
+	URL                 string
+	Timeout             time.Duration
+	MaxClients          uint
+	TLSServerCert       *tls.Certificate
+	TLSClientCAs        *x509.CertPool
 	TLSHandshakeTimeout time.Duration
-	// Logger provides a custom sink for log messages.
-	// If nil, the slog default logger (slog.Default()) is used.
-	// Use NewStdLogger, NewSlogLogger, or NopLogger to build a value.
-	Logger Logger
-
-	// Metrics receives callbacks for every request handled by the server.
-	// A nil Metrics (the default) disables metric collection.
-	Metrics ServerMetrics
+	Logger              Logger
+	Metrics             ServerMetrics
 }
 
-// Request object passed to the coil handler.
+// CoilsRequest is passed to HandleCoils for both read (FC01) and write (FC05/FC15) requests.
+//
+// When IsWrite is true, Args contains the coil values to write and the handler should
+// apply them. When IsWrite is false, the handler should return the current values.
+// Note that FC05 (write single coil) and FC15 (write multiple coils) both map to
+// IsWrite=true — the handler cannot distinguish between them.
 type CoilsRequest struct {
-	ClientAddr string // the source (client) IP address
-	ClientRole string // the client role as encoded in the client certificate (tcp+tls only)
-	UnitId     uint8  // the requested unit id (slave id)
-	Addr       uint16 // the base coil address requested
-	Quantity   uint16 // the number of consecutive coils covered by this request
-	// (first address: Addr, last address: Addr + Quantity - 1)
-	IsWrite bool   // true if the request is a write, false if a read
-	Args    []bool // a slice of bool values of the coils to be set, ordered
-	// from Addr to Addr + Quantity - 1 (for writes only)
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+	Addr         uint16
+	Quantity     uint16
+	IsWrite      bool
+	Args         []bool
 }
 
-// Request object passed to the discrete input handler.
+// DiscreteInputsRequest is passed to HandleDiscreteInputs for read requests (FC02).
+// Discrete inputs are read-only by definition, so there is no IsWrite field.
 type DiscreteInputsRequest struct {
-	ClientAddr string // the source (client) IP address
-	ClientRole string // the client role as encoded in the client certificate (tcp+tls only)
-	UnitId     uint8  // the requested unit id (slave id)
-	Addr       uint16 // the base discrete input address requested
-	Quantity   uint16 // the number of consecutive discrete inputs covered by this request
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+	Addr         uint16
+	Quantity     uint16
 }
 
-// Request object passed to the holding register handler.
+// HoldingRegistersRequest is passed to HandleHoldingRegisters for both read (FC03)
+// and write (FC06/FC16) requests.
+//
+// When IsWrite is true, Args contains the register values to write and the handler
+// should apply them. When IsWrite is false, the handler should return the current
+// values. Note that FC06 (write single register) and FC16 (write multiple registers)
+// both map to IsWrite=true — the handler cannot distinguish between them.
 type HoldingRegistersRequest struct {
-	ClientAddr string   // the source (client) IP address
-	ClientRole string   // the client role as encoded in the client certificate (tcp+tls only)
-	UnitId     uint8    // the requested unit id (slave id)
-	Addr       uint16   // the base register address requested
-	Quantity   uint16   // the number of consecutive registers covered by this request
-	IsWrite    bool     // true if the request is a write, false if a read
-	Args       []uint16 // a slice of register values to be set, ordered from
-	// Addr to Addr + Quantity - 1 (for writes only)
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+	Addr         uint16
+	Quantity     uint16
+	IsWrite      bool
+	Args         []uint16
 }
 
-// Request object passed to the input register handler.
+// InputRegistersRequest is passed to HandleInputRegisters for read requests (FC04).
+// Input registers are read-only by definition, so there is no IsWrite field.
 type InputRegistersRequest struct {
-	ClientAddr string // the source (client) IP address
-	ClientRole string // the client role as encoded in the client certificate (tcp+tls only)
-	UnitId     uint8  // the requested unit id (slave id)
-	Addr       uint16 // the base register address requested
-	Quantity   uint16 // the number of consecutive registers covered by this request
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+	Addr         uint16
+	Quantity     uint16
 }
 
-// The RequestHandler interface should be implemented by the handler
-// object passed to NewServer (see reqHandler in NewServer()).
-// After decoding and validating an incoming request, the server will
-// invoke the appropriate handler function, depending on the function code
-// of the request.
+// RequestHandler is the interface implemented by the application to serve Modbus
+// requests. Each connected client is served in its own goroutine, so handler
+// methods may be called concurrently from different client goroutines.
+// Implementations must be safe for concurrent use (e.g. use sync.Mutex or
+// other synchronization when accessing shared state).
+//
+// Each handler method receives a context that is cancelled when the client
+// disconnects or the server stops. A panic inside any handler method is
+// recovered and logged (with a stack trace); the client receives a
+// ServerDeviceFailure exception response.
 type RequestHandler interface {
-	// HandleCoils handles the read coils (0x01), write single coil (0x05)
-	// and write multiple coils (0x0f) function codes.
-	// A CoilsRequest object is passed to the handler (see above).
-	//
-	// Expected return values:
-	// - res:	a slice of bools containing the coil values to be sent to back
-	//		to the client (only sent for reads; the return value is
-	//		ignored for write requests),
-	// - err:	either nil if no error occurred, a modbus error (see
-	//		mapErrorToExceptionCode() in modbus.go for a complete list),
-	//		or any other error.
-	//		If nil, a positive modbus response is sent back to the client
-	//		along with the returned data.
-	//		If non-nil, a negative modbus response is sent back, with the
-	//		exception code set depending on the error
-	//		(again, see mapErrorToExceptionCode()).
 	HandleCoils(ctx context.Context, req *CoilsRequest) (res []bool, err error)
-
-	// HandleDiscreteInputs handles the read discrete inputs (0x02) function code.
-	// A DiscreteInputsRequest oibject is passed to the handler (see above).
-	//
-	// Expected return values:
-	// - res:	a slice of bools containing the discrete input values to be
-	//		sent back to the client,
-	// - err:	either nil if no error occurred, a modbus error (see
-	//		mapErrorToExceptionCode() in modbus.go for a complete list),
-	//		or any other error.
 	HandleDiscreteInputs(ctx context.Context, req *DiscreteInputsRequest) (res []bool, err error)
-
-	// HandleHoldingRegisters handles the read holding registers (0x03),
-	// write single register (0x06) and write multiple registers (0x10).
-	// A HoldingRegistersRequest object is passed to the handler (see above).
-	//
-	// Expected return values:
-	// - res:	a slice of uint16 containing the register values to be sent
-	//		to back to the client (only sent for reads; the return value is
-	//		ignored for write requests),
-	// - err:	either nil if no error occurred, a modbus error (see
-	//		mapErrorToExceptionCode() in modbus.go for a complete list),
-	//		or any other error.
 	HandleHoldingRegisters(ctx context.Context, req *HoldingRegistersRequest) (res []uint16, err error)
-
-	// HandleInputRegisters handles the read input registers (0x04) function code.
-	// An InputRegistersRequest object is passed to the handler (see above).
-	//
-	// Expected return values:
-	// - res:	a slice of uint16 containing the register values to be sent
-	//		back to the client,
-	// - err:	either nil if no error occurred, a modbus error (see
-	//		mapErrorToExceptionCode() in modbus.go for a complete list),
-	//		or any other error.
 	HandleInputRegisters(ctx context.Context, req *InputRegistersRequest) (res []uint16, err error)
 }
 
+// MaskWriteRequest is passed to MaskWriteHandler.HandleMaskWrite for FC22
+// (Mask Write Register) requests.
+type MaskWriteRequest struct {
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+	Addr         uint16
+	AndMask      uint16
+	OrMask       uint16
+}
+
+// MaskWriteHandler is an optional interface for serving FC22 (Mask Write Register).
+// If the RequestHandler also implements MaskWriteHandler, the server dispatches
+// FC22 requests to HandleMaskWrite instead of returning Illegal Function.
+type MaskWriteHandler interface {
+	HandleMaskWrite(ctx context.Context, req *MaskWriteRequest) error
+}
+
+// ReadWriteRegistersRequest is passed to ReadWriteHandler.HandleReadWriteRegisters
+// for FC23 (Read/Write Multiple Registers) requests.
+type ReadWriteRegistersRequest struct {
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+	ReadAddr     uint16
+	ReadQty      uint16
+	WriteAddr    uint16
+	WriteValues  []uint16
+}
+
+// ReadWriteHandler is an optional interface for serving FC23 (Read/Write Multiple
+// Registers). If the RequestHandler also implements ReadWriteHandler, the server
+// dispatches FC23 requests to HandleReadWriteRegisters instead of returning
+// Illegal Function.
+type ReadWriteHandler interface {
+	HandleReadWriteRegisters(ctx context.Context, req *ReadWriteRegistersRequest) (readValues []uint16, err error)
+}
+
+// ExceptionStatusRequest is passed to ExceptionStatusHandler for FC07 requests.
+type ExceptionStatusRequest struct {
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+}
+
+// ExceptionStatusHandler is an optional interface for serving FC07 (Read Exception
+// Status). The spec labels this "Serial Line only," but it is supported on all
+// transports because it can traverse gateways transparently.
+type ExceptionStatusHandler interface {
+	HandleExceptionStatus(ctx context.Context, req *ExceptionStatusRequest) (uint8, error)
+}
+
+// CommEventCounterRequest is passed to CommEventCounterHandler for FC0B requests.
+type CommEventCounterRequest struct {
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+}
+
+// CommEventCounterHandler is an optional interface for serving FC0B (Get Comm Event
+// Counter). The spec labels this "Serial Line only," but it is supported on all
+// transports because it can traverse gateways transparently.
+type CommEventCounterHandler interface {
+	HandleCommEventCounter(ctx context.Context, req *CommEventCounterRequest) (*CommEventCounterResponse, error)
+}
+
+// CommEventLogRequest is passed to CommEventLogHandler for FC0C requests.
+type CommEventLogRequest struct {
+	ClientAddr   string
+	ClientRole   string
+	UnitID       uint8
+	FunctionCode FunctionCode
+}
+
+// CommEventLogHandler is an optional interface for serving FC0C (Get Comm Event
+// Log). The spec labels this "Serial Line only," but it is supported on all
+// transports because it can traverse gateways transparently.
+type CommEventLogHandler interface {
+	HandleCommEventLog(ctx context.Context, req *CommEventLogRequest) (*CommEventLogResponse, error)
+}
+
 // Modbus server object.
-type ModbusServer struct {
-	conf          ServerConfiguration
+type Server struct {
+	conf          ServerConfig
 	logger        *logger
 	lock          sync.Mutex
 	wg            sync.WaitGroup
@@ -161,20 +200,23 @@ type ModbusServer struct {
 	tcpListener   net.Listener
 	tcpClients    []net.Conn
 	transportType transportType
+	stopCancel    context.CancelFunc
+	stopCtx       context.Context
 }
 
 // Returns a new modbus server.
-// reqHandler should be a user-provided handler object satisfying the RequestHandler
-// interface.
-func NewServer(conf *ServerConfiguration, reqHandler RequestHandler) (
-	ms *ModbusServer, err error) {
+func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
+	ms *Server, err error) {
 	if conf == nil {
-		return nil, ErrConfigurationError
+		return nil, newConfigurationError("conf", "must not be nil")
+	}
+	if reqHandler == nil {
+		return nil, newConfigurationError("reqHandler", "must not be nil")
 	}
 	var serverType string
 	var splitURL []string
 
-	ms = &ModbusServer{
+	ms = &Server{
 		conf:    *conf,
 		handler: reqHandler,
 		metrics: conf.Metrics,
@@ -191,7 +233,7 @@ func NewServer(conf *ServerConfiguration, reqHandler RequestHandler) (
 
 	if ms.conf.URL == "" {
 		ms.logger.Errorf("missing host part in URL '%s'", conf.URL)
-		err = ErrConfigurationError
+		err = newConfigurationError("URL", "missing host")
 		return
 	}
 
@@ -200,53 +242,44 @@ func NewServer(conf *ServerConfiguration, reqHandler RequestHandler) (
 		if ms.conf.Timeout == 0 {
 			ms.conf.Timeout = 120 * time.Second
 		}
-
 		if ms.conf.MaxClients == 0 {
 			ms.conf.MaxClients = 10
 		}
-
 		ms.transportType = modbusTCP
 
 	case "tcp+tls":
 		if ms.conf.Timeout == 0 {
 			ms.conf.Timeout = 120 * time.Second
 		}
-
 		if ms.conf.MaxClients == 0 {
 			ms.conf.MaxClients = 10
 		}
-
 		if ms.conf.TLSHandshakeTimeout == 0 {
 			ms.conf.TLSHandshakeTimeout = 30 * time.Second
 		}
-
-		// expect a server-side certificate
 		if ms.conf.TLSServerCert == nil {
 			ms.logger.Errorf("missing server certificate")
-			err = ErrConfigurationError
+			err = newConfigurationError("TLSServerCert", "required for tcp+tls scheme")
 			return
 		}
-
-		// expect a CertPool object containing at least 1 CA or
-		// leaf certificate to validate client-side certificates
 		if ms.conf.TLSClientCAs == nil {
 			ms.logger.Errorf("missing CA/client certificates")
-			err = ErrConfigurationError
+			err = newConfigurationError("TLSClientCAs", "required for tcp+tls scheme")
 			return
 		}
-
 		ms.transportType = modbusTCPOverTLS
 
 	default:
-		err = ErrConfigurationError
+		err = newConfigurationError("URL", fmt.Sprintf("unsupported scheme %q", serverType))
 		return
 	}
 
 	return
 }
 
-// Starts accepting client connections.
-func (ms *ModbusServer) Start() (err error) {
+// Start begins accepting client connections. It is safe to call multiple times;
+// subsequent calls on an already-started server are no-ops.
+func (ms *Server) Start() (err error) {
 	ms.lock.Lock()
 	defer ms.lock.Unlock()
 
@@ -254,18 +287,19 @@ func (ms *ModbusServer) Start() (err error) {
 		return
 	}
 
+	ms.stopCtx, ms.stopCancel = context.WithCancel(context.Background())
+
 	switch ms.transportType {
 	case modbusTCP, modbusTCPOverTLS:
-		// bind to a TCP socket
 		ms.tcpListener, err = net.Listen("tcp", ms.conf.URL)
 		if err != nil {
+			ms.stopCancel()
 			return
 		}
-
-		// accept client connections in a goroutine
 		go ms.acceptTCPClients()
 
 	default:
+		ms.stopCancel()
 		err = ErrConfigurationError
 		return
 	}
@@ -275,686 +309,52 @@ func (ms *ModbusServer) Start() (err error) {
 	return
 }
 
-// Stops accepting new client connections and closes any active session.
-// Blocks until all in-flight client goroutines have exited.
-func (ms *ModbusServer) Stop() (err error) {
+// Shutdown gracefully shuts down the server. It stops accepting new
+// connections, cancels all per-connection contexts, closes client sockets,
+// and waits for in-flight handler goroutines to exit. If ctx expires before
+// all handlers finish, Shutdown returns ctx.Err(). Use Stop() as a
+// convenience wrapper that waits indefinitely.
+func (ms *Server) Shutdown(ctx context.Context) error {
 	ms.lock.Lock()
-
 	if !ms.started {
 		ms.lock.Unlock()
-		return
+		return nil
 	}
-
 	ms.started = false
+	ms.stopCancel()
 
+	var listenErr error
 	if ms.transportType == modbusTCP || ms.transportType == modbusTCPOverTLS {
-		// close the server socket if we're listening over TCP
-		err = ms.tcpListener.Close()
-
-		// close all active TCP clients
+		listenErr = ms.tcpListener.Close()
 		for _, sock := range ms.tcpClients {
 			_ = sock.Close()
 		}
 	}
-
 	ms.lock.Unlock()
 
-	// wait for all client goroutines to finish;
-	// must be called without the lock, as goroutines need it to deregister.
-	ms.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		ms.wg.Wait()
+		close(done)
+	}()
 
-	return
-}
-
-// Accepts new client connections if the configured connection limit allows it.
-// Each connection is served from a dedicated goroutine to allow for concurrent
-// connections.
-func (ms *ModbusServer) acceptTCPClients() {
-	var sock net.Conn
-	var err error
-	var accepted bool
-
-	for {
-		sock, err = ms.tcpListener.Accept()
-		if err != nil {
-			// if the server socket has just been closed, return here as
-			// this goroutine isn't going to see any new client connection
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			ms.logger.Warningf("failed to accept client connection: %v", err)
-			continue
-		}
-
-		ms.lock.Lock()
-		// apply a connection limit
-		if ms.started && uint(len(ms.tcpClients)) < ms.conf.MaxClients {
-			accepted = true
-			// add the new client connection to the pool
-			ms.tcpClients = append(ms.tcpClients, sock)
-		} else {
-			accepted = false
-		}
-		ms.lock.Unlock()
-
-		if accepted {
-			// spin a client handler goroutine to serve the new client
-			ms.wg.Add(1)
-			go ms.handleTCPClient(sock)
-		} else {
-			ms.logger.Warningf("max. number of concurrent connections "+
-				"reached, rejecting %v", sock.RemoteAddr())
-			// discard the connection
-			_ = sock.Close()
-		}
+	select {
+	case <-done:
+		return listenErr
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
-// Handles a TCP client connection.
-// Once handleTransport() returns (i.e. the connection has either closed, timed
-// out, or an unrecoverable error happened), the effective connection is closed
-// and removed from the list of active client connections.
-func (ms *ModbusServer) handleTCPClient(sock net.Conn) {
-	defer ms.wg.Done()
-
-	var err error
-	var clientRole string
-	var tlsSock *tls.Conn
-
-	// effectiveConn starts as the raw TCP socket; for TLS sessions it is
-	// replaced with the *tls.Conn after a successful handshake so that
-	// Stop() issues a proper TLS close_notify instead of a raw TCP close.
-	effectiveConn := net.Conn(sock)
-
-	switch ms.transportType {
-	case modbusTCP:
-		// serve modbus requests over the raw TCP connection
-		ms.handleTransport(
-			newTCPTransport(sock, ms.conf.Timeout, ms.conf.Logger),
-			sock.RemoteAddr().String(), "")
-
-	case modbusTCPOverTLS:
-		// start TLS negotiation over the raw TCP connection
-		tlsSock, clientRole, err = ms.startTLS(sock)
-		if err != nil {
-			ms.logger.Warningf("TLS handshake with %s failed: %v",
-				sock.RemoteAddr().String(), err)
-		} else {
-			// replace the raw socket with the TLS conn in tcpClients so that
-			// Stop() sends a proper TLS close_notify.
-			effectiveConn = tlsSock
-			ms.lock.Lock()
-			for i := range ms.tcpClients {
-				if ms.tcpClients[i] == sock {
-					ms.tcpClients[i] = tlsSock
-					break
-				}
-			}
-			ms.lock.Unlock()
-
-			// serve modbus requests over the TLS tunnel
-			ms.handleTransport(
-				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
-				sock.RemoteAddr().String(), clientRole)
-		}
-
-	default:
-		ms.logger.Errorf("unimplemented transport type %v", ms.transportType)
-	}
-
-	// once done, remove our connection from the list of active client conns
-	ms.lock.Lock()
-	for i := range ms.tcpClients {
-		if ms.tcpClients[i] == effectiveConn {
-			ms.tcpClients[i] = ms.tcpClients[len(ms.tcpClients)-1]
-			ms.tcpClients = ms.tcpClients[:len(ms.tcpClients)-1]
-			break
-		}
-	}
-	ms.lock.Unlock()
-
-	// close the connection
-	_ = effectiveConn.Close()
+// Stop stops the server and blocks until all handler goroutines have exited.
+// It is equivalent to Shutdown(context.Background()).
+func (ms *Server) Stop() error {
+	return ms.Shutdown(context.Background())
 }
 
-// For each request read from the transport, performs decoding and validation,
-// calls the user-provided handler, then encodes and writes the response
-// to the transport.
-func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRole string) {
-	var req *pdu
-	var res *pdu
-	var err error
-	var addr uint16
-	var quantity uint16
-	var reqStart time.Time
-	var ctx = context.Background()
-
-	for {
-		req, err = t.ReadRequest()
-		if err != nil {
-			return
-		}
-
-		if ms.metrics != nil {
-			ms.metrics.OnRequest(req.unitID, req.functionCode)
-			reqStart = time.Now()
-		}
-
-		switch req.functionCode {
-		case FCReadCoils, FCReadDiscreteInputs:
-			var coils []bool
-			var resCount int
-
-			if len(req.payload) != 4 {
-				err = ErrProtocolError
-				break
-			}
-
-			// decode address and quantity fields
-			addr = bytesToUint16(BigEndian, req.payload[0:2])
-			quantity = bytesToUint16(BigEndian, req.payload[2:4])
-
-			// ensure the reply never exceeds the maximum PDU length and we
-			// never read past 0xffff
-			if quantity > maxReadCoils || quantity == 0 {
-				// spec Figure 11/12: quantity out of range → EC=03 (Illegal Data Value)
-				err = ErrIllegalDataValue
-				break
-			}
-			if uint32(addr)+uint32(quantity)-1 > 0xffff {
-				err = ErrIllegalDataAddress
-				break
-			}
-
-			// invoke the appropriate handler
-			if req.functionCode == FCReadCoils {
-				coils, err = ms.handler.HandleCoils(ctx, &CoilsRequest{
-					ClientAddr: clientAddr,
-					ClientRole: clientRole,
-					UnitId:     req.unitID,
-					Addr:       addr,
-					Quantity:   quantity,
-					IsWrite:    false,
-					Args:       nil,
-				})
-			} else {
-				coils, err = ms.handler.HandleDiscreteInputs(
-					ctx, &DiscreteInputsRequest{
-						ClientAddr: clientAddr,
-						ClientRole: clientRole,
-						UnitId:     req.unitID,
-						Addr:       addr,
-						Quantity:   quantity,
-					})
-			}
-			resCount = len(coils)
-
-			// make sure the handler returned the expected number of items
-			if err == nil && resCount != int(quantity) {
-				ms.logger.Errorf("handler returned %v bools, "+
-					"expected %v", resCount, quantity)
-				err = ErrServerDeviceFailure
-				break
-			}
-
-			if err != nil {
-				break
-			}
-
-			// assemble a response PDU
-			res = &pdu{
-				unitID:       req.unitID,
-				functionCode: req.functionCode,
-				payload:      []byte{0},
-			}
-
-			// byte count (1 byte for 8 coils)
-			res.payload[0] = uint8(resCount / 8)
-			if resCount%8 != 0 {
-				res.payload[0]++
-			}
-
-			// coil values
-			res.payload = append(res.payload, encodeBools(coils)...)
-
-		case FCWriteSingleCoil:
-			if len(req.payload) != 4 {
-				err = ErrProtocolError
-				break
-			}
-
-			// decode the address field
-			addr = bytesToUint16(BigEndian, req.payload[0:2])
-
-			// validate the value field (should be either 0xff00 or 0x0000)
-			// spec Figure 9: invalid coil value → EC=03 (Illegal Data Value)
-			if (req.payload[2] != 0xff && req.payload[2] != 0x00) ||
-				req.payload[3] != 0x00 {
-				err = ErrIllegalDataValue
-				break
-			}
-
-			// invoke the coil handler
-			_, err = ms.handler.HandleCoils(ctx, &CoilsRequest{
-				ClientAddr: clientAddr,
-				ClientRole: clientRole,
-				UnitId:     req.unitID,
-				Addr:       addr,
-				Quantity:   1,    // request for a single coil
-				IsWrite:    true, // this is a write request
-				Args:       []bool{(req.payload[2] == 0xff)},
-			})
-
-			if err != nil {
-				break
-			}
-
-			// assemble a response PDU
-			res = &pdu{
-				unitID:       req.unitID,
-				functionCode: req.functionCode,
-			}
-
-			// echo the address and value in the response
-			res.payload = append(res.payload,
-				uint16ToBytes(BigEndian, addr)...)
-			res.payload = append(res.payload,
-				req.payload[2], req.payload[3])
-
-		case FCWriteMultipleCoils:
-			var expectedLen int
-
-			if len(req.payload) < 6 {
-				err = ErrProtocolError
-				break
-			}
-
-			// decode address and quantity fields
-			addr = bytesToUint16(BigEndian, req.payload[0:2])
-			quantity = bytesToUint16(BigEndian, req.payload[2:4])
-
-			// ensure the reply never exceeds the maximum PDU length and we
-			// never read past 0xffff
-			if quantity > maxWriteCoils || quantity == 0 {
-				// spec FC15 state diagram: quantity out of range → EC=03 (Illegal Data Value)
-				err = ErrIllegalDataValue
-				break
-			}
-			if uint32(addr)+uint32(quantity)-1 > 0xffff {
-				err = ErrIllegalDataAddress
-				break
-			}
-
-			// validate the byte count field (1 byte for 8 coils)
-			expectedLen = int(quantity) / 8
-			if quantity%8 != 0 {
-				expectedLen++
-			}
-
-			if req.payload[4] != uint8(expectedLen) {
-				err = ErrProtocolError
-				break
-			}
-
-			// make sure we have enough bytes
-			if len(req.payload)-5 != expectedLen {
-				err = ErrProtocolError
-				break
-			}
-
-			// invoke the coil handler
-			_, err = ms.handler.HandleCoils(ctx, &CoilsRequest{
-				ClientAddr: clientAddr,
-				ClientRole: clientRole,
-				UnitId:     req.unitID,
-				Addr:       addr,
-				Quantity:   quantity,
-				IsWrite:    true, // this is a write request
-				Args:       decodeBools(quantity, req.payload[5:]),
-			})
-
-			if err != nil {
-				break
-			}
-
-			// assemble a response PDU
-			res = &pdu{
-				unitID:       req.unitID,
-				functionCode: req.functionCode,
-			}
-
-			// echo the address and quantity in the response
-			res.payload = append(res.payload,
-				uint16ToBytes(BigEndian, addr)...)
-			res.payload = append(res.payload,
-				uint16ToBytes(BigEndian, quantity)...)
-
-		case FCReadHoldingRegisters, FCReadInputRegisters:
-			var regs []uint16
-			var resCount int
-
-			if len(req.payload) != 4 {
-				err = ErrProtocolError
-				break
-			}
-
-			// decode address and quantity fields
-			addr = bytesToUint16(BigEndian, req.payload[0:2])
-			quantity = bytesToUint16(BigEndian, req.payload[2:4])
-
-			// ensure the reply never exceeds the maximum PDU length and we
-			// never read past 0xffff
-			if quantity > maxReadRegisters || quantity == 0 {
-				// spec Figure 13/14: quantity out of range → EC=03 (Illegal Data Value)
-				err = ErrIllegalDataValue
-				break
-			}
-			if uint32(addr)+uint32(quantity)-1 > 0xffff {
-				err = ErrIllegalDataAddress
-				break
-			}
-
-			// invoke the appropriate handler
-			if req.functionCode == FCReadHoldingRegisters {
-				regs, err = ms.handler.HandleHoldingRegisters(
-					ctx, &HoldingRegistersRequest{
-						ClientAddr: clientAddr,
-						ClientRole: clientRole,
-						UnitId:     req.unitID,
-						Addr:       addr,
-						Quantity:   quantity,
-						IsWrite:    false,
-						Args:       nil,
-					})
-			} else {
-				regs, err = ms.handler.HandleInputRegisters(
-					ctx, &InputRegistersRequest{
-						ClientAddr: clientAddr,
-						ClientRole: clientRole,
-						UnitId:     req.unitID,
-						Addr:       addr,
-						Quantity:   quantity,
-					})
-			}
-			resCount = len(regs)
-
-			// make sure the handler returned the expected number of items
-			if err == nil && resCount != int(quantity) {
-				ms.logger.Errorf("handler returned %v 16-bit values, "+
-					"expected %v", resCount, quantity)
-				err = ErrServerDeviceFailure
-				break
-			}
-
-			if err != nil {
-				break
-			}
-
-			// assemble a response PDU
-			res = &pdu{
-				unitID:       req.unitID,
-				functionCode: req.functionCode,
-				payload:      []byte{0},
-			}
-
-			// byte count (2 bytes per register)
-			res.payload[0] = uint8(resCount * 2)
-
-			// register values
-			res.payload = append(res.payload,
-				uint16sToBytes(BigEndian, regs)...)
-
-		case FCWriteSingleRegister:
-			var value uint16
-
-			if len(req.payload) != 4 {
-				err = ErrProtocolError
-				break
-			}
-
-			// decode address and value fields
-			addr = bytesToUint16(BigEndian, req.payload[0:2])
-			value = bytesToUint16(BigEndian, req.payload[2:4])
-
-			// invoke the handler
-			_, err = ms.handler.HandleHoldingRegisters(
-				ctx, &HoldingRegistersRequest{
-					ClientAddr: clientAddr,
-					ClientRole: clientRole,
-					UnitId:     req.unitID,
-					Addr:       addr,
-					Quantity:   1,    // request for a single register
-					IsWrite:    true, // request is a write
-					Args:       []uint16{value},
-				})
-
-			if err != nil {
-				break
-			}
-
-			// assemble a response PDU
-			res = &pdu{
-				unitID:       req.unitID,
-				functionCode: req.functionCode,
-			}
-
-			// echo the address and value in the response
-			res.payload = append(res.payload,
-				uint16ToBytes(BigEndian, addr)...)
-			res.payload = append(res.payload,
-				uint16ToBytes(BigEndian, value)...)
-
-		case FCWriteMultipleRegisters:
-			var expectedLen int
-
-			if len(req.payload) < 6 {
-				err = ErrProtocolError
-				break
-			}
-
-			// decode address and quantity fields
-			addr = bytesToUint16(BigEndian, req.payload[0:2])
-			quantity = bytesToUint16(BigEndian, req.payload[2:4])
-
-			// ensure the reply never exceeds the maximum PDU length and we
-			// never read past 0xffff
-			if quantity > maxWriteRegisters || quantity == 0 {
-				// spec FC16 state diagram: quantity out of range → EC=03 (Illegal Data Value)
-				err = ErrIllegalDataValue
-				break
-			}
-			if uint32(addr)+uint32(quantity)-1 > 0xffff {
-				err = ErrIllegalDataAddress
-				break
-			}
-
-			// validate the byte count field (2 bytes per register)
-			expectedLen = int(quantity) * 2
-
-			if req.payload[4] != uint8(expectedLen) {
-				err = ErrProtocolError
-				break
-			}
-
-			// make sure we have enough bytes
-			if len(req.payload)-5 != expectedLen {
-				err = ErrProtocolError
-				break
-			}
-
-			// invoke the holding register handler
-			_, err = ms.handler.HandleHoldingRegisters(
-				ctx, &HoldingRegistersRequest{
-					ClientAddr: clientAddr,
-					ClientRole: clientRole,
-					UnitId:     req.unitID,
-					Addr:       addr,
-					Quantity:   quantity,
-					IsWrite:    true, // this is a write request
-					Args:       bytesToUint16s(BigEndian, req.payload[5:]),
-				})
-			if err != nil {
-				break
-			}
-
-			// assemble a response PDU
-			res = &pdu{
-				unitID:       req.unitID,
-				functionCode: req.functionCode,
-			}
-
-			// echo the address and quantity in the response
-			res.payload = append(res.payload,
-				uint16ToBytes(BigEndian, addr)...)
-			res.payload = append(res.payload,
-				uint16ToBytes(BigEndian, quantity)...)
-
-		default:
-			res = &pdu{
-				// reply with the request target unit ID
-				unitID: req.unitID,
-				// set the error bit
-				functionCode: FunctionCode(uint8(req.functionCode) | 0x80),
-				// set the exception code to illegal function to indicate that
-				// the server does not know how to handle this function code.
-				payload: []byte{byte(exIllegalFunction)},
-			}
-		}
-
-		// if there was no error processing the request but the response is nil
-		// (which should never happen), emit a server failure exception code
-		// and log an error
-		if err == nil && res == nil {
-			err = ErrServerDeviceFailure
-			ms.logger.Errorf("internal server error (req: %v, res: %v, err: %v)",
-				req, res, err)
-		}
-
-		// map go errors to modbus errors, unless the error is a protocol error,
-		// in which case close the transport and return.
-		if err != nil {
-			if err == ErrProtocolError {
-				ms.logger.Warningf(
-					"protocol error, closing link (client address: '%s')",
-					clientAddr)
-				if ms.metrics != nil {
-					ms.metrics.OnError(req.unitID, req.functionCode, time.Since(reqStart), err)
-				}
-				_ = t.Close()
-				return
-			} else {
-				if ms.metrics != nil {
-					ms.metrics.OnError(req.unitID, req.functionCode, time.Since(reqStart), err)
-				}
-				res = &pdu{
-					unitID:       req.unitID,
-					functionCode: FunctionCode(uint8(req.functionCode) | 0x80),
-					payload:      []byte{byte(mapErrorToExceptionCode(err))},
-				}
-			}
-		} else if ms.metrics != nil {
-			ms.metrics.OnResponse(req.unitID, req.functionCode, time.Since(reqStart))
-		}
-
-		// write the response to the transport
-		err = t.WriteResponse(res)
-		if err != nil {
-			ms.logger.Warningf("failed to write response: %v", err)
-		}
-
-		// avoid holding on to stale data
-		req = nil
-		res = nil
-	}
-}
-
-// startTLS performs a full TLS handshake (with client authentication) on tcpSock
-// and returns a 'wrapped' clear-text socket suitable for use by the TCP transport.
-func (ms *ModbusServer) startTLS(tcpSock net.Conn) (
-	tlsSock *tls.Conn, clientRole string, err error) {
-	var connState tls.ConnectionState
-
-	// set a timeout for the TLS handshake to complete
-	err = tcpSock.SetDeadline(time.Now().Add(ms.conf.TLSHandshakeTimeout))
-	if err != nil {
-		return
-	}
-
-	// start TLS negotiation over the raw TCP connection
-	tlsSock = tls.Server(tcpSock, &tls.Config{
-		Certificates: []tls.Certificate{
-			*ms.conf.TLSServerCert,
-		},
-		ClientCAs: ms.conf.TLSClientCAs,
-		// require a valid (verified) certificate from the client
-		// (see R-06, R-08 and R-10 of the MBAPS spec)
-		ClientAuth: tls.RequireAndVerifyClientCert,
-		// mandate TLSv1.2 or higher (see R-01 of the MBAPS spec)
-		MinVersion: tls.VersionTLS12,
-	})
-
-	// complete the full TLS handshake (with client cert validation)
-	err = tlsSock.Handshake()
-	if err != nil {
-		return
-	}
-
-	// look for and extract the client's role, if any
-	connState = tlsSock.ConnectionState()
-	if len(connState.PeerCertificates) == 0 {
-		err = errors.New("no client certificate received")
-		return
-	}
-	// From the tls.ConnectionState doc:
-	// "The first element is the leaf certificate that the connection is
-	// verified against."
-	clientRole = ms.extractRole(connState.PeerCertificates[0])
-
-	return
-}
-
-// extractRole looks for Modbus Role extensions in a certificate and returns the
-// role as a string.
-// If no role extension is found, a nil string is returned (R-23).
-// If multiple or invalid role extensions are found, a nil string is returned (R-65, R-22).
-func (ms *ModbusServer) extractRole(cert *x509.Certificate) (role string) {
-	var err error
-	var found bool
-	var badCert bool
-
-	// walk through all extensions looking for Modbus Role OIDs
-	for _, ext := range cert.Extensions {
-		if ext.Id.Equal(modbusRoleOID) {
-
-			// there must be only one role extension per cert (R-65)
-			if found {
-				ms.logger.Warning("client certificate contains more than one role OIDs")
-				badCert = true
-				break
-			}
-			found = true
-
-			// the role extension must use UTF8String encoding (R-22)
-			// (the ASN1 tag for UTF8String is 0x0c)
-			if len(ext.Value) < 2 || ext.Value[0] != 0x0c {
-				badCert = true
-				break
-			}
-
-			// extract the ASN1 string
-			_, err = asn1.Unmarshal(ext.Value, &role)
-			if err != nil {
-				ms.logger.Warningf("failed to decode Modbus Role extension: %v", err)
-				badCert = true
-				break
-			}
-		}
-	}
-
-	// blank the role if we found more than one Role extension
-	if badCert {
-		role = ""
-	}
-
-	return
+// ValidateServerConfig checks the server configuration and handler for errors
+// without starting a server. Returns nil if valid.
+func ValidateServerConfig(conf *ServerConfig, reqHandler RequestHandler) error {
+	_, err := NewServer(conf, reqHandler)
+	return err
 }

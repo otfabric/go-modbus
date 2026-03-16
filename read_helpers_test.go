@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/otfabric/modbus/codec"
 )
 
 // writeMBAPRegs sends an FC03/FC04 normal response with the given register bytes (payload only: byte count + data).
@@ -48,7 +50,7 @@ func TestReadUint16Pair_HoldingRegisters(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -102,7 +104,7 @@ func TestReadUint16Pair_InputRegisters(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -143,7 +145,7 @@ func TestReadUint16Pair_Exception(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -195,7 +197,7 @@ func TestReadAsciiFixed_TrailingSpacePreserved(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -204,30 +206,30 @@ func TestReadAsciiFixed_TrailingSpacePreserved(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	raw, err := client.ReadRawBytes(context.Background(), 1, 0, 4, HoldingRegister)
+	raw, err := client.ReadRegisterBytes(context.Background(), 1, 0, 4, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadRawBytes: %v", err)
+		t.Fatalf("ReadRegisterBytes: %v", err)
 	}
 	s := string(raw)
 	if s != "ABC " {
 		t.Errorf("expected \"ABC \" (with trailing space), got %q", s)
 	}
-	codec, _ := NewAsciiCodec(2)
-	trimmed, _ := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, codec)
+	ascDec, _ := codec.NewAsciiCodec(2)
+	trimmed, _ := codec.ReadFromClient(client, context.Background(), 1, 0, HoldingRegister, ascDec)
 	if trimmed != "ABC" {
 		t.Errorf("ReadWithCodec Ascii expected \"ABC\", got %q", trimmed)
 	}
 }
 
 func TestReadAsciiFixed_ZeroQuantity(t *testing.T) {
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 	_ = client.Open()
 	defer func() { _ = client.Close() }()
 
-	_, err = client.ReadRawBytes(context.Background(), 1, 0, 0, HoldingRegister)
+	_, err = client.ReadRegisterBytes(context.Background(), 1, 0, 0, HoldingRegister)
 	if err == nil {
 		t.Fatal("expected error for quantity 0")
 	}
@@ -269,7 +271,7 @@ func TestReadUint8s_WireOrder(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -278,9 +280,9 @@ func TestReadUint8s_WireOrder(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	b, err := client.ReadRawBytes(context.Background(), 1, 0, 4, HoldingRegister)
+	b, err := client.ReadRegisterBytes(context.Background(), 1, 0, 4, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadRawBytes: %v", err)
+		t.Fatalf("ReadRegisterBytes: %v", err)
 	}
 	if len(b) != 4 {
 		t.Fatalf("expected 4 bytes, got %d", len(b))
@@ -326,7 +328,7 @@ func TestReadUint8s_OddByteCount(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -335,9 +337,9 @@ func TestReadUint8s_OddByteCount(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	b, err := client.ReadRawBytes(context.Background(), 1, 0, 3, HoldingRegister)
+	b, err := client.ReadRegisterBytes(context.Background(), 1, 0, 3, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadRawBytes: %v", err)
+		t.Fatalf("ReadRegisterBytes: %v", err)
 	}
 	if len(b) != 3 {
 		t.Fatalf("expected 3 bytes, got %d", len(b))
@@ -348,14 +350,14 @@ func TestReadUint8s_OddByteCount(t *testing.T) {
 }
 
 func TestReadUint8s_ZeroQuantity(t *testing.T) {
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 	_ = client.Open()
 	defer func() { _ = client.Close() }()
 
-	_, err = client.ReadRawBytes(context.Background(), 1, 0, 0, HoldingRegister)
+	_, err = client.ReadRegisterBytes(context.Background(), 1, 0, 0, HoldingRegister)
 	if err == nil {
 		t.Fatal("expected error for quantity 0")
 	}
@@ -398,7 +400,7 @@ func TestReadIPAddr(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -407,8 +409,8 @@ func TestReadIPAddr(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	codec := NewIPAddrCodec()
-	ip, err := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, codec)
+	ipDec := codec.NewIPAddrCodec()
+	ip, err := codec.ReadFromClient(client, context.Background(), 1, 0, HoldingRegister, ipDec)
 	if err != nil {
 		t.Fatalf("ReadWithCodec IP: %v", err)
 	}
@@ -455,7 +457,7 @@ func TestReadIPv6Addr(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -464,8 +466,8 @@ func TestReadIPv6Addr(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	codec := NewIPv6AddrCodec()
-	ip, err := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, codec)
+	ipDec := codec.NewIPv6AddrCodec()
+	ip, err := codec.ReadFromClient(client, context.Background(), 1, 0, HoldingRegister, ipDec)
 	if err != nil {
 		t.Fatalf("ReadWithCodec IPv6: %v", err)
 	}
@@ -512,7 +514,7 @@ func TestReadEUI48(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -521,8 +523,8 @@ func TestReadEUI48(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	codec := NewEUI48Codec()
-	hw, err := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, codec)
+	euiDec := codec.NewEUI48Codec()
+	hw, err := codec.ReadFromClient(client, context.Background(), 1, 0, HoldingRegister, euiDec)
 	if err != nil {
 		t.Fatalf("ReadWithCodec EUI48: %v", err)
 	}
@@ -570,7 +572,7 @@ func TestReadHelpers_UnaffectedBySetEncoding(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -580,8 +582,8 @@ func TestReadHelpers_UnaffectedBySetEncoding(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	// Raw byte and IP codec always use wire order
-	ipCodec := NewIPAddrCodec()
-	ip, err := ReadWithCodec(client, context.Background(), 1, 0, HoldingRegister, ipCodec)
+	ipCodec := codec.NewIPAddrCodec()
+	ip, err := codec.ReadFromClient(client, context.Background(), 1, 0, HoldingRegister, ipCodec)
 	if err != nil {
 		t.Fatalf("ReadWithCodec IP: %v", err)
 	}
@@ -589,9 +591,9 @@ func TestReadHelpers_UnaffectedBySetEncoding(t *testing.T) {
 		t.Errorf("expected raw bytes [1,2,3,4], got %v", ip)
 	}
 
-	b, err := client.ReadRawBytes(context.Background(), 1, 0, 4, HoldingRegister)
+	b, err := client.ReadRegisterBytes(context.Background(), 1, 0, 4, HoldingRegister)
 	if err != nil {
-		t.Fatalf("ReadRawBytes: %v", err)
+		t.Fatalf("ReadRegisterBytes: %v", err)
 	}
 	if b[0] != 1 || b[1] != 2 || b[2] != 3 || b[3] != 4 {
 		t.Errorf("expected raw bytes [1,2,3,4], got %v", b)
@@ -624,7 +626,7 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -636,7 +638,7 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("ReadRawBytes", func(t *testing.T) {
-		_, err := client.ReadRawBytes(ctx, 1, 0, 4, HoldingRegister)
+		_, err := client.ReadRegisterBytes(ctx, 1, 0, 4, HoldingRegister)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -645,8 +647,8 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 		}
 	})
 	t.Run("ReadIPAddr", func(t *testing.T) {
-		codec := NewIPAddrCodec()
-		_, err := ReadWithCodec(client, ctx, 1, 0, HoldingRegister, codec)
+		ipDec := codec.NewIPAddrCodec()
+		_, err := codec.ReadFromClient(client, ctx, 1, 0, HoldingRegister, ipDec)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -655,8 +657,8 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 		}
 	})
 	t.Run("ReadIPv6Addr", func(t *testing.T) {
-		codec := NewIPv6AddrCodec()
-		_, err := ReadWithCodec(client, ctx, 1, 0, HoldingRegister, codec)
+		ipDec := codec.NewIPv6AddrCodec()
+		_, err := codec.ReadFromClient(client, ctx, 1, 0, HoldingRegister, ipDec)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -665,8 +667,8 @@ func TestReadHelpers_ErrorPropagation(t *testing.T) {
 		}
 	})
 	t.Run("ReadEUI48", func(t *testing.T) {
-		codec := NewEUI48Codec()
-		_, err := ReadWithCodec(client, ctx, 1, 0, HoldingRegister, codec)
+		euiDec := codec.NewEUI48Codec()
+		_, err := codec.ReadFromClient(client, ctx, 1, 0, HoldingRegister, euiDec)
 		if err == nil {
 			t.Fatal("expected error")
 		}

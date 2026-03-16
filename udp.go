@@ -1,26 +1,43 @@
 package modbus
 
 import (
+	"fmt"
 	"net"
 	"time"
 )
 
-// udpSockWrapper wraps a net.UDPConn (UDP socket) to
-// allow transports to consume data off the network socket on
-// a byte per byte basis rather than datagram by datagram.
+const maxTCPFrameLength = 260
+
+// udpSockWrapper wraps a net.UDPConn (UDP socket) to present a stream-like
+// (net.Conn-compatible) interface on top of a datagram socket. This allows
+// the TCP/MBAP transport layer to read byte-by-byte from what is actually
+// a datagram socket, which is necessary because the Modbus/UDP framing is
+// not standardized and different vendors use different conventions.
+//
+// Limitations:
+//   - Modbus/UDP is non-standard; this wrapper is best-effort.
+//   - The wrapper treats datagrams as a byte stream by buffering leftovers
+//     from partially consumed datagrams. This only works correctly when each
+//     request/response maps cleanly to a single datagram with no loss,
+//     reordering, or multiplexing.
+//   - It is not recommended for high-reliability production use unless
+//     specifically validated against the target device(s).
+//   - There is no concurrency protection; the transport layer serializes access.
 type udpSockWrapper struct {
 	leftoverCount int
 	rxbuf         []byte
 	sock          *net.UDPConn
 }
 
-func newUDPSockWrapper(sock net.Conn) (usw *udpSockWrapper) {
-	usw = &udpSockWrapper{
-		rxbuf: make([]byte, maxTCPFrameLength),
-		sock:  sock.(*net.UDPConn),
+func newUDPSockWrapper(sock net.Conn) (*udpSockWrapper, error) {
+	udpConn, ok := sock.(*net.UDPConn)
+	if !ok {
+		return nil, fmt.Errorf("expected *net.UDPConn, got %T", sock)
 	}
-
-	return
+	return &udpSockWrapper{
+		rxbuf: make([]byte, maxTCPFrameLength),
+		sock:  udpConn,
+	}, nil
 }
 
 func (usw *udpSockWrapper) Read(buf []byte) (rlen int, err error) {

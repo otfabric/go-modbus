@@ -7,6 +7,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/otfabric/modbus/internal/protocol"
 )
 
 // ---------------------------------------------------------------------------
@@ -50,11 +52,11 @@ func writeMBAPNormal(conn net.Conn, txid []byte, unitID, fc byte, payload []byte
 }
 
 // ---------------------------------------------------------------------------
-// HasUnitReadFunction
+// SupportsFunction
 // ---------------------------------------------------------------------------
 
-// TestHasUnitReadFunction_FC03_NormalResponse verifies true when server returns normal FC03 response.
-func TestHasUnitReadFunction_FC03_NormalResponse(t *testing.T) {
+// TestSupportsFunction_FC03_NormalResponse verifies true when server returns normal FC03 response.
+func TestSupportsFunction_FC03_NormalResponse(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -83,7 +85,7 @@ func TestHasUnitReadFunction_FC03_NormalResponse(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 2 * time.Second,
 	})
@@ -95,17 +97,17 @@ func TestHasUnitReadFunction_FC03_NormalResponse(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	ok, err := client.HasUnitReadFunction(context.Background(), 1, FCReadHoldingRegisters)
+	ok, err := client.SupportsFunction(context.Background(), 1, FCReadHoldingRegisters)
 	if err != nil {
-		t.Fatalf("HasUnitReadFunction: %v", err)
+		t.Fatalf("SupportsFunction: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected true (FC03 normal response)")
 	}
 }
 
-// TestHasUnitReadFunction_FC03_ExceptionResponse verifies true when server returns valid exception.
-func TestHasUnitReadFunction_FC03_ExceptionResponse(t *testing.T) {
+// TestSupportsFunction_FC03_ExceptionResponse verifies true when server returns valid exception.
+func TestSupportsFunction_FC03_ExceptionResponse(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -130,7 +132,7 @@ func TestHasUnitReadFunction_FC03_ExceptionResponse(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 2 * time.Second,
 	})
@@ -142,17 +144,17 @@ func TestHasUnitReadFunction_FC03_ExceptionResponse(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	ok, err := client.HasUnitReadFunction(context.Background(), 1, FCReadHoldingRegisters)
+	ok, err := client.SupportsFunction(context.Background(), 1, FCReadHoldingRegisters)
 	if err != nil {
-		t.Fatalf("HasUnitReadFunction: %v", err)
+		t.Fatalf("SupportsFunction: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected true (exception = device recognises FC)")
 	}
 }
 
-// TestHasUnitReadFunction_WrongUnitID verifies false when response has wrong unit ID.
-func TestHasUnitReadFunction_WrongUnitID(t *testing.T) {
+// TestSupportsFunction_WrongUnitID verifies false when response has wrong unit ID.
+func TestSupportsFunction_WrongUnitID(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -177,7 +179,7 @@ func TestHasUnitReadFunction_WrongUnitID(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 2 * time.Second,
 	})
@@ -189,18 +191,18 @@ func TestHasUnitReadFunction_WrongUnitID(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	ok, err := client.HasUnitReadFunction(context.Background(), 1, FCReadHoldingRegisters)
-	if err != nil {
-		t.Fatalf("HasUnitReadFunction: %v", err)
-	}
+	ok, err := client.SupportsFunction(context.Background(), 1, FCReadHoldingRegisters)
 	if ok {
 		t.Fatal("expected false when response unit ID does not match")
 	}
+	if !errors.Is(err, ErrBadUnitID) {
+		t.Fatalf("expected ErrBadUnitID, got %v", err)
+	}
 }
 
-// TestHasUnitReadFunction_UnsupportedFC verifies (false, ErrUnexpectedParameters) for unknown FC.
-func TestHasUnitReadFunction_UnsupportedFC(t *testing.T) {
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+// TestSupportsFunction_UnsupportedFC verifies (false, ErrUnexpectedParameters) for unknown FC.
+func TestSupportsFunction_UnsupportedFC(t *testing.T) {
+	client, err := New(Config{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -208,7 +210,7 @@ func TestHasUnitReadFunction_UnsupportedFC(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	// Use a function code that is not in the detection probe set (e.g. FC 0x16 Mask Write Register).
-	ok, err := client.HasUnitReadFunction(context.Background(), 1, FCMaskWriteRegister)
+	ok, err := client.SupportsFunction(context.Background(), 1, FCMaskWriteRegister)
 	if err == nil {
 		t.Fatal("expected error for unsupported FC")
 	}
@@ -220,9 +222,9 @@ func TestHasUnitReadFunction_UnsupportedFC(t *testing.T) {
 	}
 }
 
-// TestHasUnitReadFunction_ContextCanceled verifies error when context is canceled.
-func TestHasUnitReadFunction_ContextCanceled(t *testing.T) {
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: 5 * time.Second})
+// TestSupportsFunction_ContextCanceled verifies error when context is canceled.
+func TestSupportsFunction_ContextCanceled(t *testing.T) {
+	client, err := New(Config{URL: "tcp://127.0.0.1:1", Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -232,7 +234,7 @@ func TestHasUnitReadFunction_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = client.HasUnitReadFunction(ctx, 1, FCReadHoldingRegisters)
+	_, err = client.SupportsFunction(ctx, 1, FCReadHoldingRegisters)
 	if err == nil {
 		t.Fatal("expected error when context is canceled")
 	}
@@ -242,11 +244,11 @@ func TestHasUnitReadFunction_ContextCanceled(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// HasUnitIdentifyFunction
+// SupportsDeviceIdentification
 // ---------------------------------------------------------------------------
 
-// TestHasUnitIdentifyFunction_FC43_NormalResponse verifies true when server returns valid FC43 response.
-func TestHasUnitIdentifyFunction_FC43_NormalResponse(t *testing.T) {
+// TestSupportsDeviceIdentification_FC43_NormalResponse verifies true when server returns valid FC43 response.
+func TestSupportsDeviceIdentification_FC43_NormalResponse(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -270,7 +272,7 @@ func TestHasUnitIdentifyFunction_FC43_NormalResponse(t *testing.T) {
 			if fc == byte(FCEncapsulatedInterface) {
 				payload := []byte{
 					byte(MEIReadDeviceIdentification),
-					ReadDeviceIdBasic,
+					ReadDeviceIDBasic,
 					0x01, 0x00, 0x00,
 					0x01,
 					0x00, 0x03, 'A', 'B', 'C',
@@ -282,7 +284,7 @@ func TestHasUnitIdentifyFunction_FC43_NormalResponse(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 2 * time.Second,
 	})
@@ -294,17 +296,17 @@ func TestHasUnitIdentifyFunction_FC43_NormalResponse(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	ok, err := client.HasUnitIdentifyFunction(context.Background(), 1)
+	ok, err := client.SupportsDeviceIdentification(context.Background(), 1)
 	if err != nil {
-		t.Fatalf("HasUnitIdentifyFunction: %v", err)
+		t.Fatalf("SupportsDeviceIdentification: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected true (FC43 normal response)")
 	}
 }
 
-// TestHasUnitIdentifyFunction_FC43_ExceptionResponse verifies true when server returns FC43 exception.
-func TestHasUnitIdentifyFunction_FC43_ExceptionResponse(t *testing.T) {
+// TestSupportsDeviceIdentification_FC43_ExceptionResponse verifies true when server returns FC43 exception.
+func TestSupportsDeviceIdentification_FC43_ExceptionResponse(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -329,7 +331,7 @@ func TestHasUnitIdentifyFunction_FC43_ExceptionResponse(t *testing.T) {
 		}
 	}()
 
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 2 * time.Second,
 	})
@@ -341,18 +343,18 @@ func TestHasUnitIdentifyFunction_FC43_ExceptionResponse(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	ok, err := client.HasUnitIdentifyFunction(context.Background(), 1)
+	ok, err := client.SupportsDeviceIdentification(context.Background(), 1)
 	if err != nil {
-		t.Fatalf("HasUnitIdentifyFunction: %v", err)
+		t.Fatalf("SupportsDeviceIdentification: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected true (FC43 exception = device recognises FC)")
 	}
 }
 
-// TestHasUnitIdentifyFunction_ContextCanceled verifies error when context is canceled.
-func TestHasUnitIdentifyFunction_ContextCanceled(t *testing.T) {
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: 5 * time.Second})
+// TestSupportsDeviceIdentification_ContextCanceled verifies error when context is canceled.
+func TestSupportsDeviceIdentification_ContextCanceled(t *testing.T) {
+	client, err := New(Config{URL: "tcp://127.0.0.1:1", Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -362,7 +364,7 @@ func TestHasUnitIdentifyFunction_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = client.HasUnitIdentifyFunction(ctx, 1)
+	_, err = client.SupportsDeviceIdentification(ctx, 1)
 	if err == nil {
 		t.Fatal("expected error when context is canceled")
 	}
@@ -395,10 +397,10 @@ func TestIsValidModbusException(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := &pdu{functionCode: FunctionCode(tt.reqFC)}
-			res := &pdu{functionCode: FunctionCode(tt.resFC), payload: tt.payload}
-			if got := isValidModbusException(req, res); got != tt.want {
-				t.Errorf("isValidModbusException() = %v, want %v", got, tt.want)
+			reqFC := FunctionCode(tt.reqFC)
+			res := protocol.Response{FunctionCode: FunctionCode(tt.resFC), Payload: tt.payload}
+			if got := protocol.IsValidModbusException(reqFC, res); got != tt.want {
+				t.Errorf("IsValidModbusException() = %v, want %v", got, tt.want)
 			}
 		})
 	}

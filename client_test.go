@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/otfabric/modbus/codec"
 )
 
 // typedReadHandler is a minimal Modbus server handler that serves a fixed array
@@ -28,7 +30,7 @@ func (h *typedReadHandler) HandleInputRegisters(_ context.Context, _ *InputRegis
 }
 
 func (h *typedReadHandler) HandleHoldingRegisters(_ context.Context, req *HoldingRegistersRequest) (res []uint16, err error) {
-	if req.UnitId != 1 {
+	if req.UnitID != 1 {
 		err = ErrIllegalFunction
 		return
 	}
@@ -47,14 +49,14 @@ func (h *typedReadHandler) HandleHoldingRegisters(_ context.Context, req *Holdin
 	return
 }
 
-func startTypedReadServer(t *testing.T, h *typedReadHandler, url string) (*ModbusServer, *ModbusClient) {
+func startTypedReadServer(t *testing.T, h *typedReadHandler, url string) (*Server, *Client) {
 	t.Helper()
 
-	var server *ModbusServer
-	var client *ModbusClient
+	var server *Server
+	var client *Client
 	var err error
 
-	server, err = NewServer(&ServerConfiguration{
+	server, err = NewServer(&ServerConfig{
 		URL:        url,
 		MaxClients: 1,
 	}, h)
@@ -66,7 +68,7 @@ func startTypedReadServer(t *testing.T, h *typedReadHandler, url string) (*Modbu
 		t.Fatalf("failed to start server: %v", err)
 	}
 
-	client, err = NewClient(&ClientConfiguration{URL: url})
+	client, err = New(Config{URL: url})
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -150,9 +152,9 @@ func TestReadInt32(t *testing.T) {
 	defer func() { _ = client.Close(); _ = server.Stop() }()
 
 	ctx := context.Background()
-	codec := MustNewInt32Codec(Layout32_4321)
+	enc := codec.MustNewInt32Codec(codec.Layout32_4321)
 
-	i32, err := ReadWithCodec(client, ctx, 1, 0x0000, HoldingRegister, codec)
+	i32, err := codec.ReadFromClient(client, ctx, 1, 0x0000, HoldingRegister, enc)
 	if err != nil {
 		t.Fatalf("ReadWithCodec int32: %v", err)
 	}
@@ -166,7 +168,7 @@ func TestReadInt32(t *testing.T) {
 	}
 	var i32s []int32
 	for i := 0; i < 2; i++ {
-		v, decErr := DecodeRegisters(regs[i*2:(i+1)*2], codec)
+		v, decErr := codec.DecodeRegisters(regs[i*2:(i+1)*2], enc)
 		if decErr != nil {
 			t.Fatalf("DecodeRegisters: %v", decErr)
 		}
@@ -195,9 +197,9 @@ func TestReadInt64(t *testing.T) {
 	defer func() { _ = client.Close(); _ = server.Stop() }()
 
 	ctx := context.Background()
-	codec := MustNewInt64Codec(Layout64_87654321)
+	enc := codec.MustNewInt64Codec(codec.Layout64_87654321)
 
-	i64, err := ReadWithCodec(client, ctx, 1, 0x0000, HoldingRegister, codec)
+	i64, err := codec.ReadFromClient(client, ctx, 1, 0x0000, HoldingRegister, enc)
 	if err != nil {
 		t.Fatalf("ReadWithCodec int64: %v", err)
 	}
@@ -211,7 +213,7 @@ func TestReadInt64(t *testing.T) {
 	}
 	var i64s []int64
 	for i := 0; i < 2; i++ {
-		v, decErr := DecodeRegisters(regs[i*4:(i+1)*4], codec)
+		v, decErr := codec.DecodeRegisters(regs[i*4:(i+1)*4], enc)
 		if decErr != nil {
 			t.Fatalf("DecodeRegisters: %v", decErr)
 		}
@@ -238,9 +240,9 @@ func TestReadUint48(t *testing.T) {
 	defer func() { _ = client.Close(); _ = server.Stop() }()
 
 	ctx := context.Background()
-	codec := MustNewUint48Codec(Layout48_654321)
+	enc := codec.MustNewUint48Codec(codec.Layout48_654321)
 
-	u48, err := ReadWithCodec(client, ctx, 1, 0x0000, HoldingRegister, codec)
+	u48, err := codec.ReadFromClient(client, ctx, 1, 0x0000, HoldingRegister, enc)
 	if err != nil {
 		t.Fatalf("ReadWithCodec uint48: %v", err)
 	}
@@ -254,7 +256,7 @@ func TestReadUint48(t *testing.T) {
 	}
 	var u48s []uint64
 	for i := 0; i < 2; i++ {
-		v, decErr := DecodeRegisters(regs[i*3:(i+1)*3], codec)
+		v, decErr := codec.DecodeRegisters(regs[i*3:(i+1)*3], enc)
 		if decErr != nil {
 			t.Fatalf("DecodeRegisters: %v", decErr)
 		}
@@ -281,9 +283,9 @@ func TestReadInt48(t *testing.T) {
 	defer func() { _ = client.Close(); _ = server.Stop() }()
 
 	ctx := context.Background()
-	codec := MustNewInt48Codec(Layout48_654321)
+	enc := codec.MustNewInt48Codec(codec.Layout48_654321)
 
-	i48, err := ReadWithCodec(client, ctx, 1, 0x0000, HoldingRegister, codec)
+	i48, err := codec.ReadFromClient(client, ctx, 1, 0x0000, HoldingRegister, enc)
 	if err != nil {
 		t.Fatalf("ReadWithCodec int48: %v", err)
 	}
@@ -297,7 +299,7 @@ func TestReadInt48(t *testing.T) {
 	}
 	var i48s []int64
 	for i := 0; i < 2; i++ {
-		v, decErr := DecodeRegisters(regs[i*3:(i+1)*3], codec)
+		v, decErr := codec.DecodeRegisters(regs[i*3:(i+1)*3], enc)
 		if decErr != nil {
 			t.Fatalf("DecodeRegisters: %v", decErr)
 		}
@@ -320,11 +322,11 @@ func TestReadAscii(t *testing.T) {
 	server, client := startTypedReadServer(t, h, "tcp://localhost:5516")
 	defer func() { _ = client.Close(); _ = server.Stop() }()
 
-	codec, err := NewAsciiCodec(3)
+	enc, err := codec.NewAsciiCodec(3)
 	if err != nil {
 		t.Fatalf("NewAsciiCodec: %v", err)
 	}
-	s, err := ReadWithCodec(client, context.Background(), 1, 0x0000, HoldingRegister, codec)
+	s, err := codec.ReadFromClient(client, context.Background(), 1, 0x0000, HoldingRegister, enc)
 	if err != nil {
 		t.Fatalf("ReadWithCodec Ascii: %v", err)
 	}
@@ -344,11 +346,11 @@ func TestReadAsciiReverse(t *testing.T) {
 	server, client := startTypedReadServer(t, h, "tcp://localhost:5518")
 	defer func() { _ = client.Close(); _ = server.Stop() }()
 
-	codec, err := NewAsciiReverseCodec(3)
+	enc, err := codec.NewAsciiReverseCodec(3)
 	if err != nil {
 		t.Fatalf("NewAsciiReverseCodec: %v", err)
 	}
-	s, err := ReadWithCodec(client, context.Background(), 1, 0x0000, HoldingRegister, codec)
+	s, err := codec.ReadFromClient(client, context.Background(), 1, 0x0000, HoldingRegister, enc)
 	if err != nil {
 		t.Fatalf("ReadWithCodec AsciiReverse: %v", err)
 	}
@@ -367,11 +369,11 @@ func TestReadBCD(t *testing.T) {
 	server, client := startTypedReadServer(t, h, "tcp://localhost:5520")
 	defer func() { _ = client.Close(); _ = server.Stop() }()
 
-	codec, err := NewBCDCodec(2)
+	enc, err := codec.NewBCDCodec(2)
 	if err != nil {
 		t.Fatalf("NewBCDCodec: %v", err)
 	}
-	s, err := ReadWithCodec(client, context.Background(), 1, 0x0000, HoldingRegister, codec)
+	s, err := codec.ReadFromClient(client, context.Background(), 1, 0x0000, HoldingRegister, enc)
 	if err != nil {
 		t.Fatalf("ReadWithCodec BCD: %v", err)
 	}
@@ -389,11 +391,11 @@ func TestReadPackedBCD(t *testing.T) {
 	server, client := startTypedReadServer(t, h, "tcp://localhost:5522")
 	defer func() { _ = client.Close(); _ = server.Stop() }()
 
-	codec, err := NewPackedBCDCodec(2)
+	enc, err := codec.NewPackedBCDCodec(2)
 	if err != nil {
 		t.Fatalf("NewPackedBCDCodec: %v", err)
 	}
-	s, err := ReadWithCodec(client, context.Background(), 1, 0x0000, HoldingRegister, codec)
+	s, err := codec.ReadFromClient(client, context.Background(), 1, 0x0000, HoldingRegister, enc)
 	if err != nil {
 		t.Fatalf("ReadWithCodec PackedBCD: %v", err)
 	}
@@ -429,7 +431,7 @@ func TestReadWriteMultipleRegisters_Success(t *testing.T) {
 			_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -467,7 +469,7 @@ func TestReadWriteMultipleRegisters_Exception(t *testing.T) {
 			_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -485,7 +487,7 @@ func TestReadWriteMultipleRegisters_Exception(t *testing.T) {
 }
 
 func TestReadWriteMultipleRegisters_InvalidParams(t *testing.T) {
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+	client, err := New(Config{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -519,7 +521,7 @@ func TestReadFIFOQueue_Exception(t *testing.T) {
 		txid, unitID, fc := frame[0:2], frame[6], frame[7]
 		_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -563,7 +565,7 @@ func TestReadFIFOQueue_Success(t *testing.T) {
 			_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -612,7 +614,7 @@ func TestClientMetrics_Callbacks(t *testing.T) {
 		_ = writeMBAPNormal(sock, txid, unitID, fc, []byte{0x02, 0x00, 0x01})
 	}()
 	metrics := &testMetrics{}
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 2 * time.Second,
 		Metrics: metrics,
@@ -639,7 +641,7 @@ func TestClientMetrics_Callbacks(t *testing.T) {
 			_ = sock.Close()
 		}
 	}()
-	client2, _ := NewClient(&ClientConfiguration{
+	client2, _ := New(Config{
 		URL:         "tcp://" + ln2.Addr().String(),
 		Timeout:     2 * time.Second,
 		Metrics:     metrics,
@@ -658,17 +660,17 @@ func TestClientMetrics_Callbacks(t *testing.T) {
 func TestNewClient_TransportTypes(t *testing.T) {
 	// Cover NewClient switch branches for rtu, rtuovertcp, rtuoverudp, udp (Open will fail but client is created).
 	for _, url := range []string{"rtu:///dev/ttyUSB0", "rtuovertcp://127.0.0.1:502", "rtuoverudp://127.0.0.1:502", "udp://127.0.0.1:502"} {
-		mc, err := NewClient(&ClientConfiguration{URL: url, Timeout: time.Second})
+		mc, err := New(Config{URL: url, Timeout: time.Second})
 		if err != nil {
-			t.Errorf("NewClient(%q): %v", url, err)
+			t.Errorf("New(%q): %v", url, err)
 			continue
 		}
 		if mc == nil {
-			t.Errorf("NewClient(%q): nil client", url)
+			t.Errorf("New(%q): nil client", url)
 		}
 	}
 	// URL without :// triggers "missing client type"
-	_, err := NewClient(&ClientConfiguration{URL: "no-scheme", Timeout: time.Second})
+	_, err := New(Config{URL: "no-scheme", Timeout: time.Second})
 	if err == nil {
 		t.Error("expected error for URL without scheme")
 	}
@@ -677,7 +679,7 @@ func TestNewClient_TransportTypes(t *testing.T) {
 	}
 }
 
-func TestLastTransactionID(t *testing.T) {
+func TestLastObservedTransactionID(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -694,7 +696,7 @@ func TestLastTransactionID(t *testing.T) {
 		payload := []byte{0x02, 0x00, 0x01}
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -706,9 +708,9 @@ func TestLastTransactionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRegister: %v", err)
 	}
-	id := client.LastTransactionID()
+	id := client.LastObservedTransactionID()
 	if id == 0 {
-		t.Error("LastTransactionID should be non-zero after successful TCP request")
+		t.Error("LastObservedTransactionID should be non-zero after successful TCP request")
 	}
 }
 
@@ -738,7 +740,7 @@ func TestReadDiscreteInput(t *testing.T) {
 			_ = writeMBAPNormal(sock, txid, unitID, fc, []byte{0x01, 0x01})
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -755,7 +757,7 @@ func TestReadDiscreteInput(t *testing.T) {
 	}
 }
 
-func TestWriteCoilValue(t *testing.T) {
+func TestWriteCoilRaw(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -781,7 +783,7 @@ func TestWriteCoilValue(t *testing.T) {
 			_ = writeMBAPNormal(sock, txid, unitID, fc, frame[8:12])
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -789,7 +791,7 @@ func TestWriteCoilValue(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	err = client.WriteCoilValue(context.Background(), 1, 0, 0xFF00) // 0xFF00 = on
+	err = client.WriteCoilRaw(context.Background(), 1, 0, 0xFF00) // 0xFF00 = on
 	if err != nil {
 		t.Fatalf("WriteCoilValue: %v", err)
 	}
@@ -815,7 +817,7 @@ func TestClientPool_TwoConns(t *testing.T) {
 			}(sock)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:      "tcp://" + ln.Addr().String(),
 		Timeout:  2 * time.Second,
 		MaxConns: 2,
@@ -854,7 +856,7 @@ func TestClientPool_CloseDrainsPool(t *testing.T) {
 			}(sock)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:      "tcp://" + ln.Addr().String(),
 		Timeout:  2 * time.Second,
 		MaxConns: 2,
@@ -893,7 +895,7 @@ func TestClientPool_PreWarm(t *testing.T) {
 			}(sock)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:      "tcp://" + ln.Addr().String(),
 		Timeout:  2 * time.Second,
 		MaxConns: 2,
@@ -924,7 +926,7 @@ func TestClientRetry_ContextCanceledDuringDelay(t *testing.T) {
 			_ = sock.Close()
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:         "tcp://" + ln.Addr().String(),
 		Timeout:     2 * time.Second,
 		RetryPolicy: ExponentialBackoff(50*time.Millisecond, time.Second, 3),
@@ -975,7 +977,7 @@ func TestClientRetry_SuccessOnSecondAttempt(t *testing.T) {
 			_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:         "tcp://" + ln.Addr().String(),
 		Timeout:     2 * time.Second,
 		RetryPolicy: ExponentialBackoff(5*time.Millisecond, 100*time.Millisecond, 2),
@@ -1011,7 +1013,7 @@ func TestOpen_SingleTransport_OneRequestSucceeds(t *testing.T) {
 		txid, unitID, fc := frame[0:2], frame[6], frame[7]
 		_ = writeMBAPNormal(sock, txid, unitID, fc, []byte{0x02, 0x00, 0x01})
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:      "tcp://" + ln.Addr().String(),
 		Timeout:  2 * time.Second,
 		MaxConns: 0,
@@ -1065,7 +1067,7 @@ func TestPool_ConcurrentRequests_TwoGoroutines(t *testing.T) {
 			}(sock)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:      "tcp://" + ln.Addr().String(),
 		Timeout:  2 * time.Second,
 		MaxConns: 2,
@@ -1131,7 +1133,7 @@ func TestRetry_PoolMode_SuccessAfterDiscard(t *testing.T) {
 			}(sock)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:         "tcp://" + ln.Addr().String(),
 		Timeout:     2 * time.Second,
 		MaxConns:    2,
@@ -1176,7 +1178,7 @@ func TestClose_WhileGoroutinesActive(t *testing.T) {
 			}(sock)
 		}
 	}()
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:      "tcp://" + ln.Addr().String(),
 		Timeout:  5 * time.Second,
 		MaxConns: 2,
@@ -1221,7 +1223,7 @@ func TestDiagnostics_Success(t *testing.T) {
 		payload := []byte{0x00, 0x00, 0x12, 0x34}
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1257,7 +1259,7 @@ func TestDiagnostics_Exception(t *testing.T) {
 		txid, unitID, fc := frame[0:2], frame[6], frame[7]
 		_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1274,7 +1276,7 @@ func TestDiagnostics_Exception(t *testing.T) {
 	}
 }
 
-func TestReportServerId_Success(t *testing.T) {
+func TestReportServerID_Success(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -1296,7 +1298,7 @@ func TestReportServerId_Success(t *testing.T) {
 		payload := []byte{0x03, 0x01, 0xFF, 0x00}
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1304,19 +1306,19 @@ func TestReportServerId_Success(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	rs, err := client.ReportServerId(context.Background(), 1)
+	rs, err := client.ReportServerID(context.Background(), 1)
 	if err != nil {
-		t.Fatalf("ReportServerId: %v", err)
+		t.Fatalf("ReportServerID: %v", err)
 	}
-	if rs.ByteCount != 3 {
-		t.Errorf("ByteCount = %d", rs.ByteCount)
+	if len(rs.Data) != 3 {
+		t.Errorf("Data length = %d, want 3", len(rs.Data))
 	}
-	if len(rs.Data) != 3 || rs.Data[0] != 0x01 || rs.Data[1] != 0xFF {
+	if len(rs.Data) < 3 || rs.Data[0] != 0x01 || rs.Data[1] != 0xFF {
 		t.Errorf("Data = %v", rs.Data)
 	}
 }
 
-func TestReportServerId_Exception(t *testing.T) {
+func TestReportServerID_Exception(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -1332,7 +1334,7 @@ func TestReportServerId_Exception(t *testing.T) {
 		txid, unitID, fc := frame[0:2], frame[6], frame[7]
 		_ = writeMBAPException(sock, txid, unitID, fc, byte(exServerDeviceBusy))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1340,7 +1342,7 @@ func TestReportServerId_Exception(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	_, err = client.ReportServerId(context.Background(), 1)
+	_, err = client.ReportServerID(context.Background(), 1)
 	if err == nil {
 		t.Fatal("expected exception error")
 	}
@@ -1363,7 +1365,7 @@ func TestClientMetrics_OnTimeout(t *testing.T) {
 		}
 	}()
 	metrics := &testMetrics{}
-	client, err := NewClient(&ClientConfiguration{
+	client, err := New(Config{
 		URL:     "tcp://" + ln.Addr().String(),
 		Timeout: 10 * time.Millisecond,
 		Metrics: metrics,
@@ -1397,7 +1399,7 @@ func TestReadFileRecords_Exception(t *testing.T) {
 		txid, unitID, fc := frame[0:2], frame[6], frame[7]
 		_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataValue))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1417,7 +1419,7 @@ func TestReadFileRecords_Exception(t *testing.T) {
 }
 
 func TestReadFileRecords_InvalidParams(t *testing.T) {
-	client, _ := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+	client, _ := New(Config{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
 	_ = client.Open()
 	defer func() { _ = client.Close() }()
 	ctx := context.Background()
@@ -1477,7 +1479,7 @@ func TestReadFileRecords_ProtocolError_TruncatedPayload(t *testing.T) {
 		payload := []byte{0x04, 0x03, 0x06, 0x00}
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1514,7 +1516,7 @@ func TestReadFileRecords_ProtocolError_WrongRefType(t *testing.T) {
 		payload := []byte{0x04, 0x03, 0x05, 0x00, 0x01}
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1552,7 +1554,7 @@ func TestReadFileRecords_Success(t *testing.T) {
 		payload := []byte{0x04, 0x03, 0x06, 0x00, 0x01}
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1599,7 +1601,7 @@ func TestReadFileRecords_RequestContainsRefType06(t *testing.T) {
 		payload := []byte{0x04, 0x03, 0x06, 0x00, 0x01}
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1641,7 +1643,7 @@ func TestWriteFileRecords_Exception(t *testing.T) {
 		txid, unitID, fc := frame[0:2], frame[6], frame[7]
 		_ = writeMBAPException(sock, txid, unitID, fc, byte(exIllegalDataAddress))
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1682,7 +1684,7 @@ func TestWriteFileRecords_ProtocolError_EchoMismatch(t *testing.T) {
 		}
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1723,7 +1725,7 @@ func TestWriteFileRecords_Success(t *testing.T) {
 		payload := frame[8:]
 		_ = writeMBAPNormal(sock, txid, unitID, fc, payload)
 	}()
-	client, err := NewClient(&ClientConfiguration{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
+	client, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -1740,7 +1742,7 @@ func TestWriteFileRecords_Success(t *testing.T) {
 }
 
 func TestWriteFileRecords_InvalidParams(t *testing.T) {
-	client, _ := NewClient(&ClientConfiguration{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
+	client, _ := New(Config{URL: "tcp://127.0.0.1:1", Timeout: time.Second})
 	_ = client.Open()
 	defer func() { _ = client.Close() }()
 	ctx := context.Background()
@@ -1767,15 +1769,142 @@ func TestWriteFileRecords_InvalidParams(t *testing.T) {
 }
 
 func TestDiagnosticSubFunction_String(t *testing.T) {
-	// Cover DiagnosticSubFunction.String() for logging/diagnostics.
 	if s := DiagReturnQueryData.String(); s != "ReturnQueryData" {
 		t.Errorf("DiagReturnQueryData.String() = %q", s)
 	}
 	if s := DiagRestartCommunications.String(); s != "RestartCommunications" {
 		t.Errorf("DiagRestartCommunications.String() = %q", s)
 	}
-	// Unknown value
 	if s := DiagnosticSubFunction(0xFFFF).String(); s == "" {
 		t.Error("unknown DiagnosticSubFunction should return non-empty string")
 	}
+}
+
+func TestConcurrentClientRequests(t *testing.T) {
+	handler := &typedReadHandler{}
+	handler.holding[0] = 0x0042
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	srv, err := NewServer(&ServerConfig{URL: "tcp://" + ln.Addr().String(), MaxClients: 10}, handler)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	_ = ln.Close()
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	client, err := New(Config{
+		URL:     "tcp://" + srv.conf.URL,
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			val, readErr := client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
+			if readErr != nil {
+				errs <- readErr
+				return
+			}
+			if val != 0x0042 {
+				errs <- errors.New("unexpected value")
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Errorf("concurrent request error: %v", e)
+	}
+}
+
+func TestCloseDuringInFlightRequest(t *testing.T) {
+	handler := &typedReadHandler{}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	srv, err := NewServer(&ServerConfig{URL: "tcp://" + addr, MaxClients: 10}, handler)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	_ = ln.Close()
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	client, err := New(Config{
+		URL:     "tcp://" + addr,
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	_ = client.Close()
+	wg.Wait()
+}
+
+func TestConcurrentOpenClose(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			c, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	client, err := New(Config{
+		URL:     "tcp://" + ln.Addr().String(),
+		Timeout: 1 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = client.Open()
+			_ = client.Close()
+		}()
+	}
+	wg.Wait()
 }

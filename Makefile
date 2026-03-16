@@ -9,20 +9,18 @@ help: ## This help
 BIN_DIR := bin # Output directory for generated binaries
 # All packages except /examples (for lint/vet)
 PKGS := $(shell go list ./... | grep -v '/examples$$' | sed 's,^github.com/otfabric/modbus,.,')
-# Core library only: tests and coverage run on . only (exclude cmd and examples)
-TEST_PKGS := .
+# Core library + subpackages: tests and coverage (exclude cmd and examples)
+TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/cmd' | sed 's,^github.com/otfabric/modbus,.,')
+
 
 all: build ## Default target: build cmd + examples apps
 
 build: build-cmd build-examples ## Build all app entrypoints
 
-build-cmd: ## Build binaries from cmd/*.go
+build-cmd: ## Build CLI binary from cmd/modbus-cli/ package
 	@echo "Building command line interface"
 	@mkdir -p $(BIN_DIR)
-	@for src in cmd/*.go; do \
-		name="$$(basename "$$src" .go)"; \
-		go build -o "$(BIN_DIR)/$$name" "$$src"; \
-	done
+	@go build -o "$(BIN_DIR)/modbus-cli" ./cmd/modbus-cli/
 
 build-examples: ## Build binaries from examples/*.go
 	@echo "Building examples"

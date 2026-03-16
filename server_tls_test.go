@@ -106,15 +106,15 @@ IEiAeSZ1uoXSPNCU8EZsAfCagTUQ
 // TestTLSServer tests the TLS layer of the modbus server.
 func TestTLSServer(t *testing.T) {
 	var err error
-	var server *ModbusServer
+	var server *Server
 	var serverKeyPair tls.Certificate
 	var client1KeyPair tls.Certificate
 	var client2KeyPair tls.Certificate
 	var clientCp *x509.CertPool
 	var serverCp *x509.CertPool
 	var th *tlsTestHandler
-	var c1 *ModbusClient
-	var c2 *ModbusClient
+	var c1 *Client
+	var c2 *Client
 	var regs []uint16
 	var coils []bool
 
@@ -155,7 +155,7 @@ func TestTLSServer(t *testing.T) {
 	// certificate
 	serverCp = x509.NewCertPool()
 
-	server, err = NewServer(&ServerConfiguration{
+	server, err = NewServer(&ServerConfig{
 		URL:           "tcp+tls://localhost:5802",
 		MaxClients:    2,
 		TLSServerCert: &serverKeyPair,
@@ -171,7 +171,7 @@ func TestTLSServer(t *testing.T) {
 	}
 
 	// create 2 modbus clients
-	c1, err = NewClient(&ClientConfiguration{
+	c1, err = New(Config{
 		URL:           "tcp+tls://localhost:5802",
 		TLSClientCert: &client1KeyPair,
 		TLSRootCAs:    clientCp,
@@ -179,7 +179,7 @@ func TestTLSServer(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to create client: %v", err)
 	}
-	c2, err = NewClient(&ClientConfiguration{
+	c2, err = New(Config{
 		URL:           "tcp+tls://localhost:5802",
 		TLSClientCert: &client2KeyPair,
 		TLSRootCAs:    clientCp,
@@ -347,7 +347,7 @@ func (th *tlsTestHandler) HandleDiscreteInputs(ctx context.Context, req *Discret
 func (th *tlsTestHandler) HandleHoldingRegisters(ctx context.Context, req *HoldingRegistersRequest) (res []uint16, err error) {
 	// gate unit id #4 behind the "operator2" role while access to unit id #1
 	// is allowed to any valid cert
-	switch req.UnitId {
+	switch req.UnitID {
 	case 0x04:
 		if req.ClientRole != "operator2" {
 			err = ErrIllegalFunction
@@ -393,13 +393,13 @@ func (th *tlsTestHandler) HandleInputRegisters(ctx context.Context, req *InputRe
 }
 
 func TestServerExtractRole(t *testing.T) {
-	var ms *ModbusServer
+	var ms *Server
 	var pemBlock *pem.Block
 	var x509Cert *x509.Certificate
 	var err error
 	var role string
 
-	ms = &ModbusServer{
+	ms = &Server{
 		logger: newLogger("test-server-role-extraction", nil),
 	}
 

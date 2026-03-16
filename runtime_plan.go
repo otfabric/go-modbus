@@ -3,6 +3,8 @@ package modbus
 import (
 	"context"
 	"fmt"
+
+	"github.com/otfabric/modbus/codec"
 )
 
 //
@@ -18,11 +20,11 @@ type ReadWindow struct {
 }
 
 // RuntimeDecodeItem describes one field to decode from the window at a given offset.
-// Plan execution is decode-only; the codec is a RuntimeDecoder (not RuntimeCodec).
+// Plan execution is decode-only; the codec is a codec.RuntimeDecoder (not RuntimeCodec).
 type RuntimeDecodeItem struct {
 	Name     string
 	Offset   uint16 // register offset within the window (in 16-bit register units)
-	Codec    RuntimeDecoder
+	Codec    codec.RuntimeDecoder
 	Metadata map[string]any
 }
 
@@ -36,7 +38,7 @@ type RuntimeDecodePlan struct {
 type RuntimeDecodedValue struct {
 	Name          string
 	CodecID       string
-	ValueKind     CodecValueKind
+	ValueKind     codec.CodecValueKind
 	Offset        uint16
 	RegisterCount uint16
 	Value         any
@@ -108,7 +110,7 @@ func ValidateRuntimeDecodePlan(plan RuntimeDecodePlan) error {
 // Per-item decode failures are stored in the corresponding RuntimeDecodedValue.Error;
 // sibling items are still decoded.
 func ExecuteRuntimeDecodePlan(
-	mc *ModbusClient,
+	mc *Client,
 	ctx context.Context,
 	unitID uint8,
 	plan RuntimeDecodePlan,
@@ -136,10 +138,8 @@ func ExecuteRuntimeDecodePlanOffline(regs []uint16, plan RuntimeDecodePlan) (*Ru
 	return executePlanOffline(regs, plan)
 }
 
-func readWindowFromClient(mc *ModbusClient, ctx context.Context, unitID uint8, w ReadWindow) ([]uint16, error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-	mbPayload, err := mc.readRegisters(ctx, unitID, w.Addr, w.Quantity, w.RegType)
+func readWindowFromClient(mc *Client, ctx context.Context, unitID uint8, w ReadWindow) ([]uint16, error) {
+	mbPayload, err := mc.readRegisterPayload(ctx, unitID, w.Addr, w.Quantity, w.RegType)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,6 @@ func readWindowFromClient(mc *ModbusClient, ctx context.Context, unitID uint8, w
 
 func executePlanOffline(regs []uint16, plan RuntimeDecodePlan) (*RuntimeDecodeResult, error) {
 	w := plan.Window
-	// Copy regs so result does not alias caller memory.
 	windowRegs := append([]uint16(nil), regs[:w.Quantity]...)
 	result := &RuntimeDecodeResult{
 		Addr:      w.Addr,
@@ -169,11 +168,11 @@ func executePlanOffline(regs []uint16, plan RuntimeDecodePlan) (*RuntimeDecodeRe
 		}
 		end := item.Offset + count
 		if uint16(len(regs)) < end {
-			result.Values[i].Error = fmt.Errorf("%w: regs length %d < offset+count %d", ErrCodecRegisterCount, len(regs), end)
+			result.Values[i].Error = fmt.Errorf("%w: regs length %d < offset+count %d", codec.ErrCodecRegisterCount, len(regs), end)
 			continue
 		}
 		slice := regs[item.Offset:end]
-		val, err := DecodeRegistersAny(slice, item.Codec)
+		val, err := codec.DecodeRegistersAny(slice, item.Codec)
 		if err != nil {
 			result.Values[i].Error = err
 			continue

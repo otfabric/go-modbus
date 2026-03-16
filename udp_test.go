@@ -1,11 +1,21 @@
 package modbus
 
 import (
+	"io"
 	"net"
 	"os"
 	"testing"
 	"time"
 )
+
+func feedTestPipe(t *testing.T, in chan []byte, out io.WriteCloser) {
+	for buf := range in {
+		if _, err := out.Write(buf); err != nil {
+			t.Errorf("feedTestPipe write: %v", err)
+			return
+		}
+	}
+}
 
 func TestUDPSockWrapper(t *testing.T) {
 	var err error
@@ -45,7 +55,10 @@ func TestUDPSockWrapper(t *testing.T) {
 	// pushed into txchan over UDP to our test UDP sock wrapper object
 	go feedTestPipe(t, txchan, sock2)
 
-	usw = newUDPSockWrapper(sock1)
+	usw, err = newUDPSockWrapper(sock1)
+	if err != nil {
+		t.Fatalf("newUDPSockWrapper: %v", err)
+	}
 	// push a valid RTU response (illegal data address) to the test pipe
 	txchan <- []byte{
 		0x31, 0x82, // unit id and response code
