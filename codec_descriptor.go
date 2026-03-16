@@ -17,6 +17,7 @@ const (
 	CodecFamilyNetwork
 	CodecFamilyHardwareAddress
 	CodecFamilyDecimalLimb
+	CodecFamilyTime
 	CodecFamilyVendorSpecific
 )
 
@@ -30,6 +31,7 @@ var codecFamilyNames = map[CodecFamily]string{
 	CodecFamilyNetwork:         "network",
 	CodecFamilyHardwareAddress: "hardware_address",
 	CodecFamilyDecimalLimb:     "decimal_limb",
+	CodecFamilyTime:            "time",
 	CodecFamilyVendorSpecific:  "vendor_specific",
 }
 
@@ -84,6 +86,7 @@ const (
 	CodecValueUint8Slice
 	CodecValueIP
 	CodecValueHardwareAddr
+	CodecValueTime
 )
 
 var codecValueKindNames = map[CodecValueKind]string{
@@ -103,6 +106,7 @@ var codecValueKindNames = map[CodecValueKind]string{
 	CodecValueUint8Slice:   "uint8_slice",
 	CodecValueIP:           "ip",
 	CodecValueHardwareAddr: "hardware_addr",
+	CodecValueTime:         "time",
 }
 
 func (k CodecValueKind) String() string {

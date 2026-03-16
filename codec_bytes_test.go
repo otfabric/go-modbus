@@ -288,7 +288,7 @@ func TestDescriptorConsistency_BytesAndAddressCodecs(t *testing.T) {
 					t.Errorf("descriptor %s: spec mismatch", d.ID)
 				}
 			}
-		case CodecFamilyDecimalLimb, CodecFamilyUnknown, CodecFamilyInteger, CodecFamilyFloat, CodecFamilyText, CodecFamilyBCD, CodecFamilyVendorSpecific:
+		case CodecFamilyDecimalLimb, CodecFamilyTime, CodecFamilyUnknown, CodecFamilyInteger, CodecFamilyFloat, CodecFamilyText, CodecFamilyBCD, CodecFamilyVendorSpecific:
 			// Not under test in this function; skip.
 		}
 	}

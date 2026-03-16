@@ -113,12 +113,12 @@ The library provides a **codec-first** layer for typed register read/write with 
 - **Raw vs typed:** Use **ReadRegisters** / **WriteRegisters** or **ReadRawBytes** / **WriteRawBytes** for raw transport; use **ReadWithCodec** / **WriteWithCodec** with a `Codec[T]` when the type and layout are known at compile time.
 - **Transport:** `ReadWithCodec[T]` and `WriteWithCodec[T]` are package-level generic functions that read or write registers using a `Decoder[T]` or `Encoder[T]`. The codec owns layout and interpretation.
 - **Layout:** `RegisterLayout` describes byte order across registers (e.g. big-endian 4321 vs little-endian 2143). Use `NewRegisterLayout` or common vars such as `Layout32_4321`, `Layout64_21436587`.
-- **Codecs:** Constructors like `NewUint32Codec(layout)`, `NewAsciiCodec(registerCount)`, `NewIPAddrCodec()` return fixed-width `Codec[T]` instances. Numeric codecs take a layout; text and byte codecs take a register or byte count.
+- **Codecs:** Constructors like `NewUint32Codec(layout)`, `NewAsciiCodec(registerCount)`, `NewIPAddrCodec()`, and time codecs (e.g. `NewDateTime2S2000Codec()`, `NewDateTimeYMDhmsUTCCodec()`, `NewDateTimeIEC870UTCCodec()`) return fixed-width `Codec[T]` instances. Numeric codecs take a layout; text and byte codecs take a register or byte count; time codecs use UTC, local, or default-UTC interpretation.
 - **Discovery:** `AvailableCodecDescriptors()`, `CodecDescriptorsForRegisterCount`, `CodecDescriptorByID`, `CodecCandidatesForRegisterCount`, and `FindCodecDescriptors` expose a **curated subset** of common widths for UI/CLI. The registry is not exhaustive: constructors support any valid width (e.g. `NewAsciiCodec(5)` or `NewBytesCodec(18)` work even if those widths are not in the discovery set).
 - **Runtime codecs:** For CLI, descriptor-driven, or batch workflows where the type is not known at compile time, use `RuntimeDecoder` / `RuntimeEncoder` / `RuntimeCodec`, `RuntimeCodecByID`, `ReadWithRuntimeCodec`, `WriteWithRuntimeCodec`, and **batch decode** (`RuntimeDecodePlan`, `ExecuteRuntimeDecodePlan` / `ExecuteRuntimeDecodePlanOffline`) to read one window and decode multiple fields. See [API.md § 11.8–11.11](API.md#118-runtime-codec-api).
 - **Offline:** `DecodeRegisters`, `EncodeRegisters`, `DecodeWithDescriptor`, `EncodeWithDescriptor`, `ValidateRegisterSpec`, and `ValidateByteSpec` work on `[]uint16` / `[]byte` for tests and tooling.
 
-A full list of available codecs (numeric, text, bytes, network) with constructors and stable IDs is in **[CODECS.md](CODECS.md)**. See [API.md § 11](API.md#11-codec-api) for the full codec API reference.
+A full list of available codecs (numeric, text, bytes, network, time) with constructors and stable IDs is in **[CODECS.md](CODECS.md)**. See [API.md § 11](API.md#11-codec-api) for the full codec API reference.
 
 ### Supported Go types
 
@@ -130,6 +130,7 @@ A full list of available codecs (numeric, text, bytes, network) with constructor
 | 48-bit registers (3 × 16-bit) | `uint64`, `[]uint64` (unsigned), `int64`, `[]int64` (signed) |
 | 64-bit registers (4 × 16-bit) | `uint64`, `[]uint64`, `int64`, `[]int64`, `float64`, `[]float64` |
 | Decimal limb / M10k (2–4 × 16-bit) | `uint32`, `int32`, `uint64`, `int64` (base-10000 limbs; see [CODECS.md](CODECS.md)) |
+| Time (2–6 × 16-bit) | `time.Time` (s2000, YMDhms, or IEC 60870-5 CP56Time2a; see [CODECS.md § 5](CODECS.md#5-time-codecs)) |
 | ASCII string (N × 16-bit) | `string` (trailing spaces stripped) |
 | BCD / Packed BCD (N × 16-bit) | `string` (decimal digits; signed packed BCD and reverse byte-order variants available) |
 | Raw wire bytes | `[]byte` (endianness-aware or unmodified) |

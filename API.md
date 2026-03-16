@@ -1481,6 +1481,21 @@ func NewEUI48Codec() Codec[net.HardwareAddr]
 func NewEUI64Codec() Codec[net.HardwareAddr]
 ```
 
+**Time codecs — family `time`, value kind `time`:** Epoch (seconds since 2000-01-01 UTC), calendar YMDhms (6 registers), and IEC 60870-5 CP56Time2a (4 registers, 7 bytes). Unspecified-timezone codecs use UTC as the canonical interpretation for deterministic behaviour. See [CODECS.md § 5 Time codecs](CODECS.md#5-time-codecs).
+
+```go
+func NewDateTime2S2000Codec() Codec[time.Time]   // 2 regs, uint32 seconds since 2000
+func NewDateTime3S2000Codec() Codec[time.Time]   // 3 regs, 48-bit seconds since 2000
+func NewDateTimeYMDhmsUTCCodec() Codec[time.Time]   // 6 regs: Y,M,D,h,m,s (UTC)
+func NewDateTimeYMDhmsLocalCodec() Codec[time.Time] // 6 regs (local time)
+func NewDateTimeYMDhmsCodec() Codec[time.Time]      // 6 regs naive Y/M/D/h/m/s; library interprets in UTC
+func NewDateTimeIEC870UTCCodec() Codec[time.Time]   // 4 regs CP56Time2a (UTC)
+func NewDateTimeIEC870LocalCodec() Codec[time.Time] // 4 regs CP56Time2a (local)
+func NewDateTimeIEC870Codec() Codec[time.Time]      // 4 regs CP56Time2a; timezone-unspecified, library interprets in UTC
+```
+
+Stable IDs: `datetime2_s2000`, `datetime3_s2000`, `datetime_ymdhms_utc`, `datetime_ymdhms_local`, `datetime_ymdhms`, `datetime_iec870_utc`, `datetime_iec870_local`, `datetime_iec870`.
+
 ### 11.6 Discovery (registry)
 
 Descriptors are derived from the registration table; returned descriptors are deep-copied. Discovery exposes a **curated subset** of widths (e.g. text/UTF-16: 1, 2, 3, 4, 6, 8, 12, 16, 20, 32, 48, 64 registers; bytes: 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 32, 48, 64 bytes). Constructors accept any valid width; not every width appears in the registry.

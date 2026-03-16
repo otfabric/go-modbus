@@ -1,3 +1,36 @@
+# Release v0.4.2
+
+**Date:** 2026-03-17
+**Previous release:** v0.4.1
+
+## Summary
+
+Patch release: **time codec family** for typed `time.Time` read/write. Three formats are supported — seconds since 2000 (s2000), calendar YMDhms (6 registers), and IEC 60870-5 CP56Time2a (4 registers) — with UTC, local, and default-UTC variants. All time codecs use **CodecFamilyTime** / **CodecValueTime**, strict calendar validation, and consistent **CodecValueError** on invalid values (including CP56 decode failures). Descriptor registration and runtime registry support discovery and CLI use.
+
+## Changes
+
+### Added
+
+- **Time codecs** — `NewDateTime2S2000Codec()` (2 regs, uint32 seconds since 2000-01-01 UTC), `NewDateTime3S2000Codec()` (3 regs, 48-bit seconds), `NewDateTimeYMDhmsUTCCodec()`, `NewDateTimeYMDhmsLocalCodec()`, `NewDateTimeYMDhmsCodec()` (6 regs: year, month, day, hour, minute, second), `NewDateTimeIEC870UTCCodec()`, `NewDateTimeIEC870LocalCodec()`, `NewDateTimeIEC870Codec()` (4 regs, CP56Time2a, 7-byte payload + pad). Stable IDs: `datetime2_s2000`, `datetime3_s2000`, `datetime_ymdhms_utc`, `datetime_ymdhms_local`, `datetime_ymdhms`, `datetime_iec870_utc`, `datetime_iec870_local`, `datetime_iec870`.
+- **CodecFamilyTime / CodecValueTime** — New family and value kind for time codecs; used by descriptors and `FindRuntimeCodecs` / discovery.
+- **Layout metadata for s2000** — `datetime2_s2000` and `datetime3_s2000` descriptors expose layout 4321 and 654321 for tooling; YMDhms and IEC870 are structural formats and do not expose layout metadata.
+- **Strict calendar validation** — Helper `strictDateTime` rejects invalid dates (e.g. Feb 31, April 31, non-leap Feb 29); YMDhms and CP56 decode paths use it. Coarse range checks (month 1–12, day 1–31, etc.) return targeted errors; normalisation failures yield a single “invalid calendar date/time” error.
+- **CP56 behaviour** — Decode ignores status/flag bits and uses only timestamp fields; encode writes a clean timestamp (flag bits unset). Eighth byte of the 4-register frame is padding and ignored on decode. Millisecond precision (milliseconds within minute 0–59999) is preserved. Year 2000–2127; decode maps year byte 0→2000, 127→2127.
+- **Nil-location guards** — `strictDateTime`, `decodeCP56Time2a`, `encodeCP56Time2a`, and the YMDhms/IEC870 codec `EncodeRegisters` methods reject nil `*time.Location` with a clear error instead of panicking.
+- **CP56 decode errors as CodecValueError** — `dateTimeIEC870Codec.DecodeRegisters` wraps CP56 decode failures in `*CodecValueError` so `errors.Is(err, ErrCodecValue)` works for value-validation tests and callers.
+
+### Documentation
+
+- **CODECS.md** — §5 Time codecs: s2000, YMDhms, CP56Time2a; UTC/default/local semantics; DOW written on encode, ignored on decode.
+- **README.md** — Supported Go types table includes `time.Time` via time codecs; codec list mentions time codecs.
+- **API.md** — Time codec constructors and stable IDs already documented; aligned with CODECS.md.
+
+### Unchanged
+
+- No breaking changes. Serial transport, TCP/TLS, codec API, and all other behaviour unchanged.
+
+---
+
 # Release v0.4.1
 
 **Date:** 2026-03-17

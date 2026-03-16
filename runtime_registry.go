@@ -331,5 +331,25 @@ func buildRuntimeCodecFromDescriptor(desc CodecDescriptor) (RuntimeCodec, error)
 		return AsRuntimeCodec(NewEUI64Codec(), kind), nil
 	}
 
+	// Time codecs: datetime2_s2000, datetime3_s2000, datetime_ymdhms_*, datetime_iec870_*
+	switch id {
+	case "datetime2_s2000":
+		return AsRuntimeCodec(NewDateTime2S2000Codec(), kind), nil
+	case "datetime3_s2000":
+		return AsRuntimeCodec(NewDateTime3S2000Codec(), kind), nil
+	case "datetime_ymdhms_utc":
+		return AsRuntimeCodec(NewDateTimeYMDhmsUTCCodec(), kind), nil
+	case "datetime_ymdhms_local":
+		return AsRuntimeCodec(NewDateTimeYMDhmsLocalCodec(), kind), nil
+	case "datetime_ymdhms":
+		return AsRuntimeCodec(NewDateTimeYMDhmsCodec(), kind), nil
+	case "datetime_iec870_utc":
+		return AsRuntimeCodec(NewDateTimeIEC870UTCCodec(), kind), nil
+	case "datetime_iec870_local":
+		return AsRuntimeCodec(NewDateTimeIEC870LocalCodec(), kind), nil
+	case "datetime_iec870":
+		return AsRuntimeCodec(NewDateTimeIEC870Codec(), kind), nil
+	}
+
 	return nil, fmt.Errorf("%w: unknown codec ID %q", ErrUnknownCodec, id)
 }

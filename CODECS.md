@@ -20,8 +20,9 @@ For the full API (interfaces, discovery, runtime codecs, batch decode), see [API
 2. [Numeric codecs](#2-numeric-codecs)
 3. [Text codecs](#3-text-codecs)
 4. [Bytes and network codecs](#4-bytes-and-network-codecs)
-5. [Discovery and stable IDs](#5-discovery-and-stable-ids)
-6. [Usage](#6-usage)
+5. [Time codecs](#5-time-codecs)
+6. [Discovery and stable IDs](#6-discovery-and-stable-ids)
+7. [Usage](#7-usage)
 
 ---
 
@@ -173,17 +174,64 @@ Use for opaque binary fields. Bytes are in **wire order** (no reordering).
 
 ---
 
-## 5. Discovery and stable IDs
+## 5. Time codecs
 
-- **CodecDescriptor** — Metadata (ID, name, family, value kind, register/byte spec, optional layouts). Use **AvailableCodecDescriptors()**, **CodecDescriptorsForRegisterCount**, **CodecDescriptorsForByteCount**, **CodecDescriptorByID**, **FindCodecDescriptors**.
-- **CodecCandidate** — Flattened descriptor + layout name for “this codec with this layout”. Use **CodecCandidatesForRegisterCount**, **CodecCandidatesForByteCount**.
-- **Stable ID** — Used by **RuntimeCodecByID**, **MustRuntimeCodecByID**, and CLI. Examples: `uint32/layout:4321`, `float64/layout:21436587`, `uint32_m10k/order:low_to_high`, `int32_m10k/order:high_to_low`, `int16_sign_magnitude`, `ascii/registers:4`, `bytes/bytes:6`, `ip_addr`, `eui48`, `eui64`.
+Time codecs produce or consume `time.Time`. All use **CodecFamilyTime** and **CodecValueTime**. Epoch and calendar formats are explicit; timezone is either UTC, local, or unspecified.
 
-Families: `integer`, `float`, `text`, `bcd`, `bytes`, `network`, `hardware_address`, `decimal_limb`. Value kinds: `uint16`, `int16`, `uint32`, `int32`, … `string`, `byte_slice`, `ip`, `hardware_addr`.
+**Unspecified timezone:** For codecs without a UTC/LOCAL suffix, the transport format carries no timezone. The library uses **UTC as the canonical interpretation** for decode and encode so behaviour is deterministic. That is a policy choice, not a semantic claim that the value “is” UTC.
+
+**Local timezone:** `*_local` codecs use `time.Local`; behaviour depends on the host timezone and environment. UTC codecs are strict and deterministic; local codecs are convenience codecs with environment-dependent semantics.
+
+### Seconds since 2000 (s2000)
+
+| Constructor | Registers | Description | Layout |
+|-------------|-----------|-------------|--------|
+| `NewDateTime2S2000Codec()` | 2 | uint32 seconds since 2000-01-01 00:00:00 UTC | 4321 (big-endian) |
+| `NewDateTime3S2000Codec()` | 3 | 48-bit seconds since 2000-01-01 00:00:00 UTC | 654321 (big-endian) |
+
+Encode converts the given time to UTC and computes seconds since the epoch; times before 2000-01-01 or beyond the width’s range return an error.
+
+**Stable IDs:** `datetime2_s2000`, `datetime3_s2000`.
+
+### Calendar YMDhms (6 registers)
+
+Six registers in order: **Year** (uint16, full year), **Month** (1–12), **Day** (1–31), **Hour** (0–23), **Minute** (0–59), **Second** (0–59). Out-of-range values return an error. **Invalid calendar dates** (e.g. 2024-02-31 or 2023-02-29) are rejected; the codec does not accept roll-over or normalised dates.
+
+| Constructor | Description |
+|-------------|-------------|
+| `NewDateTimeYMDhmsUTCCodec()` | Interpret as UTC |
+| `NewDateTimeYMDhmsLocalCodec()` | Interpret as local time (`time.Local`) |
+| `NewDateTimeYMDhmsCodec()` | Naive Y/M/D/h/m/s register tuple; library interprets it in UTC by default |
+
+**Stable IDs:** `datetime_ymdhms_utc`, `datetime_ymdhms_local`, `datetime_ymdhms`.
+
+### IEC 60870-5 CP56Time2a (4 registers, 7 bytes)
+
+IEC 60870-5 CP56Time2a: 7 bytes in the first 7 bytes of 4 registers; **big-endian byte order within each register**, eighth byte padded zero. Fields: milliseconds within minute (0–59999, little-endian), minute, hour, day of month + day of week, month, year (0–99 = 2000–2099). Millisecond precision.
+
+**Flag bits:** CP56Time2a reserves bits for invalid, summer time, substituted, etc., depending on profile. This codec **ignores those status/flag bits on decode** and decodes only the timestamp fields; on encode, flag bits are written as zero (except day-of-week). Full IEC semantic handling of flags is not implemented. **Day of week:** DOW is written consistently on encode (from the Go `time.Time` weekday); DOW is ignored on decode (only date/time fields are used).
+
+| Constructor | Description |
+|-------------|-------------|
+| `NewDateTimeIEC870UTCCodec()` | Interpret as UTC |
+| `NewDateTimeIEC870LocalCodec()` | Interpret as local time (`time.Local`) |
+| `NewDateTimeIEC870Codec()` | Timezone-unspecified wire value interpreted by library in UTC |
+
+**Stable IDs:** `datetime_iec870_utc`, `datetime_iec870_local`, `datetime_iec870`.
 
 ---
 
-## 6. Usage
+## 6. Discovery and stable IDs
+
+- **CodecDescriptor** — Metadata (ID, name, family, value kind, register/byte spec, optional layouts). Use **AvailableCodecDescriptors()**, **CodecDescriptorsForRegisterCount**, **CodecDescriptorsForByteCount**, **CodecDescriptorByID**, **FindCodecDescriptors**.
+- **CodecCandidate** — Flattened descriptor + layout name for “this codec with this layout”. Use **CodecCandidatesForRegisterCount**, **CodecCandidatesForByteCount**.
+- **Stable ID** — Used by **RuntimeCodecByID**, **MustRuntimeCodecByID**, and CLI. Examples: `uint32/layout:4321`, `float64/layout:21436587`, `uint32_m10k/order:low_to_high`, `int32_m10k/order:high_to_low`, `int16_sign_magnitude`, `ascii/registers:4`, `bytes/bytes:6`, `ip_addr`, `eui48`, `eui64`, `datetime2_s2000`, `datetime_ymdhms_utc`, `datetime_iec870_utc`.
+
+Families: `integer`, `float`, `text`, `bcd`, `bytes`, `network`, `hardware_address`, `decimal_limb`, `time`. Value kinds: `uint16`, `int16`, `uint32`, `int32`, … `string`, `byte_slice`, `ip`, `hardware_addr`, `time`.
+
+---
+
+## 7. Usage
 
 **Typed (compile-time type known):**
 
@@ -212,6 +260,6 @@ decoded, err := DecodeRegisters(regs, codec)
 encoded, err := EncodeRegisters(value, codec)
 ```
 
-**Date/time.** The library does not currently provide date/time codecs (e.g. epoch seconds, CP56Time2a). Such codecs would require narrowly defined, reversible register semantics; they may be added later with explicit contracts. Until then, use numeric codecs or application-level parsing.
+**Date/time.** Use the **time codecs** (e.g. `NewDateTime2S2000Codec()`, `NewDateTimeYMDhmsUTCCodec()`, `NewDateTimeIEC870UTCCodec()`) for epoch-s2000, calendar YMDhms, and IEC 60870-5 CP56Time2a. See [§ 5 Time codecs](#5-time-codecs).
 
 For full API details, see [API.md § 11 Codec API](API.md#11-codec-api).
