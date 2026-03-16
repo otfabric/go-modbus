@@ -1,3 +1,33 @@
+# Release v0.4.1
+
+**Date:** 2026-03-17
+**Previous release:** v0.4.0
+
+## Summary
+
+Patch release: **serial transport for Modbus RTU** now uses [github.com/otfabric/go-serial](https://github.com/otfabric/go-serial) v0.1.1 instead of goburrow/serial. The RTU serial wrapper is hardened and preserves Modbus RTU defaults unless the caller explicitly overrides.
+
+## Changes
+
+### Dependency
+
+- **Serial library** — Replaced `github.com/goburrow/serial` with `github.com/otfabric/go-serial` v0.1.1. RTU serial open uses `serialmodbus.DefaultModbusRTUConfig(device)` (19200 8E1) as the base; client config (Speed, DataBits, StopBits, Parity) overrides only when explicitly set. Unset parity keeps even parity (Modbus default).
+
+### Serial wrapper behaviour
+
+- **Validation** — Invalid DataBits (not 5–8), StopBits (not 1–2), or Parity (not None/Even/Odd) return an error instead of silently falling back. Nil config guarded in Open().
+- **Nil safety** — Open(), Close(), Read(), and Write() guard against nil config or nil port. Close() clears the port reference after Close returns so later Read/Write return ErrSerialPortNotOpen. Close is idempotent when port is already nil.
+- **ErrSerialPortNotOpen** — New sentinel returned by Read/Write when the port is not open or has been closed. Use `errors.Is(err, ErrSerialPortNotOpen)` to detect.
+- **Double-open** — Open() returns an error if the wrapper already has an open port; call Close() first.
+- **Deadline** — Zero deadline means “no deadline yet” (no immediate timeout). Open() resets deadline on success so close/reopen does not carry over an old deadline.
+- **Style** — SetDeadline and Read use plain returns; Read/Write share the same sentinel for “not open”.
+
+### Unchanged
+
+- No API or behaviour change for TCP, TLS, RTU-over-TCP, or RTU-over-UDP. Codec API, discovery, and all other client/server behaviour unchanged.
+
+---
+
 # Release v0.4.0
 
 **Date:** 2026-03-17
