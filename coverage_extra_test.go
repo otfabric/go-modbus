@@ -955,6 +955,337 @@ func (h *panicHandler) HandleInputRegisters(_ context.Context, _ *InputRegisters
 	return nil, ErrIllegalFunction
 }
 
+// ---------------------------------------------------------------------------
+// FC08 Diagnostic convenience wrappers (all were at 0% coverage)
+// ---------------------------------------------------------------------------
+
+func TestDiagnosticForceListenOnlyMode(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	if err := client.DiagnosticForceListenOnlyMode(context.Background(), 1); err != nil {
+		t.Fatalf("DiagnosticForceListenOnlyMode: %v", err)
+	}
+}
+
+func TestDiagnosticClearCounters(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	if err := client.DiagnosticClearCounters(context.Background(), 1); err != nil {
+		t.Fatalf("DiagnosticClearCounters: %v", err)
+	}
+}
+
+func TestDiagnosticBusCommunicationErrorCount(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	val, err := client.DiagnosticBusCommunicationErrorCount(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DiagnosticBusCommunicationErrorCount: %v", err)
+	}
+	if val != 0x0042 {
+		t.Errorf("value = 0x%04X, want 0x0042", val)
+	}
+}
+
+func TestDiagnosticBusExceptionErrorCount(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	val, err := client.DiagnosticBusExceptionErrorCount(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DiagnosticBusExceptionErrorCount: %v", err)
+	}
+	if val != 0x0042 {
+		t.Errorf("value = 0x%04X, want 0x0042", val)
+	}
+}
+
+func TestDiagnosticServerMessageCount(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	val, err := client.DiagnosticServerMessageCount(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DiagnosticServerMessageCount: %v", err)
+	}
+	if val != 0x0042 {
+		t.Errorf("value = 0x%04X, want 0x0042", val)
+	}
+}
+
+func TestDiagnosticServerNoResponseCount(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	val, err := client.DiagnosticServerNoResponseCount(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DiagnosticServerNoResponseCount: %v", err)
+	}
+	if val != 0x0042 {
+		t.Errorf("value = 0x%04X, want 0x0042", val)
+	}
+}
+
+func TestDiagnosticServerNAKCount(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	val, err := client.DiagnosticServerNAKCount(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DiagnosticServerNAKCount: %v", err)
+	}
+	if val != 0x0042 {
+		t.Errorf("value = 0x%04X, want 0x0042", val)
+	}
+}
+
+func TestDiagnosticServerBusyCount(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	val, err := client.DiagnosticServerBusyCount(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DiagnosticServerBusyCount: %v", err)
+	}
+	if val != 0x0042 {
+		t.Errorf("value = 0x%04X, want 0x0042", val)
+	}
+}
+
+func TestDiagnosticBusCharacterOverrunCount(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	val, err := client.DiagnosticBusCharacterOverrunCount(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DiagnosticBusCharacterOverrunCount: %v", err)
+	}
+	if val != 0x0042 {
+		t.Errorf("value = 0x%04X, want 0x0042", val)
+	}
+}
+
+func TestDiagnosticClearOverrunCounterAndFlag(t *testing.T) {
+	addr, closeFn := diagTestServer(t)
+	defer closeFn()
+	client, err := New(Config{URL: "tcp://" + addr, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	if err := client.DiagnosticClearOverrunCounterAndFlag(context.Background(), 1); err != nil {
+		t.Fatalf("DiagnosticClearOverrunCounterAndFlag: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ValidateConfig / ValidateServerConfig
+// ---------------------------------------------------------------------------
+
+func TestValidateConfig_Valid(t *testing.T) {
+	if err := ValidateConfig(Config{URL: "tcp://localhost:502", Timeout: time.Second}); err != nil {
+		t.Errorf("ValidateConfig should pass for valid config, got: %v", err)
+	}
+}
+
+func TestValidateConfig_Invalid(t *testing.T) {
+	err := ValidateConfig(Config{URL: ""})
+	if err == nil {
+		t.Error("ValidateConfig should fail for empty URL")
+	}
+}
+
+func TestValidateServerConfig_Valid(t *testing.T) {
+	h := &panicHandler{}
+	if err := ValidateServerConfig(&ServerConfig{URL: "tcp://localhost:0", MaxClients: 1}, h); err != nil {
+		t.Errorf("ValidateServerConfig should pass, got: %v", err)
+	}
+}
+
+func TestValidateServerConfig_NilHandler(t *testing.T) {
+	err := ValidateServerConfig(&ServerConfig{URL: "tcp://localhost:0"}, nil)
+	if err == nil {
+		t.Error("ValidateServerConfig should fail for nil handler")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// protocol_validate.go edge cases — overflow paths
+// ---------------------------------------------------------------------------
+
+func TestValidateReadBitsRange_Overflow(t *testing.T) {
+	err := validateReadBitsRange(0xFFF0, 20)
+	if err == nil {
+		t.Error("expected error for addr+quantity overflow")
+	}
+}
+
+func TestValidateWriteBitsRange_Overflow(t *testing.T) {
+	err := validateWriteBitsRange(0xFFF0, 20)
+	if err == nil {
+		t.Error("expected error for addr+quantity overflow")
+	}
+}
+
+func TestValidateReadRegsRange_Overflow(t *testing.T) {
+	err := validateReadRegsRange(0xFFF0, 20)
+	if err == nil {
+		t.Error("expected error for addr+quantity overflow")
+	}
+}
+
+func TestValidateWriteRegsRange_Overflow(t *testing.T) {
+	err := validateWriteRegsRange(0xFFF0, 20)
+	if err == nil {
+		t.Error("expected error for addr+quantity overflow")
+	}
+}
+
+func TestValidateReadBitsRange_ZeroQuantity(t *testing.T) {
+	err := validateReadBitsRange(0, 0)
+	if err == nil {
+		t.Error("expected error for zero quantity")
+	}
+}
+
+func TestValidateWriteBitsRange_ZeroQuantity(t *testing.T) {
+	err := validateWriteBitsRange(0, 0)
+	if err == nil {
+		t.Error("expected error for zero quantity")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UDP and TLS wrapper net.Conn stubs
+// ---------------------------------------------------------------------------
+
+func TestUDPSockWrapper_NetConnMethods(t *testing.T) {
+	sock, err := net.Dial("udp", "127.0.0.1:53")
+	if err != nil {
+		t.Skipf("cannot dial UDP: %v", err)
+	}
+	defer func() { _ = sock.Close() }()
+	usw := &udpSockWrapper{sock: sock.(*net.UDPConn)}
+	if err := usw.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Errorf("SetReadDeadline: %v", err)
+	}
+	if err := usw.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Errorf("SetWriteDeadline: %v", err)
+	}
+	if usw.LocalAddr() == nil {
+		t.Error("LocalAddr returned nil")
+	}
+	if usw.RemoteAddr() == nil {
+		t.Error("RemoteAddr returned nil")
+	}
+}
+
+func TestTLSSockWrapper_NetConnMethods(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		c, _ := ln.Accept()
+		if c != nil {
+			time.Sleep(time.Second)
+			_ = c.Close()
+		}
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	tsw := &tlsSockWrapper{sock: conn}
+	if err := tsw.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Errorf("SetReadDeadline: %v", err)
+	}
+	if err := tsw.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Errorf("SetWriteDeadline: %v", err)
+	}
+	if tsw.LocalAddr() == nil {
+		t.Error("LocalAddr returned nil")
+	}
+	if tsw.RemoteAddr() == nil {
+		t.Error("RemoteAddr returned nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Panic recovery
+// ---------------------------------------------------------------------------
+
 func TestServerSafeDispatch_PanicRecovery(t *testing.T) {
 	server, err := NewServer(&ServerConfig{
 		URL:        "tcp://localhost:0",

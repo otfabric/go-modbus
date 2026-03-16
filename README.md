@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
 [![Go Report Card](https://goreportcard.com/badge/github.com/otfabric/go-modbus?cache=false)](https://goreportcard.com/report/github.com/otfabric/go-modbus)
 [![CI](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/otfabric/go-modbus/graph/badge.svg)](https://app.codecov.io/gh/otfabric/go-modbus)
+[![Codecov](https://codecov.io/github/otfabric/go-modbus/graph/badge.svg?token=77Z0S76MTY)](https://codecov.io/github/otfabric/go-modbus)
 [![Release](https://img.shields.io/github/v/release/otfabric/go-modbus?display_name=tag)](https://github.com/otfabric/go-modbus/releases)
 
 A production-ready Go implementation of the Modbus application protocol, providing both **client** and **server** capabilities. No C dependencies, no CGo — just Go.

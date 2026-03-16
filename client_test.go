@@ -1050,20 +1050,21 @@ func TestPool_ConcurrentRequests_TwoGoroutines(t *testing.T) {
 			}
 			go func(c net.Conn) {
 				defer func() { _ = c.Close() }()
-				frame, err := readMBAPFrame(c)
-				if err != nil {
-					return
+				for {
+					frame, err := readMBAPFrame(c)
+					if err != nil {
+						return
+					}
+					txid, unitID, fc := frame[0:2], frame[6], frame[7]
+					addr := int(frame[8])<<8 | int(frame[9])
+					var payload []byte
+					if addr == 0 {
+						payload = []byte{0x02, 0x11, 0x11}
+					} else {
+						payload = []byte{0x02, 0x22, 0x22}
+					}
+					_ = writeMBAPNormal(c, txid, unitID, fc, payload)
 				}
-				txid, unitID, fc := frame[0:2], frame[6], frame[7]
-				// Return register value 0x1111 for addr 0, 0x2222 for addr 2
-				addr := int(frame[8])<<8 | int(frame[9])
-				var payload []byte
-				if addr == 0 {
-					payload = []byte{0x02, 0x11, 0x11}
-				} else {
-					payload = []byte{0x02, 0x22, 0x22}
-				}
-				_ = writeMBAPNormal(c, txid, unitID, fc, payload)
 			}(sock)
 		}
 	}()

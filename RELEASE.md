@@ -1,4 +1,44 @@
-# Release v1.0.1
+# go-modbus Releases
+
+## v1.0.2
+
+**Date:** 2026-03-21
+**Previous release:** v1.0.1
+
+## Summary
+
+Patch release: **unit test coverage expansion** and **CI/CD simplification**. Four new test files add ~700 lines of coverage across the codec client API, ADU wire encoding, and protocol error paths. CI and release workflows are replaced with org-level reusable workflows from `otfabric/.github`. The `go-serial` dependency is bumped to v0.1.2. No API or behavioural changes.
+
+## Changes
+
+### Tests
+
+- **codec/client_test.go** — New. Covers `ReadFromClient`, `WriteToClient`, `ReadRuntimeFromClient`, `WriteRuntimeToClient`, `DecodeWithDescriptor`, `EncodeWithDescriptor`, and their error paths (nil codec, read/write failures, zero descriptors, encode errors).
+- **coverage_extra_test.go** — New. Additional edge-case coverage across the codebase.
+- **internal/adu/wire_test.go** — New. ADU wire encoding round-trip and boundary tests.
+- **internal/protocol/errors_test.go** — New. Protocol error type and sentinel tests.
+
+### CI/CD
+
+- **ci.yml** — Replaced inline multi-version matrix workflow with the shared reusable workflow `otfabric/.github/.github/workflows/go-ci.yml@v1`.
+- **release.yml** — Replaced inline release workflow with the shared reusable workflow `otfabric/.github/.github/workflows/go-release.yml@v1`. Supports `update-major-tag` and `release-name-prefix`.
+
+### Dependencies
+
+- **go-serial** — Bumped from v0.1.1 to v0.1.2.
+
+### Other
+
+- **README.md** — Codecov badge URL updated to use token-authenticated endpoint.
+- **.gitignore** — Added `*.out` pattern for coverage output files.
+
+### Unchanged
+
+- No API, behaviour, or functional changes. All types, functions, and constants are identical to v1.0.1.
+
+---
+
+## v1.0.1
 
 **Date:** 2026-03-16
 **Previous release:** v1.0.0
@@ -34,7 +74,7 @@ The Go package name remains `modbus` (e.g. `modbus.New(...)`, `modbus.Config{...
 
 ---
 
-# Release v1.0.0
+## v1.0.0
 
 **Date:** 2026-03-16
 **Previous release:** v0.4.2
@@ -144,7 +184,7 @@ All function codes are supported on every transport (TCP, TLS, UDP, RTU, RTU-ove
 
 ---
 
-# Release v0.4.2
+## v0.4.2
 
 **Date:** 2026-03-17
 **Previous release:** v0.4.1
@@ -177,7 +217,7 @@ Patch release: **time codec family** for typed `time.Time` read/write. Three for
 
 ---
 
-# Release v0.4.1
+## v0.4.1
 
 **Date:** 2026-03-17
 **Previous release:** v0.4.0
@@ -207,7 +247,7 @@ Patch release: **serial transport for Modbus RTU** now uses [github.com/otfabric
 
 ---
 
-# Release v0.4.0
+## v0.4.0
 
 **Date:** 2026-03-17
 **Previous release:** v0.3.0
@@ -257,7 +297,7 @@ The **decimal limb (M10k) codec family** is built around **DecimalLimbOrder** an
 
 ---
 
-# Release v0.3.0
+## v0.3.0
 
 **Date:** 2026-03-15
 **Previous release:** v0.2.5
@@ -295,7 +335,7 @@ Introduce a **codec-first API** for typed register read/write with explicit layo
 
 ---
 
-# Release v0.2.5
+## v0.2.5
 
 **Date:** 2026-03-14
 **Previous release:** v0.2.4
@@ -321,7 +361,7 @@ Invalid `bitIndex` (> 15) or invalid `ReadRegisterBits` range returns `ErrUnexpe
 
 ---
 
-# Release v0.2.4
+## v0.2.4
 
 **Date:** 2026-03-14
 **Previous release:** v0.2.3
@@ -346,7 +386,7 @@ Add typed write helpers that mirror the existing read helpers: signed integers (
 
 ---
 
-# Release v0.2.3
+## v0.2.3
 
 **Date:** 2026-03-12
 **Previous release:** v0.2.2
@@ -376,7 +416,7 @@ Align the library with common Modbus/TCP and Wireshark dissector behaviour: spec
 
 ---
 
-# Release v0.2.2
+## v0.2.2
 
 **Date:** 2026-03-12
 **Previous release:** v0.2.1
@@ -400,7 +440,7 @@ Export SunSpec protocol constants so downstream consumers (e.g. strategies parsi
 
 ---
 
-# Release v0.2.1
+## v0.2.1
 
 **Date:** 2026-03-12
 **Previous release:** v0.2.0
@@ -421,7 +461,7 @@ Relax SunSpec discovery **UnitID** handling so the full range **0–255** is acc
 
 ---
 
-# Release v0.2.0
+## v0.2.0
 
 **Date:** 2026-03-12
 **Previous release:** v0.1.0
@@ -458,7 +498,7 @@ Default probe addresses are the official protocol candidates **0, 40000, 50000**
 
 ---
 
-# Release v0.1.0
+## v0.1.0
 
 **Date:** 2026-03-12
 **Previous release:** v0.0.0

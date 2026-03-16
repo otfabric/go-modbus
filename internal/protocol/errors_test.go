@@ -184,3 +184,32 @@ func TestMapErrorToExceptionCode(t *testing.T) {
 		t.Errorf("unknown error should map to ExServerDeviceFailure, got 0x%02x", uint8(got))
 	}
 }
+
+func TestConfigurationError_Error(t *testing.T) {
+	err := &ConfigurationError{Field: "URL", Reason: "empty"}
+	got := err.Error()
+	if !strings.Contains(got, "URL") {
+		t.Errorf("Error() = %q, want substring %q", got, "URL")
+	}
+	if !strings.Contains(got, "empty") {
+		t.Errorf("Error() = %q, want substring %q", got, "empty")
+	}
+}
+
+func TestConfigurationError_Unwrap(t *testing.T) {
+	err := NewConfigurationError("URL", "empty")
+	if !errors.Is(err, ErrConfigurationError) {
+		t.Error("ConfigurationError should wrap ErrConfigurationError")
+	}
+}
+
+func TestNewConfigurationError(t *testing.T) {
+	err := NewConfigurationError("Timeout", "negative")
+	var ce *ConfigurationError
+	if !errors.As(err, &ce) {
+		t.Fatal("NewConfigurationError should return *ConfigurationError")
+	}
+	if ce.Field != "Timeout" || ce.Reason != "negative" {
+		t.Errorf("fields wrong: Field=%q Reason=%q", ce.Field, ce.Reason)
+	}
+}
