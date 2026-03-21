@@ -464,6 +464,105 @@ go build -o modbus-cli ./cmd/modbus-cli/
 ./modbus-cli --help
 ```
 
+Usage:
+
+```bash
+./modbus-cli 
+A modbus command line interface client for quick interaction with modbus
+devices (e.g. for probing or troubleshooting).
+
+Operations are given as trailing arguments using a colon-separated DSL.
+
+Available operations:
+
+  rc:<addr>[+qty]                 Read coils
+  rdi:<addr>[+qty]                Read discrete inputs
+  rh:<type>:<addr>[+qty]          Read holding registers
+  ri:<type>:<addr>[+qty]          Read input registers
+  wc:<addr>:<true|false>          Write coil
+  wr:<type>:<addr>:<value>        Write register
+  scan:<target>                   Scan address space
+  ping:<count>[:<interval>]       Ping device
+  sleep:<duration>                Pause execution
+  suid:<id> / sid:<id>            Set unit ID for subsequent operations
+  repeat                          Restart all operations from the beginning
+  date                            Print current date and time
+
+Register types (rh/ri/wr):
+  uint16, int16, uint32, int32, float32, uint64, int64, float64, bytes
+  (wr also accepts: string)
+
+Scan targets:
+  c/coils, di/discreteInputs, h/hr/holding/holdingRegisters,
+  i/ir/input/inputRegisters, s/sid
+
+Supported transports:
+  rtu:///path/to/device           Modbus RTU (serial)
+  rtuovertcp://host:port          RTU over TCP
+  rtuoverudp://host:port          RTU over UDP
+  tcp://host:port                 Modbus TCP (MBAP)
+  tcp+tls://host:port             Modbus TCP over TLS (requires --cert, --key, --ca)
+  udp://host:port                 Modbus TCP over UDP
+
+Register endianness and word order:
+  Use --endianness <big|little> (default: big, per Modbus spec).
+  For multi-register values (32/64-bit), use --word-order <highfirst|lowfirst>
+  (default: highfirst, i.e. most significant word first).
+
+Usage:
+  modbus-cli [flags] operation [operation...]
+  modbus-cli [command]
+
+Examples:
+  # Read 6 uint32 holding registers and 11 coils, then set coil 3
+  modbus-cli --target tcp://10.100.0.10:502 rh:uint32:0x100+5 rc:0+10 wc:3:true
+
+  # Serial RTU: read, write, switch unit ID, loop forever
+  modbus-cli --target rtu:///dev/ttyUSB0 --speed 19200 \
+    suid:2 rh:uint16:0+7 wr:uint16:0x2:0x0605 \
+    suid:3 ri:int16:0+1 sleep:1s repeat
+
+  # Scan all register types
+  modbus-cli --target tcp://somehost:502 scan:hr scan:ir scan:di scan:coils
+
+  # TLS mutual authentication
+  modbus-cli --target tcp+tls://securehost:802 \
+    --cert client.cert.pem --key client.key.pem --ca ca.cert.pem \
+    rh:uint32:0x3000
+
+  # Ping a device 10 times with 500ms interval
+  modbus-cli --target tcp://somehost:502 ping:10:500ms
+
+  # Generate shell completion (bash, zsh, fish, powershell)
+  modbus-cli completion bash > /etc/bash_completion.d/modbus-cli
+  modbus-cli completion zsh > "${fpath[1]}/_modbus-cli"
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  version     Print the version number
+
+Flags:
+      --ca string           TLS CA/server certificate path
+      --cert string         TLS client certificate path
+      --data-bits uint      number of data bits per character (rtu) (default 8)
+      --endianness string   register endianness: big, little (default "big")
+      --fail-fast           stop on first operation error
+  -h, --help                help for modbus-cli
+      --json                output as line-delimited JSON
+      --key string          TLS client key path
+      --parity string       parity bit: none, even, odd (rtu) (default "none")
+      --speed uint          serial bus speed in bps (rtu) (default 19200)
+      --stop-bits uint      stop bits: 0 (auto), 1, 2 (rtu)
+      --target string       target device to connect to (e.g. tcp://somehost:502)
+      --timeout string      request timeout (e.g. 3s, 500ms) (default "3s")
+      --unit-id uint        unit/slave ID (0-255) (default 1)
+  -v, --version             version for modbus-cli
+      --word-order string   word order: highfirst|hf, lowfirst|lf (default "highfirst")
+
+Use "modbus-cli [command] --help" for more information about a command.
+```
+
 Use `--json` for machine-readable line-delimited JSON output (one JSON object per
 result), suitable for piping into `jq` or other tools. Scan and ping operations
 also produce structured JSON when `--json` is set.
