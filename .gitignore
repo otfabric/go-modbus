@@ -1,5 +1,6 @@
 # Ignore the bin directory
-bin/
+/bin/
+/modbus-cli
 
 # Ignore VS Code settings
 .vscode/

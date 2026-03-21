@@ -17,10 +17,12 @@ all: build ## Default target: build cmd + examples apps
 
 build: build-cmd build-examples ## Build all app entrypoints
 
+CLI_VERSION := $(shell cat cmd/modbus-cli/version.txt)
+
 build-cmd: ## Build CLI binary from cmd/modbus-cli/ package
-	@echo "Building command line interface"
+	@echo "Building command line interface (v$(CLI_VERSION))"
 	@mkdir -p $(BIN_DIR)
-	@go build -o "$(BIN_DIR)/modbus-cli" ./cmd/modbus-cli/
+	@go build -ldflags "-X main.version=$(CLI_VERSION)" -o "$(BIN_DIR)/modbus-cli" ./cmd/modbus-cli/
 
 build-examples: ## Build binaries from examples/*.go
 	@echo "Building examples"
