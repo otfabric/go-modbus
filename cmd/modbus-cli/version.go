@@ -1,32 +1,32 @@
 package main
 
 import (
-	_ "embed"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
 
-//go:embed version.txt
-var embeddedVersion string
-
-// version is set via -ldflags "-X main.version=..." at build time.
-// When empty, the embedded version.txt is used as fallback.
-var version string
-
-func getVersion() string {
-	if version != "" {
-		return version
-	}
-	return strings.TrimSpace(embeddedVersion)
-}
+// Set via -ldflags at build time:
+//
+//	-X main.version=${VERSION}
+//	-X main.tag=${TAG}
+//	-X main.commit=${COMMIT}
+//	-X main.buildDate=${BUILD_DATE}
+var (
+	version   = "dev"
+	tag       = "none"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print the version number",
+	Short: "Print build version information",
 	Args:  cobra.NoArgs,
 	Run: func(_ *cobra.Command, _ []string) {
-		fmt.Printf("modbus-cli v%s\n", getVersion())
+		fmt.Printf("modbus-cli %s\n", version)
+		fmt.Printf("  tag:        %s\n", tag)
+		fmt.Printf("  commit:     %s\n", commit)
+		fmt.Printf("  built:      %s\n", buildDate)
 	},
 }

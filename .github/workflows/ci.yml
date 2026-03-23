@@ -13,7 +13,8 @@ permissions:
 
 jobs:
   ci:
-    uses: otfabric/.github/.github/workflows/go-ci.yml@v1
+    uses: otfabric/.github/.github/workflows/go-ci.yml@v2
     with:
       codecov-name: go-modbus
+      go-versions: '["1.23", "1.24", "1.25", "1.26"]'
     secrets: inherit
