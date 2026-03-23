@@ -6,7 +6,8 @@
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-BIN_DIR := bin # Output directory for generated binaries
+# Output directory for generated binaries
+BIN_DIR := bin
 # All packages except /examples (for lint/vet)
 PKGS := $(shell go list ./... | grep -v '/examples$$' | sed 's,^github.com/otfabric/go-modbus,.,')
 # Core library + subpackages: tests and coverage (exclude cmd and examples)
@@ -17,12 +18,16 @@ all: build ## Default target: build cmd + examples apps
 
 build: build-cmd build-examples ## Build all app entrypoints
 
-CLI_VERSION := $(shell cat cmd/modbus-cli/version.txt)
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+TAG      ?= $(shell git describe --tags --exact-match 2>/dev/null || echo none)
+COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+LDFLAGS  := -s -w -X main.version=$(VERSION) -X main.tag=$(TAG) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)
 
 build-cmd: ## Build CLI binary from cmd/modbus-cli/ package
-	@echo "Building command line interface (v$(CLI_VERSION))"
+	@echo "Building command line interface ($(VERSION))"
 	@mkdir -p $(BIN_DIR)
-	@go build -ldflags "-X main.version=$(CLI_VERSION)" -o "$(BIN_DIR)/modbus-cli" ./cmd/modbus-cli/
+	@go build -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/modbus-cli" ./cmd/modbus-cli/
 
 build-examples: ## Build binaries from examples/*.go
 	@echo "Building examples"
