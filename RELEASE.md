@@ -1,5 +1,16 @@
 # go-modbus Releases
 
+## v1.0.4
+
+**Date:** 2026-03-23
+**Previous release:** v1.0.3
+
+## Summary
+
+**Binary name fix.** The binary name is now correctly set to `modbus-cli` iso `sclgen`.
+
+---
+
 ## v1.0.3
 
 **Date:** 2026-03-23
