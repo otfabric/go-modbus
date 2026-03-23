@@ -19,10 +19,21 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    uses: otfabric/.github/.github/workflows/go-release.yml@v1
+  release-package:
+    uses: otfabric/.github/.github/workflows/go-package-release.yml@v2
     with:
       bump: ${{ inputs.bump }}
       release-name-prefix: go-modbus
-      update-major-tag: true
+      update-major-tag: false
+    secrets: inherit
+
+  release-modbus-cli-binary:
+    needs: release-package
+    uses: otfabric/.github/.github/workflows/go-binary-release.yml@v2
+    with:
+      bump: none
+      binary-name: modbus-cli
+      main-path: ./cmd/modbus-cli
+      ldflags: "-s -w -X main.version=${VERSION} -X main.tag=${TAG} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}"
+      run-tests: false
     secrets: inherit
