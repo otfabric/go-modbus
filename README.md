@@ -540,7 +540,7 @@ Examples:
 Available Commands:
   completion  Generate the autocompletion script for the specified shell
   help        Help about any command
-  version     Print the version number
+  version     Print build version information
 
 Flags:
       --ca string           TLS CA/server certificate path
@@ -557,7 +557,6 @@ Flags:
       --target string       target device to connect to (e.g. tcp://somehost:502)
       --timeout string      request timeout (e.g. 3s, 500ms) (default "3s")
       --unit-id uint        unit/slave ID (0-255) (default 1)
-  -v, --version             version for modbus-cli
       --word-order string   word order: highfirst|hf, lowfirst|lf (default "highfirst")
 
 Use "modbus-cli [command] --help" for more information about a command.

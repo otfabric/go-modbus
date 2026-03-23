@@ -1,5 +1,54 @@
 # go-modbus Releases
 
+## v1.0.3
+
+**Date:** 2026-03-23
+**Previous release:** v1.0.2
+
+## Summary
+
+**CLI overhaul.** The `modbus-cli` command line tool is migrated from `flag` to [cobra](https://github.com/spf13/cobra), gaining shell completion (bash, zsh, fish, powershell), a `version` subcommand with full build metadata, and structured help. Build-time version injection switches from an embedded `version.txt` to ldflags (`version`, `tag`, `commit`, `buildDate`). The Go module minimum version is bumped to 1.23. CI and release workflows are updated to the v2 shared workflows with multi-version testing and a separate binary release job for `modbus-cli`.
+
+## Changes
+
+### CLI — cobra migration
+
+- **Framework** — Replaced `flag` with `github.com/spf13/cobra`. All existing flags are preserved as persistent cobra flags with identical names and defaults.
+- **Shell completion** — Built-in `completion` subcommand generates completion scripts for bash, zsh, fish, and powershell. Flag values (`--parity`, `--endianness`, `--word-order`) and operation prefixes (`rc:`, `rh:`, `scan:`, etc.) have custom completion functions.
+- **Help** — Cobra-generated help replaces the monolithic `displayHelp()`. The `Long` description includes the full operations reference; examples are shown via the `Example` field.
+- **Backward compatible** — Operations are still passed as positional arguments using the existing colon-separated DSL. No command syntax changes.
+
+### CLI — version subcommand
+
+- **`modbus-cli version`** — Prints version, tag, commit, and build date. All four fields are injected via ldflags at build time; without ldflags (e.g. `go run`) sensible defaults are shown (`dev`, `none`, `unknown`).
+- **Removed** — `cmd/modbus-cli/version.txt` deleted. The `--version` / `-v` flag is removed; use the `version` subcommand instead.
+- **ldflags contract** — `-s -w -X main.version=${VERSION} -X main.tag=${TAG} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}`.
+
+### CI/CD
+
+- **ci.yml** — Updated to shared workflow `otfabric/.github/.github/workflows/go-ci.yml@v2`. Explicit Go version matrix: 1.23, 1.24, 1.25, 1.26.
+- **release.yml** — Split into two jobs: `release-package` (library, `go-package-release.yml@v2`) and `release-modbus-cli-binary` (CLI binary, `go-binary-release.yml@v2` with ldflags injection). Major tag update disabled.
+
+### Build
+
+- **Makefile** — `build-cmd` derives `VERSION`, `TAG`, `COMMIT`, and `BUILD_DATE` from git and injects them via ldflags. All four variables are overridable (`?=`). Fixed pre-existing `BIN_DIR` trailing-space bug caused by inline comment.
+
+### Dependencies
+
+- **Go** — Minimum version bumped from 1.21 to 1.23.
+- **go-serial** — Bumped from v0.1.2 to v0.1.3.
+- **cobra** — Added `github.com/spf13/cobra` v1.10.2 (and transitive deps `spf13/pflag`, `mousetrap`).
+
+### Documentation
+
+- **README.md** — CLI help output updated: `version` subcommand description changed to "Print build version information"; `--version` flag removed from flags listing.
+
+### Unchanged
+
+- No changes to the Modbus library API, codec, sunspec, or server. All types, functions, and constants are identical to v1.0.2.
+
+---
+
 ## v1.0.2
 
 **Date:** 2026-03-21

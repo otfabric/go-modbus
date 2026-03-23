@@ -43,11 +43,11 @@ devices (e.g. for probing or troubleshooting).
 Operations are given as trailing arguments using a colon-separated DSL.
 
 ` + operationsHelp,
-	Example:       operationsExamples,
-	Args:          cobra.ArbitraryArgs,
-	RunE:          runRoot,
-	SilenceUsage:  true,
-	SilenceErrors: true,
+	Example:           operationsExamples,
+	Args:              cobra.ArbitraryArgs,
+	RunE:              runRoot,
+	SilenceUsage:      true,
+	SilenceErrors:     true,
 	ValidArgsFunction: completeOperations,
 }
 
@@ -83,8 +83,6 @@ func init() {
 		}, cobra.ShellCompDirectiveNoFileComp
 	})
 
-	rootCmd.Version = getVersion()
-	rootCmd.SetVersionTemplate("modbus-cli v{{.Version}}\n")
 	rootCmd.AddCommand(versionCmd)
 }
 
