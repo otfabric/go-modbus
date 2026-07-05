@@ -59,7 +59,7 @@ The library is organized into five distinct API tiers, from lowest to highest le
 | **1. Raw Modbus** | `modbus` | Direct function-code methods (`ReadCoils`, `WriteRegisters`, …) returning native Go types. Full control over unit IDs, addresses, and quantities. | Integrators who know their device's register map |
 | **2. Typed Codec** | `modbus/codec` | Layout-aware encode/decode of multi-register values (`Uint32Codec`, `Float64Codec`, `AsciiCodec`, time codecs, …). Compile-time generics and runtime codec support for descriptor-driven workflows. | Applications that need typed register access |
 | **3. SunSpec** | `modbus/sunspec` | SunSpec marker detection, model-chain enumeration, and device fingerprinting. Transport-level only — no point/schema decoding. | Solar/energy system integrators |
-| **4. Server** | `modbus` | `RequestHandler`-based Modbus TCP/TLS server with per-connection contexts, panic recovery, optional `MaskWriteHandler` and `ReadWriteHandler` interfaces for FC22/FC23. | Simulating or embedding Modbus devices |
+| **4. Server** | `modbus` | `RequestHandler`-based Modbus TCP/TLS server with per-connection contexts, panic recovery, optional `MaskWriteHandler`, `ReadWriteHandler`, and `DeviceIdentificationHandler` interfaces for FC22/FC23/FC43. | Simulating or embedding Modbus devices |
 | **5. CLI** | `cmd/modbus-cli` | Command-line client for read/write, scanning, pinging, and codec probing. Supports `--json` for structured output. | Operators and CI/CD pipelines |
 
 Each tier builds on the one below. For example, the Codec API uses the Raw Modbus API
@@ -223,11 +223,19 @@ implementation. All four handler methods cover the full set of supported functio
 | 12 | 0x0C | Get Comm Event Log | `CommEventLogHandler` (optional) | — |
 | 22 | 0x16 | Mask Write Register | `MaskWriteHandler` (optional) | — |
 | 23 | 0x17 | Read/Write Multiple Registers | `ReadWriteHandler` (optional) | — |
+| 43/14 | 0x2B/0x0E | Read Device Identification | `DeviceIdentificationHandler` (optional) | — |
 
-FC07, FC11, FC12, FC22 and FC23 use optional handler interfaces. If the `RequestHandler`
+FC07, FC11, FC12, FC22, FC23 and FC43 use optional handler interfaces. If the `RequestHandler`
 also implements the corresponding interface (e.g. `ExceptionStatusHandler`,
-`CommEventCounterHandler`, `CommEventLogHandler`, `MaskWriteHandler`, `ReadWriteHandler`),
-those FCs are dispatched accordingly; otherwise they return `Illegal Function`.
+`CommEventCounterHandler`, `CommEventLogHandler`, `MaskWriteHandler`, `ReadWriteHandler`,
+`DeviceIdentificationHandler`), those FCs are dispatched accordingly; otherwise they return
+`Illegal Function`.
+
+For FC43 (Read Device Identification), the handler returns the full set of
+`DeviceIdentificationObject` values it implements plus a conformity level; the server owns
+all MEI framing, category filtering (basic/regular/extended/individual), and
+MoreFollows/NextObjectID pagination automatically. Only MEI type 14 (0x0E) is supported;
+other MEI types (e.g. CANopen 0x0D) return `Illegal Function`.
 
 Returning a Modbus sentinel error (e.g. `ErrIllegalDataAddress`) causes the server to
 send the corresponding exception code back to the client. Any other non-nil error maps

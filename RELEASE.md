@@ -1,5 +1,60 @@
 # go-modbus Releases
 
+## v1.1.0
+
+**Date:** 2026-07-05
+**Previous release:** v1.0.4
+
+## Summary
+
+**Server-side Read Device Identification (FC43) and a full back-to-back conformance suite.** The server now supports FC43 / MEI type 0x0E (Read Device Identification) via a new optional `DeviceIdentificationHandler` interface, with the server owning all MEI framing, category filtering, ordering, and MoreFollows/NextObjectID pagination. This completes server-side coverage of the target function-code set (FC1–6, 15, 16, 22, 23, 43) used to exercise gateways with `modbusctl`. Alongside the feature, a comprehensive client-vs-server back-to-back test suite is added (deterministic conformance, property-based differential testing, and native fuzzing) and normal unit-test coverage is expanded, raising core package coverage from ~79% to ~88%. Additive change only — no existing API, behaviour, or wire semantics change.
+
+## Changes
+
+### Server — FC43 Read Device Identification
+
+- **New optional interface** — `DeviceIdentificationHandler` with `HandleDeviceIdentification(ctx, *DeviceIdentificationRequest) (*DeviceIdentificationResponse, error)`. If the `RequestHandler` also implements it, FC43 is dispatched to it; otherwise the server returns `Illegal Function`.
+- **Server-owned framing** — The handler returns the complete object set plus a conformity level; the server performs MEI validation (only 0x0E accepted), Read-Device-ID-code validation (basic/regular/extended/individual), category filtering, object-ID ordering, single-response PDU sizing, and stream pagination via MoreFollows / NextObjectID. Individual access to an unknown object returns `Illegal Data Address`.
+- **Conformity derivation** — When the handler leaves `ConformityLevel` unset (0), the server derives a sensible level from the object set and advertises individual access.
+- **Dispatch** — `server_transport.go` routes `FCEncapsulatedInterface` to the new `handleReadDeviceIdentification`.
+
+### Tests — back-to-back conformance suite
+
+- **Harness** (`backtoback_test.go`) — Reference in-memory device implementing every server handler interface, `startPair` helper for connected client/server pairs over TCP and TCP+TLS on ephemeral ports, a `forEachTransport` matrix runner, and MBAP invariant assertion helpers.
+- **Deterministic conformance** (`conformance_test.go`) — Per-FC round-trip / echo / packing / boundary / exception tables across the TCP and TLS matrix, including FC22/23/43 semantics.
+- **Adversarial server branches** (`conformance_adversarial_test.go`) — Raw-TCP malformed frames for FC05/06/15/16/22/23/43 asserting correct exception codes or link close on protocol errors.
+- **Property-based** (`property_test.go`) — Seeded randomized differential testing against a shadow model for read/write/mask/read-write-multiple, plus randomized FC43 pagination reassembly.
+- **Fuzzing** (`fuzz_test.go`) — `FuzzServerRequest` (arbitrary PDUs to a running server) and `FuzzClientResponseParse` (arbitrary bytes to the client parser) with seed corpora; seeds run as regular tests under `go test`.
+
+### Tests — expanded unit coverage
+
+- **Programmable mock server** (`mockserver_test.go`) for scripting adversarial client-facing responses.
+- **Client protocol/response validation** (`client_protocol_test.go`) — wrong FC, byte-count and echo mismatches, and error branches for FIFO, read/write-multiple, file records, and register-byte writes.
+- **Diagnostics & probing** (`client_diag_test.go`) — FC08 wrappers (happy + bad-length), `Diagnostics`, `ReadExceptionStatus`, comm-event counter/log, `ReportServerID`, and `ProbeFunction`/`SupportsFunction` outcomes.
+- **Serial wrapper** (`serial_test.go`) — configuration and not-open error paths that need no hardware.
+- **Construction/dial errors** (`construction_errors_test.go`) — client and server config validation plus TCP/RTU/TLS dial and listen failures.
+- **Coverage** — Core package statement coverage increased from ~79.2% to ~88.0%; `go test -race`, `go vet ./...`, and `golangci-lint` are clean.
+
+### Build / CI
+
+- **Makefile** — New `fuzz` target running both fuzz targets for a configurable `FUZZTIME` (default 30s).
+- **ci.yml** — Added an opt-in `fuzz` job (`make fuzz FUZZTIME=5m`) gated behind a `workflow_dispatch` boolean input `run_fuzz` (default `false`), so it runs only on a manual trigger with the toggle enabled and keeps push/PR CI fast; seed corpora still run as unit tests in the main job.
+
+### Documentation
+
+- **README.md** — Server capabilities table and notes updated for FC43 and its optional handler.
+- **API.md** — Documented `DeviceIdentificationHandler` and its request/response types, and the server's auto-framing/pagination behaviour.
+
+### Examples
+
+- **examples/tcp_server** — `exampleHandler` now implements `DeviceIdentificationHandler`, serving static identification objects.
+
+### Unchanged
+
+- No breaking changes. FC43 support and all new tests are additive; existing library API, codec, sunspec, wire behaviour, and previously supported function codes are identical to v1.0.4.
+
+---
+
 ## v1.0.4
 
 **Date:** 2026-03-23
