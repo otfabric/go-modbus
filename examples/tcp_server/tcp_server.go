@@ -330,3 +330,32 @@ func (eh *exampleHandler) HandleInputRegisters(ctx context.Context, req *modbus.
 
 	return
 }
+
+// Device identification handler method (FC43 / MEI type 0x0E).
+// Implementing the optional modbus.DeviceIdentificationHandler interface enables
+// FC43 support. Return the full set of objects the device implements together
+// with its conformity level; the server handles category filtering, framing,
+// and pagination automatically.
+// (read it with ./modbus-cli --target tcp://localhost:5502 ...)
+func (eh *exampleHandler) HandleDeviceIdentification(ctx context.Context, req *modbus.DeviceIdentificationRequest) (*modbus.DeviceIdentificationResponse, error) {
+	if req.UnitID != 1 {
+		// only accept unit ID #1
+		return nil, modbus.ErrIllegalFunction
+	}
+
+	return &modbus.DeviceIdentificationResponse{
+		// 0x83: extended identification, stream and individual access supported.
+		ConformityLevel: 0x83,
+		Objects: []modbus.DeviceIdentificationObject{
+			// Basic (mandatory) objects.
+			{ID: 0x00, Name: "VendorName", Value: "otfabric"},
+			{ID: 0x01, Name: "ProductCode", Value: "go-modbus-example"},
+			{ID: 0x02, Name: "MajorMinorRevision", Value: "1.0.0"},
+			// Regular (optional) objects.
+			{ID: 0x03, Name: "VendorUrl", Value: "https://github.com/otfabric/go-modbus"},
+			{ID: 0x04, Name: "ProductName", Value: "Example Modbus Server"},
+			// Extended (device-specific) object.
+			{ID: 0x80, Name: "Private", Value: "example-private-data"},
+		},
+	}, nil
+}

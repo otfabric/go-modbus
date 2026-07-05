@@ -1119,12 +1119,13 @@ type InputRegistersRequest struct {
 }
 ```
 
-### 3.5 Optional handler interfaces (FC07, FC0B, FC0C, FC22, FC23)
+### 3.5 Optional handler interfaces (FC07, FC0B, FC0C, FC22, FC23, FC43)
 
 FC07 (Read Exception Status), FC0B (Get Comm Event Counter), FC0C (Get Comm Event Log),
-FC22 (Mask Write Register) and FC23 (Read/Write Multiple Registers) use optional handler
-interfaces. If the `RequestHandler` also implements the corresponding interface, the
-server dispatches the FC to it; otherwise the server returns `Illegal Function`.
+FC22 (Mask Write Register), FC23 (Read/Write Multiple Registers) and FC43 (Read Device
+Identification) use optional handler interfaces. If the `RequestHandler` also implements
+the corresponding interface, the server dispatches the FC to it; otherwise the server
+returns `Illegal Function`.
 
 #### Serial-line function codes (FC07, FC0B, FC0C)
 
@@ -1195,6 +1196,39 @@ type ReadWriteRegistersRequest struct {
     WriteValues  []uint16
 }
 ```
+
+#### Device identification (FC43 / MEI 0x0E)
+
+```go
+type DeviceIdentificationHandler interface {
+    HandleDeviceIdentification(ctx context.Context, req *DeviceIdentificationRequest) (*DeviceIdentificationResponse, error)
+}
+
+type DeviceIdentificationRequest struct {
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode     // FC43
+    MEIType      MEIType          // always MEIReadDeviceIdentification (0x0E)
+    Category     DeviceIDCategory // Read Device ID code: basic/regular/extended/individual
+    ObjectID     DeviceIDObjectID // start object (stream) / requested object (individual)
+}
+
+type DeviceIdentificationResponse struct {
+    ConformityLevel uint8                        // 0x01-0x03 / 0x81-0x83; 0 => server derives
+    Objects         []DeviceIdentificationObject // full set the device implements
+}
+```
+
+The handler returns the complete set of `DeviceIdentificationObject` values it implements
+together with a conformity level. The server owns all MEI framing: it filters objects by the
+requested category (basic = 0x00-0x02, regular = 0x00-0x7F, extended = 0x00-0xFF), serves
+individual-access requests, and paginates large object sets across multiple responses using
+MoreFollows/NextObjectID — all transparently to the handler. When `ConformityLevel` is 0, the
+server derives a sensible level from the objects provided. Only MEI type 14 (0x0E) is
+supported; other MEI types return `Illegal Function`, an out-of-range Read Device ID code
+returns `Illegal Data Value`, and individual access to an unknown object returns
+`Illegal Data Address`.
 
 ---
 

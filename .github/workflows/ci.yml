@@ -6,6 +6,12 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+  workflow_dispatch:
+    inputs:
+      run_fuzz:
+        description: "Run the extended fuzz job"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,3 +24,27 @@ jobs:
       codecov-name: go-modbus
       go-versions: '["1.23", "1.24", "1.25", "1.26"]'
     secrets: inherit
+
+  # Extended fuzz run of the back-to-back conformance suite. Opt-in: only runs
+  # on a manual dispatch with "Run the extended fuzz job" enabled (default off).
+  # Seed corpora also run as unit tests in the `ci` job above.
+  fuzz:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_fuzz }}
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/otfabric/*
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+      - run: make fuzz FUZZTIME=5m

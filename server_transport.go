@@ -196,6 +196,8 @@ func (ms *Server) dispatchRequest(ctx context.Context, req *adu.Request, txnID u
 		return ms.handleCommEventCounter(ctx, req, txnID, clientAddr, clientRole)
 	case FCGetCommEventLog:
 		return ms.handleCommEventLog(ctx, req, txnID, clientAddr, clientRole)
+	case FCEncapsulatedInterface:
+		return ms.handleReadDeviceIdentification(ctx, req, txnID, clientAddr, clientRole)
 	default:
 		return &adu.Response{
 			UnitID:        req.UnitID,
