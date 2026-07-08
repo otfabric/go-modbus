@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package adu
 
 var crcTable [256]uint16 = [256]uint16{

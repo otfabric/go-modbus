@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package session owns the execution layer above transports.
 //
 // It manages:

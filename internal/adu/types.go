@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package adu
 
 // Request represents a Modbus request PDU (unit id, function code, payload).

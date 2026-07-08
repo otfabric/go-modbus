@@ -1,11 +1,11 @@
 # go-modbus — Modbus Protocol Library
 
-[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
-[![Go Report Card](https://goreportcard.com/badge/github.com/otfabric/go-modbus?cache=false)](https://goreportcard.com/report/github.com/otfabric/go-modbus)
+[![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Reference](https://pkg.go.dev/badge/github.com/otfabric/go-modbus.svg)](https://pkg.go.dev/github.com/otfabric/go-modbus)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/github/otfabric/go-modbus/graph/badge.svg?token=77Z0S76MTY)](https://codecov.io/github/otfabric/go-modbus)
-[![Release](https://img.shields.io/github/v/release/otfabric/go-modbus?display_name=tag)](https://github.com/otfabric/go-modbus/releases)
+[![Codecov](https://codecov.io/gh/otfabric/go-modbus/graph/badge.svg)](https://codecov.io/gh/otfabric/go-modbus)
+[![Release](https://img.shields.io/github/v/release/otfabric/go-modbus?label=release)](https://github.com/otfabric/go-modbus/releases)
 
 A production-ready Go implementation of the Modbus application protocol, providing both **client** and **server** capabilities. No C dependencies, no CGo — just Go.
 
@@ -604,4 +604,4 @@ details, and annotated examples — see **[API.md](API.md)**.
 
 ## License
 
-MIT.
+This project is licensed under the MIT License. See [LICENSE](./LICENSE).

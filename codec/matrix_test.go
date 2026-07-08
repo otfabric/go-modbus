@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // matrix_test.go implements the codec test matrix: layout validation, codec construction,
 // round-trip (incl. edge values), negative shape, descriptor consistency, discovery filtering,
 // and transport integration.

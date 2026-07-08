@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package codec
 
 // registeredDescriptors is the source of truth for descriptor derivation.
