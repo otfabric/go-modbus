@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package codec
 
 // ValidateRegisterSpec returns an error if the number of registers in regs does

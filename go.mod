@@ -3,7 +3,7 @@ module github.com/otfabric/go-modbus
 go 1.23
 
 require (
-	github.com/otfabric/go-serial v0.1.3
+	github.com/otfabric/go-serial v0.1.5
 	github.com/spf13/cobra v1.10.2
 )
 

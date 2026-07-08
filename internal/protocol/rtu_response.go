@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package protocol
 
 // RTU response length sentinels for variable-length and FIFO responses.
