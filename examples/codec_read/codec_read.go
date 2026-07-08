@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Example: reading registers with a typed codec from the codec package.
 //
 // Usage:

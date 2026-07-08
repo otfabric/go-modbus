@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package protocol
 
 // MEIType is the Modbus Encapsulated Interface type (FC43).

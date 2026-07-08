@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package codec
 
 // WordOrder controls the order of 16-bit words within multi-register values.

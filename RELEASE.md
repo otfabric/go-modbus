@@ -1,5 +1,40 @@
 # go-modbus Releases
 
+## v1.1.1
+
+**Date:** 2026-07-08
+**Previous release:** v1.1.0
+
+## Summary
+
+Patch release preparing the repository for public open-source release under the MIT License: standardized root license and SPDX headers, normalized README badges for a public GitHub repo, and a dependency bump of `github.com/otfabric/go-serial` to the latest public v0.1.5. No API, behaviour, or wire-semantics changes.
+
+## Changes
+
+### License & open-source hygiene
+
+- **LICENSE** — Replaced `LICENSE.txt` with a root-level `LICENSE` file using standard MIT text (`Copyright (c) 2026 OT Fabric`).
+- **SPDX headers** — Added `// SPDX-License-Identifier: MIT` to all first-party `.go` source files (141 files).
+- **README** — License section normalized to point at [LICENSE](./LICENSE).
+
+### README badges
+
+- **Standardized badge block** — Reordered and updated badges for public release: Go version (`1.23+`, from `go.mod`), pkg.go.dev, License, CI, Codecov, Release.
+- **Go Reference** — Added pkg.go.dev badge linking to `github.com/otfabric/go-modbus`.
+- **Codecov** — Removed embedded `?token=...` from the badge URL; uses the public `codecov.io/gh/otfabric/go-modbus` endpoint (works after repo is public and first upload completes).
+- **Go Report Card** — Removed; the service is no longer maintained.
+- **Release badge** — Normalized to `label=release`.
+
+### Dependencies
+
+- **go-serial** — Bumped from v0.1.3 to v0.1.5 (`github.com/otfabric/go-serial`).
+
+### Unchanged
+
+- No breaking changes. Library API, codec, sunspec, server/client behaviour, and supported function codes are identical to v1.1.0.
+
+---
+
 ## v1.1.0
 
 **Date:** 2026-07-05

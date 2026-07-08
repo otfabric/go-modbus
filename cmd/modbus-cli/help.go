@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package main
 
 const operationsHelp = `Available operations:
