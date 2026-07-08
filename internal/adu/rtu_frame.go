@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package adu
 
 // MaxRTUFrameLength is the maximum length of an RTU ADU (256 bytes per spec).

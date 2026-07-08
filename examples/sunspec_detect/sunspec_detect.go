@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Example: SunSpec marker detection using the sunspec package directly.
 //
 // Usage:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package codec
 
 // Package codec provides typed Modbus register codecs: numeric, text, bytes,

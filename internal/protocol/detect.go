@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package protocol
 
 // Response is a minimal view of a Modbus response used by detection probes.

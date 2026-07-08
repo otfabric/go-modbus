@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package sunspec provides SunSpec marker detection and model chain
 // discovery for Modbus devices.
 //
