@@ -9,3 +9,6 @@
 cover.*
 coverage.*
 *.out
+
+# MacOS
+.DS_Store
