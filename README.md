@@ -16,13 +16,15 @@ Advanced features — connection pooling, automatic retries, structured logging,
 metrics hooks — are built in.
 
 > For the complete type signatures, configuration options, and runnable examples see
-> **[API.md](API.md)**.
+> **[API.md](API.md)**. Error taxonomy: **[ERRORS.md](ERRORS.md)**. Logging and
+> metrics: **[OBSERVABILITY.md](OBSERVABILITY.md)**.
 
 ---
 
 ## Table of Contents
 
 - [API tiers](#api-tiers)
+- [Project structure](#project-structure)
 - [Install](#install)
 - [Transport modes](#transport-modes)
 - [Client](#client)
@@ -66,13 +68,43 @@ use case — you never need to use a higher tier.
 
 ---
 
+## Project structure
+
+```
+go-modbus/
+├── .                  Public API — client, server, config, retry, metrics, errors
+├── codec/             Typed encode/decode for multi-register values
+├── sunspec/           SunSpec marker detection and model-chain discovery
+├── internal/
+│   ├── adu/           ADU framing (MBAP, RTU CRC, wire encoding)
+│   ├── transport/     TCP / RTU / UDP transports
+│   ├── session/       Execution engine (pool, retry, dispatch)
+│   ├── protocol/      Function codes, limits, shared sentinels
+│   └── logging/       Prefixed logger adapter
+├── cmd/modbus-cli/    Command-line client
+├── examples/          Runnable TCP/TLS server and client samples
+├── spec/              Protocol notes / reference material
+├── testdata/          Fuzz corpora and test fixtures
+├── API.md             Full public API reference
+├── ARCHITECTURE.md    Package ownership and dependency rules
+├── ERRORS.md          Error taxonomy
+├── OBSERVABILITY.md   Logging and metrics
+├── CODECS.md          Codec design notes
+└── RELEASE.md         Release history
+```
+
+Root package files are split by concern (`client_*.go`, `server_*.go`, …). Ownership
+and import rules are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+---
+
 ## Install
 
 ```bash
 go get github.com/otfabric/go-modbus
 ```
 
-Requires **Go 1.21** or later.
+Requires **Go 1.23** or later.
 
 ---
 
@@ -254,100 +286,28 @@ structs — including `MaskWriteRequest` (FC22) and `ReadWriteRegistersRequest`
 
 ## Logging
 
-Both `Config` and `ServerConfig` expose a `Logger` field. When
-`nil` (the default), logging is disabled (no-op logger). Set a logger explicitly to
-enable diagnostic output.
+Both `Config` and `ServerConfig` expose a `Logger` field. When `nil` (the default),
+logging is disabled. Use `NewStdLogger`, `NewSlogLogger`, `NewSlogFieldLogger`, or
+`NopLogger()` to enable output. Optional `FieldLogger` / `ContextLogger` extensions
+add structured fields and context-aware methods.
 
-| Constructor | Behaviour |
-|---|---|
-| `NewStdLogger(l *log.Logger)` | Wraps a stdlib `*log.Logger`; pass `nil` for a default stdout logger |
-| `NewSlogLogger(h slog.Handler)` | Wraps any `slog.Handler` (e.g. `slog.NewJSONHandler`, `slog.NewTextHandler`) |
-| `NewSlogFieldLogger(h slog.Handler)` | Wraps a `slog.Handler` as a `FieldLogger` with structured key-value support |
-| `NopLogger()` | Discards all output — useful in tests |
+Debug-level transport logging can include raw TX/RX frame payloads — useful for
+troubleshooting, but sensitive and high-volume in production.
 
-The `Logger` interface (`Debugf`/`Infof`/`Warnf`/`Errorf`) is straightforward to
-implement for any custom logging library (zap, zerolog, logrus, …).
-
-For richer observability, the library also supports `FieldLogger` — an optional extension
-that adds structured key-value methods (`With`, `DebugKV`, `InfoKV`, `WarnKV`, `ErrorKV`).
-When the logger assigned to `Config.Logger` implements `FieldLogger`, internal log entries
-automatically use structured fields (e.g. `"component"` instead of string-prefixed
-messages). Use `NewSlogFieldLogger` for an slog-backed implementation.
-
-For trace/span propagation, `ContextLogger` is an optional extension that adds
-`DebugContext`/`InfoContext`/`WarnContext`/`ErrorContext` methods accepting a
-`context.Context`. `NewSlogFieldLogger` returns a logger that implements all three
-interfaces (`Logger`, `FieldLogger`, `ContextLogger`).
-
-**Nil handler safety:** `NewSlogLogger(nil)` and `NewSlogFieldLogger(nil)` return a
-no-op logger instead of panicking, making it safe to pass a conditionally-nil handler.
-
-**Debug payload logging:**  When a `Logger` is set and the `Debugf` level is active,
-the transport layer logs raw TX/RX frames (e.g. `TX: 01 06 00 00 00 01 …`,
-`RX: unit=0x01 fc=0x06 payload=…`). This is invaluable for troubleshooting but
-carries two production considerations:
-
-1. **Volume** — at high request rates, debug-level output can generate significant I/O.
-   Enable only for short diagnostic windows or targeted unit IDs.
-2. **Sensitivity** — frame payloads contain register values and coil states, which may
-   represent control setpoints, process data, or configuration. Ensure debug logs are
-   not exposed to unauthorized consumers in production environments.
-
-See [API.md § 5](API.md#5-logging) for details and adapter examples.
+See [OBSERVABILITY.md](OBSERVABILITY.md) and [API.md § 5](API.md#5-logging) for
+constructors, adapters, and examples.
 
 ---
 
 ## Error handling
 
-All client methods return a typed `error`. The library uses five error categories:
+All client methods return a typed `error`. Distinguish **library/transport**
+failures from well-formed peer **Modbus exceptions** (`*ExceptionError`). Use
+`errors.Is` / `errors.As` against the five categories (configuration, parameter,
+protocol, exception, transport).
 
-| Category | Type | Use `errors.Is` / `errors.As` |
-|---|---|---|
-| **Configuration errors** | `*ConfigurationError` wrapping `ErrConfigurationError` | Invalid `Config` or `ServerConfig` (field, reason) |
-| **Parameter errors** | `*ParameterError` wrapping `ErrUnexpectedParameters` | Invalid caller input (method, param, reason) |
-| **Protocol errors** | `*ProtocolError` wrapping `ErrProtocolError` | Malformed or unexpected peer response (op, reason) |
-| **Exception errors** | `*ExceptionError` wrapping a sentinel | Modbus exception responses (FC, exception code) |
-| **Transport errors** | sentinel or stdlib errors | Connection / framing / timeout issues |
-
-`New()` and `NewServer()` return typed `*ConfigurationError` values with `Field` and
-`Reason`, making it easy to diagnose misconfiguration without relying on log output.
-Use `errors.Is` for broad matching and `errors.As` for detailed diagnostics:
-
-```go
-var cfgErr *modbus.ConfigurationError
-if errors.As(err, &cfgErr) {
-    fmt.Printf("field=%s reason=%s\n", cfgErr.Field, cfgErr.Reason)
-}
-
-var paramErr *modbus.ParameterError
-if errors.As(err, &paramErr) {
-    fmt.Printf("method=%s param=%s reason=%s\n", paramErr.Method, paramErr.Param, paramErr.Reason)
-}
-
-var protoErr *modbus.ProtocolError
-if errors.As(err, &protoErr) {
-    fmt.Printf("op=%s reason=%s\n", protoErr.Op, protoErr.Reason)
-}
-
-var excErr *modbus.ExceptionError
-if errors.As(err, &excErr) {
-    fmt.Printf("fc=0x%02x exception=0x%02x\n", excErr.FunctionCode, excErr.ExceptionCode)
-}
-
-// Sentinel matching still works because typed errors wrap the sentinels:
-if errors.Is(err, modbus.ErrConfigurationError)    { /* bad config */ }
-if errors.Is(err, modbus.ErrUnexpectedParameters) { /* caller input issue */ }
-if errors.Is(err, modbus.ErrProtocolError)        { /* peer misbehaved */ }
-if errors.Is(err, modbus.ErrIllegalDataAddress)    { /* address does not exist */ }
-```
-
-**Config validation helpers:** Use `ValidateConfig(conf)` or
-`ValidateServerConfig(conf, handler)` to check configuration without creating a
-client or server — useful in CLIs and config-driven systems.
-
-The full sentinel table is in [API.md § 4](API.md#4-errors).
-
-See [API.md § 4](API.md#4-errors) for the full reference.
+See **[ERRORS.md](ERRORS.md)** for the quick reference and
+[API.md § 4](API.md#4-errors) for the full sentinel and typed-error tables.
 
 ---
 
@@ -355,35 +315,24 @@ See [API.md § 4](API.md#4-errors) for the full reference.
 
 ### Retry policy
 
-Configure automatic retry with exponential back-off on transient transport errors.
-The retry classifier uses **positive classification**: only known transient errors are
-retried; unknown/unclassified errors are **not** retried, preventing retry storms.
+Configure automatic retry with exponential back-off on transient transport errors
+(`Config.RetryPolicy`; nil / `NoRetry()` is the default). The classifier uses
+**positive classification**: only known transient transport errors are retried.
 
-**Retried** (transient transport failures): `io.EOF`, `io.ErrUnexpectedEOF`,
-`net.ErrClosed`, `net.Error` (broken pipe, reset, dial transients), and optionally
-`ErrRequestTimedOut` (controlled by `RetryOnTimeout`).
+Retries apply equally to read and write function codes. If a request may already
+have been written to the wire and the response is lost, a retry can deliver a
+write **at least once**. Prefer no retries (or application-level idempotency) for
+non-idempotent writes.
 
-**Never retried**: `ErrProtocolError`, `ErrBadCRC`, `ErrShortFrame`,
-`ErrBadTransactionID`, `ErrBadUnitID`, `ErrUnknownProtocolID`, `ErrInvalidMBAPLength`,
-`ErrUnexpectedParameters`, all Modbus exceptions (`*ExceptionError`),
-`context.Canceled`, `context.DeadlineExceeded`, and unknown errors.
-
-The client re-dials the transport between attempts. When pooling is enabled
-(`MaxConns > 1`), retries may use a different underlying TCP connection.
-Metrics are request-level, not per-attempt.
-
-Set `Config.RetryPolicy` to one of the built-in implementations or
-provide a custom `RetryPolicy` implementation. See [API.md § 7](API.md#7-retry-policy).
+See [API.md § 7](API.md#7-retry-policy) for classification tables, built-in
+policies, and write-safety details.
 
 ### Connection pool
 
-Set `MaxConns > 1` to enable a bounded connection pool. Multiple goroutines sharing a
-single `*Client` can then execute requests concurrently, each on its own
-connection, without serialising on a single TCP socket.
-
-`MinConns` controls how many connections are pre-warmed during `Open()`. Applies to
-TCP-based transports only; RTU (serial) always uses a single connection. See
-[API.md § 8](API.md#8-connection-pool).
+Set `MaxConns > 1` to enable a bounded connection pool so concurrent goroutines
+can share a `*Client` without serialising on one TCP socket. `MinConns`
+pre-warms connections during `Open()`. TCP-based transports only; RTU always
+uses a single connection. See [API.md § 8](API.md#8-connection-pool).
 
 ### Concurrency
 
@@ -418,18 +367,13 @@ with a typed `*ConfigurationError`, preventing surprising nil-pointer panics at 
 
 ### Metrics hooks
 
-Implement `ClientMetrics` and/or `ServerMetrics` and assign them to the `Metrics`
-field of the respective configuration struct. Callbacks (`OnRequest`, `OnResponse`,
-`OnError`, `OnTimeout`) fire synchronously on every **logical API outcome** — the
-outcome reflects what the calling method actually returns, including protocol-level
-validation (exception responses, payload checks, echo mismatches), not just transport
-success. Retries are internal and not visible through `ClientMetrics`; must be
-non-blocking.
+Implement `ClientMetrics` and/or `ServerMetrics` on the `Metrics` config field.
+Callbacks fire synchronously on every **logical API outcome** (what the calling
+method returns), not per internal retry. Optional `AttemptMetrics` adds
+per-attempt / re-dial visibility. Callbacks must be non-blocking.
 
-For per-attempt visibility, the `AttemptMetrics` optional interface adds `OnAttempt`
-(called after each individual transport attempt) and `OnRetryDial` (called when the
-engine re-dials between retries). If `Config.Metrics` also implements `AttemptMetrics`,
-these callbacks are invoked automatically. See [API.md § 6](API.md#6-metrics).
+See [OBSERVABILITY.md](OBSERVABILITY.md) and [API.md § 6](API.md#6-metrics)
+for interfaces and examples.
 
 ### Client diagnostics
 

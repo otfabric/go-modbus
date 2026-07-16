@@ -72,6 +72,8 @@ type Config struct {
 	// Use ExponentialBackoff or NewExponentialBackoff to configure automatic retries.
 	// On retry the client closes and re-dials the transport before each attempt;
 	// when a connection pool is configured only the failed connection is replaced.
+	// Retries apply to reads and writes alike; after bytes may have been sent,
+	// a retry can deliver a write at least once (see API.md § 7).
 	RetryPolicy RetryPolicy
 
 	// Metrics receives callbacks for every request outcome.

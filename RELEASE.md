@@ -1,5 +1,38 @@
 # go-modbus Releases
 
+## v1.1.2
+
+**Date:** 2026-07-30
+**Previous release:** v1.1.1
+
+## Summary
+
+Patch release: align the README Go version with `go.mod`, document write retry at-least-once semantics, add thin `ERRORS.md` / `OBSERVABILITY.md` guides, trim README overlap with `API.md`, and harden the Makefile (`govulncheck`, isolate from a parent `go.work`). No API, behaviour, or wire-semantics changes.
+
+## Changes
+
+### Documentation
+
+- **ERRORS.md** — Short error taxonomy: library/transport failures vs wire Modbus exceptions; quick-reference table; pointers into `API.md` § 4 and retry notes.
+- **OBSERVABILITY.md** — Silent-by-default logging, debug frame-payload caveats, `ClientMetrics` vs optional `AttemptMetrics`; pointers into `API.md` § 5–6.
+- **README** — Install floor corrected from Go 1.21 to **Go 1.23** (matches badge / `go.mod`); links to the new guides; Logging / Error / Metrics sections trimmed.
+- **README** — New **Project structure** section (top-level folders and key docs).
+- **README** — Retry, Pool sections trimmed to short summaries that point at `API.md`.
+- **API.md § 7** — New **Write operations and at-least-once delivery** note: retries apply to reads and writes alike; the classifier does not inspect function code; a retry after bytes may have been sent can deliver a write at least once. Prefer `NoRetry` / nil policy (or application-level idempotency) for non-idempotent writes.
+- **Godoc** — `Config.RetryPolicy` and public/internal `RetryPolicy` document the same write-safety caveat.
+
+### Build / tooling
+
+- **Makefile `vuln`** — `govulncheck ./...`, included in `make check`.
+- **Makefile** — exports `GOWORK=off` so checks ignore a parent `otfabric/go.work` that does not list this module.
+
+### Unchanged
+
+- Retry defaults remain `nil` / `NoRetry()`. No change to retry classification or when writes are retried — behaviour is documented only.
+- Library API, codec, sunspec, server/client behaviour, and supported function codes are identical to v1.1.1.
+
+---
+
 ## v1.1.1
 
 **Date:** 2026-07-08

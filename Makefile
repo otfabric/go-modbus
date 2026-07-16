@@ -2,9 +2,12 @@
 # This will output the help for each task
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
-.PHONY: help all build build-cmd build-examples lint vet test fuzz check clean
+.PHONY: help all build build-cmd build-examples lint vet vuln test fuzz check clean
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# Parent otfabric/go.work does not list this module; isolate toolchain commands.
+export GOWORK := off
 
 # Output directory for generated binaries
 BIN_DIR := bin
@@ -53,6 +56,10 @@ vet: ## Run go vet on project packages
 	@echo "Running go vet on packages: $(PKGS)"
 	@go vet $(PKGS)
 
+vuln: ## Run govulncheck
+	@echo "Running govulncheck"
+	@govulncheck ./...
+
 test: ## Run tests on core library only
 	@echo "Running tests on packages: $(TEST_PKGS)"
 	@go test $(TEST_PKGS)
@@ -72,7 +79,7 @@ cover: coverage ## Open coverage report in browser
 	@echo "Opening coverage report"
 	@go tool cover -html=coverage.out
 
-check: fmt lint lint-ci vet test coverage ## Run lint + vet + test
+check: fmt lint lint-ci vet vuln test coverage ## Run lint + vet + vuln + test
 
 clean: ## Remove generated binaries
 	@echo "Cleaning up"

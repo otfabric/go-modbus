@@ -11,6 +11,11 @@ import (
 // RetryPolicy is the public alias for the internal/session.RetryPolicy.
 // It is accepted by Config and implemented by NoRetry and
 // the ExponentialBackoff helpers.
+//
+// Built-in policies classify by error only (not function code). Retries apply
+// equally to reads and writes; after a request may have been written to the
+// wire, a retry can deliver a write at least once. Prefer NoRetry for
+// non-idempotent writes, or use application-level idempotency.
 type RetryPolicy = intsession.RetryPolicy
 
 // ExponentialBackoffConfig is the public alias for the internal/session.ExponentialBackoffConfig.

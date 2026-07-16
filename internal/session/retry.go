@@ -19,6 +19,10 @@ import (
 //
 // The wait duration is honoured by the caller but capped by the remaining context
 // deadline. A nil RetryPolicy is equivalent to NoRetry().
+//
+// Classification is error-based only; function code and read vs write are not
+// considered. A retry after bytes may have been sent can deliver a write at
+// least once.
 type RetryPolicy interface {
 	// ShouldRetry returns (true, waitDuration) to schedule another attempt after
 	// waitDuration, or (false, 0) to stop and propagate the error to the caller.

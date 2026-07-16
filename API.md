@@ -3,6 +3,9 @@
 This document covers every exported type, function, and interface in the library.
 All examples assume `import "github.com/otfabric/go-modbus"`.
 
+For a short error taxonomy see **[ERRORS.md](ERRORS.md)**. For logging and metrics
+defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
+
 ---
 
 ## Table of Contents
@@ -24,9 +27,9 @@ All examples assume `import "github.com/otfabric/go-modbus"`.
    - [RequestHandler interface](#33-requesthandler-interface)
    - [Request types](#34-request-types)
    - [Optional handler interfaces (FC07, FC0B, FC0C, FC22, FC23)](#35-optional-handler-interfaces-fc07-fc0b-fc0c-fc22-fc23)
-4. [Errors](#4-errors)
-5. [Logging](#5-logging)
-6. [Metrics](#6-metrics)
+4. [Errors](#4-errors) — also [ERRORS.md](ERRORS.md)
+5. [Logging](#5-logging) — also [OBSERVABILITY.md](OBSERVABILITY.md)
+6. [Metrics](#6-metrics) — also [OBSERVABILITY.md](OBSERVABILITY.md)
 7. [Retry policy](#7-retry-policy)
 8. [Connection pool](#8-connection-pool)
 9. [TLS helpers](#9-tls-helpers)
@@ -99,6 +102,7 @@ type Config struct {
 
     // RetryPolicy controls automatic retry of failed requests.
     // Nil (default) is equivalent to NoRetry().
+    // Applies to reads and writes; see § 7 for at-least-once write semantics.
     RetryPolicy RetryPolicy
 
     // Metrics receives callbacks for every request outcome.
@@ -1234,6 +1238,8 @@ returns `Illegal Data Value`, and individual access to an unknown object returns
 
 ## 4. Errors
 
+Short guide: **[ERRORS.md](ERRORS.md)**.
+
 The library uses sentinel `error` variables. Use `errors.Is` to test for specific
 conditions and `errors.As` to access structured exception details.
 
@@ -1393,6 +1399,8 @@ type codec.CodecValueError struct { Codec string; Reason string }
 
 ## 5. Logging
 
+Short guide: **[OBSERVABILITY.md](OBSERVABILITY.md)**.
+
 Both `Config` and `ServerConfig` accept a `Logger` interface.
 When the field is `nil` (default), logging is disabled (no-op logger).
 
@@ -1491,6 +1499,8 @@ conf.Logger = &zapAdapter{l: zapLogger.Sugar()}
 ---
 
 ## 6. Metrics
+
+Short guide: **[OBSERVABILITY.md](OBSERVABILITY.md)**.
 
 Attach metric callbacks via the `Metrics` field of `Config` or
 `ServerConfig`. All methods fire at the **request level** (not per-attempt —
@@ -1645,6 +1655,17 @@ true) `ErrRequestTimedOut`.
 
 Custom `RetryPolicy` implementations may use different rules by inspecting the error
 directly.
+
+### Write operations and at-least-once delivery
+
+Retries apply equally to read and write function codes. The classifier does **not**
+inspect function code or distinguish read vs write.
+
+If a request was written to the wire and the response is lost (for example a
+connection drop after send, or a timeout when `RetryOnTimeout` is true), a retry
+may deliver the write **at least once**. Prefer `RetryPolicy: nil` / `NoRetry()`
+for non-idempotent writes, or use application-level idempotency. Timeouts are not
+retried unless `RetryOnTimeout` is explicitly enabled.
 
 On each retry the client automatically:
 1. Closes the failed connection.
