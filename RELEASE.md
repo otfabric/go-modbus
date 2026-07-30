@@ -1,5 +1,26 @@
 # go-modbus Releases
 
+## v1.1.3
+
+**Date:** 2026-07-30
+**Previous release:** v1.1.2
+
+## Summary
+
+Patch release: bump go-serial to v0.1.6. No API, behaviour, or wire-semantics changes.
+
+## Changes
+
+### Dependencies
+
+- **go-serial** — `v0.1.5` → **v0.1.6** (docs/tooling; no serial API change).
+
+### Unchanged
+
+- Library API, codec, sunspec, server/client behaviour, and supported function codes are identical to v1.1.2.
+
+---
+
 ## v1.1.2
 
 **Date:** 2026-07-30
