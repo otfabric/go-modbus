@@ -170,6 +170,13 @@ func (c uint48Codec) Name() string               { return "uint48" }
 func (c uint48Codec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: 3} }
 func (c uint48Codec) ByteSpec() ByteSpec         { return ByteSpec{Count: 6} }
 
+// Range of values representable in 48 bits.
+const (
+	maxUint48 = 1<<48 - 1
+	maxInt48  = 1<<47 - 1
+	minInt48  = -(1 << 47)
+)
+
 func canonicalToUint48(canonical []byte) uint64 {
 	return uint64(canonical[0])<<40 | uint64(canonical[1])<<32 |
 		uint64(canonical[2])<<24 | uint64(canonical[3])<<16 |
@@ -197,6 +204,9 @@ func (c uint48Codec) DecodeRegisters(regs []uint16) (uint64, error) {
 }
 
 func (c uint48Codec) EncodeRegisters(v uint64) ([]uint16, error) {
+	if v > maxUint48 {
+		return nil, &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("value %d out of range 0..%d", v, uint64(maxUint48))}
+	}
 	canonical := uint48ToCanonical(v)
 	raw, err := PermuteBytesEncode(canonical, c.layout)
 	if err != nil {
@@ -214,6 +224,10 @@ func (c int48Codec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: 3} 
 func (c int48Codec) ByteSpec() ByteSpec         { return ByteSpec{Count: 6} }
 
 func (c int48Codec) DecodeRegisters(regs []uint16) (int64, error) {
+	// Validate here so that the error names this codec, not the unsigned one it delegates to.
+	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
+		return 0, err
+	}
 	u, err := uint48Codec(c).DecodeRegisters(regs)
 	if err != nil {
 		return 0, err
@@ -225,7 +239,10 @@ func (c int48Codec) DecodeRegisters(regs []uint16) (int64, error) {
 }
 
 func (c int48Codec) EncodeRegisters(v int64) ([]uint16, error) {
-	return uint48Codec(c).EncodeRegisters(uint64(v) & 0xFFFFFFFFFFFF)
+	if v < minInt48 || v > maxInt48 {
+		return nil, &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("value %d out of range %d..%d", v, int64(minInt48), int64(maxInt48))}
+	}
+	return uint48Codec(c).EncodeRegisters(uint64(v) & maxUint48)
 }
 
 // uint64Codec encodes/decodes four registers as uint64.
@@ -267,6 +284,10 @@ func (c int64Codec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: 4} 
 func (c int64Codec) ByteSpec() ByteSpec         { return ByteSpec{Count: 8} }
 
 func (c int64Codec) DecodeRegisters(regs []uint16) (int64, error) {
+	// Validate here so that the error names this codec, not the unsigned one it delegates to.
+	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
+		return 0, err
+	}
 	u, err := uint64Codec(c).DecodeRegisters(regs)
 	if err != nil {
 		return 0, err

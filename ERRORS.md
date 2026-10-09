@@ -24,7 +24,7 @@ Modbus exception from the unit.
 | Request before `Open` / after `Close` | `ErrClientNotOpen` |
 | Deadline / configured timeout | `ErrRequestTimedOut` (and/or `context` errors) |
 | Malformed / unexpected peer response | `*ProtocolError` (`errors.Is` → `ErrProtocolError`) |
-| RTU CRC / short frame | `ErrBadCRC`, `ErrShortFrame` |
+| RTU CRC / ASCII LRC / short frame | `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` |
 | Peer Modbus exception (0x01–0x0B) | `*ExceptionError` (`errors.Is` → matching `ErrIllegal…` sentinel) |
 | Codec encode/decode failure | `codec` package sentinels / typed errors |
 

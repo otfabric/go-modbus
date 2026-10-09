@@ -48,6 +48,8 @@ transport type and the address using the `<scheme>://<address>` format.
 | `rtu://<device>` | Modbus RTU over serial | ✓ | — |
 | `rtuovertcp://<host:port>` | Modbus RTU framing over TCP | ✓ | — |
 | `rtuoverudp://<host:port>` | Modbus RTU framing over UDP | ✓ | — |
+| `ascii://<device>` | Modbus ASCII over serial | ✓ | — |
+| `asciiovertcp://<host:port>` | Modbus ASCII framing over TCP | ✓ | — |
 | `tcp://<host:port>` | Modbus TCP (MBAP) | ✓ | ✓ |
 | `tcp+tls://<host:port>` | Modbus TCP over TLS (MBAPS) | ✓ | ✓ |
 | `udp://<host:port>` | Modbus TCP framing over UDP | ✓ | — |
@@ -66,16 +68,17 @@ type Config struct {
     // Examples: "tcp://plc.local:502", "rtu:///dev/ttyUSB0", "tcp+tls://plc.local:802"
     URL string
 
-    // Speed is the serial baud rate (rtu only). Default: 19200.
+    // Speed is the serial baud rate (rtu and ascii only). Default: 19200.
     Speed uint
 
-    // DataBits is the number of data bits per character (rtu only). Default: 8.
+    // DataBits is the number of data bits per character (rtu and ascii only).
+    // Default: 8 for rtu, 7 for ascii.
     DataBits uint
 
-    // Parity is the serial parity mode (rtu only). Default: ParityNone.
+    // Parity is the serial parity mode (rtu and ascii only). Default: ParityNone.
     Parity Parity
 
-    // StopBits is the number of serial stop bits (rtu only).
+    // StopBits is the number of serial stop bits (rtu and ascii only).
     // Default: 2 when ParityNone, 1 otherwise.
     StopBits uint
 
@@ -85,7 +88,7 @@ type Config struct {
 
     // DialTimeout is the maximum time to establish a connection (TCP dial, TLS
     // handshake, UDP dial). 0 uses a sensible default: 5 s for TCP/UDP, 15 s for TLS.
-    // Does not apply to serial (RTU) transports.
+    // Does not apply to serial (rtu, ascii) transports.
     DialTimeout time.Duration
 
     // TLSClientCert is the client-side TLS certificate and private key (tcp+tls only).
@@ -159,7 +162,7 @@ Call `Open` to establish the transport. `Open` is idempotent — calling it on a
 already-open client is a no-op. `Close` closes all connections (or drains the
 pool when `MaxConns > 1`).
 
-**Config auto-correction:** `MaxConns > 1` on non-poolable transports (RTU, TCP+TLS)
+**Config auto-correction:** `MaxConns > 1` on non-poolable transports (serial RTU/ASCII, TCP+TLS)
 is silently clamped to 1 with a warning log message.
 
 `Info` returns a `ClientInfo` snapshot:
@@ -168,7 +171,7 @@ is silently clamped to 1 with a warning log message.
 type ClientInfo struct {
     IsOpen      bool          // active transport/connection
     Endpoint    string        // resolved target address
-    Transport   TransportKind // "rtu", "tcp", "tcp+tls", "udp", "rtuovertcp", "rtuoverudp"
+    Transport   TransportKind // "rtu", "tcp", "tcp+tls", "udp", "rtuovertcp", "rtuoverudp", "ascii", "asciiovertcp"
     PoolEnabled bool          // true when MaxConns > 1 AND transport supports pooling
     MaxConns    int           // configured maximum connections
 }
@@ -646,7 +649,7 @@ Device Identification) is implemented.
 
 ### 2.7 Modbus device detection
 
-**SupportsFunction** probes the given unit with a single read-style function code and returns whether the unit responded with a structurally valid Modbus response (normal or exception). Supported FCs: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20. For any other FC returns `(false, ErrUnexpectedParameters)`. Use after **Open()**.
+**SupportsFunction** probes the given unit with a single read-style function code and returns whether the unit implements it: it answered with a structurally valid normal response, or with an exception that shows the function was recognised (Illegal Data Address, Illegal Data Value, Server Device Failure, Acknowledge, Server Device Busy, Memory Parity Error). Illegal Function, the gateway exceptions (0x0A, 0x0B) and a timeout return `(false, nil)`. Supported FCs: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20. For any other FC returns `(false, ErrUnexpectedParameters)`. Use after **Open()**.
 
 Error classification: returns `(false, nil)` for expected probe-negative outcomes (timeout, Modbus exception, gateway target failure); returns `(false, err)` for real transport/client errors (broken socket, bad CRC, bad unit ID, client not open). Context cancellation returns `(false, ctx.Err())`.
 
@@ -1260,6 +1263,7 @@ var (
     ErrGWPathUnavailable       // Modbus exception 0x0A
     ErrGWTargetFailedToRespond // Modbus exception 0x0B
     ErrBadCRC                  // RTU CRC mismatch
+    ErrBadLRC                  // ASCII LRC mismatch
     ErrShortFrame              // frame too short to decode
     ErrProtocolError           // malformed response
     ErrBadUnitID               // response unit ID does not match request
@@ -1648,7 +1652,7 @@ pipe, connection reset, dial failures, `net.ErrClosed`, and (when `RetryOnTimeou
 true) `ErrRequestTimedOut`.
 
 **Never retried**: `context.Canceled`, `context.DeadlineExceeded`, `ErrClientNotOpen`,
-`ErrConfigurationError`, `ErrProtocolError`, `ErrBadCRC`, `ErrShortFrame`,
+`ErrConfigurationError`, `ErrProtocolError`, `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame`,
 `ErrBadTransactionID`, `ErrBadUnitID`, `ErrUnknownProtocolID`, `ErrInvalidMBAPLength`,
 `ErrUnexpectedParameters`, all Modbus exception responses (`*ExceptionError`), and
 **unknown/unclassified errors**.
@@ -1693,8 +1697,8 @@ client, _ := modbus.New(modbus.Config{
 client.Open()
 ```
 
-- Applies to all TCP-based transports (`tcp`, `rtuovertcp`, `rtuoverudp`, `udp`).
-- RTU (serial) always uses a single connection; pooling is silently ignored.
+- Applies to all network transports except TLS (`tcp`, `udp`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`).
+- Serial (`rtu`, `ascii`) always uses a single connection; pooling is silently ignored.
 - When the pool is at capacity and all connections are in use, goroutines block
   until one is returned, until the context is cancelled, or until the pool is closed.
 - Failed connections are discarded; the pool dials replacements lazily on the next
@@ -1730,7 +1734,7 @@ server, err := modbus.NewServer(&modbus.ServerConfig{
 
 ### `Parity`
 
-Used in `Config.Parity` (RTU only).
+Used in `Config.Parity` (serial RTU and ASCII only).
 
 | Constant | Value | Description |
 |---|---|---|

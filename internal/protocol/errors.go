@@ -58,6 +58,7 @@ var (
 	ErrGWPathUnavailable              = errors.New("modbus: gateway path unavailable")
 	ErrGWTargetFailedToRespond        = errors.New("modbus: gateway target failed to respond")
 	ErrBadCRC                         = errors.New("modbus: bad crc")
+	ErrBadLRC                         = errors.New("modbus: bad lrc")
 	ErrShortFrame                     = errors.New("modbus: short frame")
 	ErrProtocolError                  = errors.New("modbus: protocol error")
 	ErrBadUnitID                      = errors.New("modbus: bad unit id")

@@ -1,4 +1,4 @@
-# go-modbus — Modbus TCP, RTU & TLS Library for Go (Golang)
+# go-modbus — Modbus TCP, RTU, ASCII & TLS Library for Go (Golang)
 
 [![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/otfabric/go-modbus.svg)](https://pkg.go.dev/github.com/otfabric/go-modbus)
@@ -7,7 +7,7 @@
 [![Code Coverage](https://codecov.io/gh/otfabric/go-modbus/graph/badge.svg)](https://codecov.io/gh/otfabric/go-modbus)
 [![Latest Release](https://img.shields.io/github/v/release/otfabric/go-modbus?label=release)](https://github.com/otfabric/go-modbus/releases)
 
-**go-modbus is a production-ready Modbus client and server library for Go.** It supports Modbus TCP, Modbus RTU (RS-232/RS-485), Modbus over TLS (MBAPS), UDP, RTU-over-TCP and RTU-over-UDP, in pure Go with no CGO.
+**go-modbus is a production-ready Modbus client and server library for Go.** It supports Modbus TCP, Modbus RTU and Modbus ASCII (RS-232/RS-485), Modbus over TLS (MBAPS), UDP, RTU-over-TCP, RTU-over-UDP and ASCII-over-TCP, in pure Go with no CGO.
 
 Use it to talk to PLCs, energy meters, solar inverters (SunSpec), sensors and other industrial devices from SCADA, industrial IoT (IIoT), energy-management and automation software, or to simulate Modbus devices for testing.
 
@@ -19,7 +19,7 @@ Beyond basic register reads and writes, go-modbus adds what production systems n
 
 ## Why go-modbus?
 
-- **Every common transport** — Modbus TCP, RTU (serial), TLS (MBAPS / Modbus Security), UDP, RTU-over-TCP and RTU-over-UDP.
+- **Every common transport** — Modbus TCP, RTU and ASCII (serial), TLS (MBAPS / Modbus Security), UDP, RTU-over-TCP, RTU-over-UDP and ASCII-over-TCP.
 - **Client and server** — Build Modbus masters (clients) and slaves (servers) with the same library.
 - **Broad function-code coverage** — Coils, discrete inputs, holding/input registers, mask write, read/write multiple, FIFO queue, file records, diagnostics and device identification (FC43/14).
 - **Typed register codecs** — Read and write `uint16`–`uint64`, `float32/64`, ASCII strings, BCD, IP addresses and timestamps, with per-value byte and word order for vendor-specific register layouts.
@@ -101,7 +101,7 @@ Several good Go Modbus libraries exist. This table shows where go-modbus differs
 |---|:---:|:---:|:---:|
 | Modbus TCP client | ✅ | ✅ | ✅ |
 | Modbus RTU client (serial) | ✅ | ✅ | ✅ |
-| Modbus ASCII client | — | — | ✅ |
+| Modbus ASCII client | ✅ | — | ✅ |
 | Modbus TCP server | ✅ | ✅ | — |
 | Modbus over TLS (MBAPS) | ✅ | ✅ | — |
 | UDP transport | ✅ | ✅ | — |
@@ -122,7 +122,7 @@ Several good Go Modbus libraries exist. This table shows where go-modbus differs
 
 **Choose go-modbus if** you need a Modbus server and client in one library, per-request `context` control, concurrent access to a device, retries, observability, vendor-specific register layouts or SunSpec discovery.
 
-**Choose a smaller library if** you only need a minimal client with a tiny API surface, or (goburrow/modbus) Modbus ASCII support, which go-modbus does not currently provide.
+**Choose a smaller library if** you only need a minimal client with a tiny API surface.
 
 <!--
 Benchmarks (add once measured; avoid publishing numbers you have not reproduced):
@@ -215,6 +215,8 @@ or `ServerConfiguration.URL`.
 | `rtu://<device>` | Modbus RTU over serial (RS-232 / RS-485) | ✓ | — |
 | `rtuovertcp://<host:port>` | Modbus RTU framing tunnelled over TCP | ✓ | — |
 | `rtuoverudp://<host:port>` | Modbus RTU framing tunnelled over UDP | ✓ | — |
+| `ascii://<device>` | Modbus ASCII over serial (RS-232 / RS-485) | ✓ | — |
+| `asciiovertcp://<host:port>` | Modbus ASCII framing tunnelled over TCP | ✓ | — |
 
 > **Note:** UDP transports are not part of the official Modbus specification. Both
 > MBAP-over-UDP (`udp://`) and RTU-over-UDP (`rtuoverudp://`) are provided because
@@ -231,8 +233,8 @@ or `ServerConfiguration.URL`.
 
 | Config field | Applies to |
 |---|---|
-| `Speed`, `DataBits`, `Parity`, `StopBits` | RTU (serial) only |
-| `DialTimeout` | TCP, TCP+TLS, UDP, RTU-over-TCP/UDP — not serial RTU |
+| `Speed`, `DataBits`, `Parity`, `StopBits` | Serial (`rtu://`, `ascii://`) only. Defaults: 19200 bps, 8 data bits (RTU) or 7 (ASCII), no parity, 2 stop bits without parity or 1 with |
+| `DialTimeout` | TCP, TCP+TLS, UDP, RTU-over-TCP/UDP, ASCII-over-TCP — not serial |
 | `TLSClientCert`, `TLSRootCAs` | TCP+TLS only |
 | `MinConns`, `MaxConns` | TCP-based transports only; serial and TLS always use one connection. `MaxConns > 1` on non-poolable transports is silently clamped to 1 with a warning log. |
 
@@ -287,7 +289,7 @@ RTU, RTU-over-TCP/UDP) and does not restrict any FC by transport type.
 unsupported. It targets CANopen device profiles and has no practical use in typical Modbus
 deployments. Only MEI type 14 (0x0E, Read Device Identification) is implemented.
 
-**Device detection:** `SupportsFunction(ctx, unitID, fc)` checks a single read-style FC (FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20). Returns `(false, nil)` for probe-negative outcomes (timeout, exception, gateway failure); returns `(false, err)` for real transport errors. For richer diagnostics, `ProbeFunction(ctx, unitID, fc)` returns a `ProbeResult` with `Outcome` (supported/exception/timeout/transport error/validation failed), optional `ExceptionCode`, `ResponseFC`, `RawPayload`, and `Reason` — useful for discovery tools and field debugging of quirky devices. `SupportsDeviceIdentification(ctx, unitID)` checks FC43 (Read Device Identification). **SunSpec discovery** lives in the `sunspec` subpackage: `sunspec.DetectSunSpec`, `sunspec.ReadSunSpecModelHeaders`, and `sunspec.DiscoverSunSpec` probe for the SunSpec "SunS" marker, enumerate model chains, and combine both for fingerprinting and inventory. The library does not decode SunSpec points or schemas — only transport-level detection and model headers. See [API.md § 2.7](API.md#27-modbus-device-detection) and [API.md § 2.8](API.md#28-sunspec-discovery).
+**Device detection:** `SupportsFunction(ctx, unitID, fc)` checks a single read-style FC (FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20). Returns `(true, nil)` for a valid normal response or an exception that shows the function was recognised (for example Illegal Data Address), `(false, nil)` for probe-negative outcomes (timeout, Illegal Function, gateway failure), and `(false, err)` for real transport errors. For richer diagnostics, `ProbeFunction(ctx, unitID, fc)` returns a `ProbeResult` with `Outcome` (supported/exception/timeout/transport error/validation failed), optional `ExceptionCode`, `ResponseFC`, `RawPayload`, and `Reason` — useful for discovery tools and field debugging of quirky devices. `SupportsDeviceIdentification(ctx, unitID)` checks FC43 (Read Device Identification). **SunSpec discovery** lives in the `sunspec` subpackage: `sunspec.DetectSunSpec`, `sunspec.ReadSunSpecModelHeaders`, and `sunspec.DiscoverSunSpec` probe for the SunSpec "SunS" marker, enumerate model chains, and combine both for fingerprinting and inventory. The library does not decode SunSpec points or schemas — only transport-level detection and model headers. See [API.md § 2.7](API.md#27-modbus-device-detection) and [API.md § 2.8](API.md#28-sunspec-discovery).
 
 ### Codec API
 
@@ -547,6 +549,8 @@ Supported transports:
   rtu:///path/to/device           Modbus RTU (serial)
   rtuovertcp://host:port          RTU over TCP
   rtuoverudp://host:port          RTU over UDP
+  ascii:///path/to/device         Modbus ASCII (serial)
+  asciiovertcp://host:port        ASCII over TCP
   tcp://host:port                 Modbus TCP (MBAP)
   tcp+tls://host:port             Modbus TCP over TLS (requires --cert, --key, --ca)
   udp://host:port                 Modbus TCP over UDP
@@ -644,9 +648,9 @@ details, and annotated examples — see **[API.md](API.md)**.
 
 Create a client with a `tcp://`, `rtu://` or other transport URL, call `Open()`, then use `ReadRegisters` (raw `[]uint16`) or a typed codec from the `codec` package. See the [Quick start](#quick-start) and [Client](#client).
 
-### Does go-modbus support Modbus TCP, RTU and TLS?
+### Does go-modbus support Modbus TCP, RTU, ASCII and TLS?
 
-Yes. Modbus TCP, serial RTU (RS-232/RS-485), Modbus TCP over TLS (MBAPS), UDP, RTU-over-TCP and RTU-over-UDP are supported by the client. The server supports TCP and TLS. See [Transport modes](#transport-modes).
+Yes. Modbus TCP, serial RTU and ASCII (RS-232/RS-485), Modbus TCP over TLS (MBAPS), UDP, RTU-over-TCP, RTU-over-UDP and ASCII-over-TCP are supported by the client. The server supports TCP and TLS. See [Transport modes](#transport-modes).
 
 ### Can I run a Modbus server in Go for testing or simulation?
 
@@ -685,8 +689,8 @@ go-modbus/
 ├── codec/             Typed encode/decode for multi-register values
 ├── sunspec/           SunSpec marker detection and model-chain discovery
 ├── internal/
-│   ├── adu/           ADU framing (MBAP, RTU CRC, wire encoding)
-│   ├── transport/     TCP / RTU / UDP transports
+│   ├── adu/           ADU framing (MBAP, RTU CRC, ASCII LRC, wire encoding)
+│   ├── transport/     TCP / RTU / ASCII / UDP transports
 │   ├── session/       Execution engine (pool, retry, dispatch)
 │   ├── protocol/      Function codes, limits, shared sentinels
 │   └── logging/       Prefixed logger adapter
@@ -719,7 +723,7 @@ If go-modbus is useful to you, a star on GitHub helps other Go developers find i
 
 ## Dependencies
 
-- [github.com/otfabric/go-serial](https://github.com/otfabric/go-serial) — serial port access for RTU mode
+- [github.com/otfabric/go-serial](https://github.com/otfabric/go-serial) — serial port access for RTU and ASCII modes
 
 ---
 

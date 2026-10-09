@@ -106,7 +106,7 @@ type exponentialBackoff struct {
 // Not retried (non-transient / semantic errors):
 //   - context.Canceled / context.DeadlineExceeded
 //   - ErrClientNotOpen, ErrConfigurationError
-//   - ErrProtocolError, ErrBadCRC, ErrShortFrame
+//   - ErrProtocolError, ErrBadCRC, ErrBadLRC, ErrShortFrame
 //   - ErrBadTransactionID, ErrBadUnitID, ErrUnknownProtocolID
 //   - ErrInvalidMBAPLength, ErrUnexpectedParameters
 //   - Modbus exception responses (ExceptionError)
@@ -124,6 +124,7 @@ func IsRetryable(err error, retryTimeout bool) bool {
 	}
 	if errors.Is(err, protocol.ErrProtocolError) ||
 		errors.Is(err, protocol.ErrBadCRC) ||
+		errors.Is(err, protocol.ErrBadLRC) ||
 		errors.Is(err, protocol.ErrShortFrame) {
 		return false
 	}

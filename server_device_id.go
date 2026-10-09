@@ -88,12 +88,7 @@ func (ms *Server) handleReadDeviceIdentification(ctx context.Context, req *adu.R
 
 	h, ok := ms.handler.(DeviceIdentificationHandler)
 	if !ok {
-		return &adu.Response{
-			UnitID:        req.UnitID,
-			FunctionCode:  req.FunctionCode | 0x80,
-			Payload:       []byte{byte(exIllegalFunction)},
-			TransactionID: txnID,
-		}, nil
+		return nil, ErrIllegalFunction
 	}
 
 	resp, err := h.HandleDeviceIdentification(ctx, &DeviceIdentificationRequest{

@@ -238,10 +238,26 @@ func TestClient_ProbeFunction_Outcomes(t *testing.T) {
 		if err != nil || res.Outcome != ProbeException {
 			t.Fatalf("ProbeFunction exception = %+v, %v", res, err)
 		}
-		// A structurally valid exception counts as "function supported".
+		// Illegal Function means the function is not implemented.
+		ok, err := client.SupportsFunction(ctx, 1, FCReadHoldingRegisters)
+		if err != nil || ok {
+			t.Fatalf("SupportsFunction illegal function = %v, %v; want false, nil", ok, err)
+		}
+	})
+
+	t.Run("exception that implies support", func(t *testing.T) {
+		client, cleanup := startMockServer(t, func(txid []byte, unitID, fc byte, _ []byte) []byte {
+			return exceptionFrame(txid, unitID, fc, byte(exIllegalDataAddress))
+		})
+		defer cleanup()
+		res, err := client.ProbeFunction(ctx, 1, FCReadHoldingRegisters)
+		if err != nil || res.Outcome != ProbeException || res.Supported {
+			t.Fatalf("ProbeFunction exception = %+v, %v", res, err)
+		}
+		// The device rejected the address, so it recognised the function.
 		ok, err := client.SupportsFunction(ctx, 1, FCReadHoldingRegisters)
 		if err != nil || !ok {
-			t.Fatalf("SupportsFunction exception = %v, %v; want true, nil", ok, err)
+			t.Fatalf("SupportsFunction illegal data address = %v, %v; want true, nil", ok, err)
 		}
 	})
 

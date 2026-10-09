@@ -307,7 +307,8 @@ func TestSupportsDeviceIdentification_FC43_NormalResponse(t *testing.T) {
 	}
 }
 
-// TestSupportsDeviceIdentification_FC43_ExceptionResponse verifies true when server returns FC43 exception.
+// TestSupportsDeviceIdentification_FC43_ExceptionResponse verifies false when the server
+// answers FC43 with Illegal Function: the device does not implement it.
 func TestSupportsDeviceIdentification_FC43_ExceptionResponse(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -349,8 +350,8 @@ func TestSupportsDeviceIdentification_FC43_ExceptionResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SupportsDeviceIdentification: %v", err)
 	}
-	if !ok {
-		t.Fatal("expected true (FC43 exception = device recognises FC)")
+	if ok {
+		t.Fatal("expected false (Illegal Function = FC43 not implemented)")
 	}
 }
 
