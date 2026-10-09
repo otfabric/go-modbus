@@ -308,12 +308,7 @@ func newEchoAddrQuantityResponse(req *adu.Request, txnID uint16, addr, quantity 
 func (ms *Server) handleExceptionStatus(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(ExceptionStatusHandler)
 	if !ok {
-		return &adu.Response{
-			UnitID:        req.UnitID,
-			FunctionCode:  req.FunctionCode | 0x80,
-			Payload:       []byte{byte(exIllegalFunction)},
-			TransactionID: txnID,
-		}, nil
+		return nil, ErrIllegalFunction
 	}
 	status, err := h.HandleExceptionStatus(ctx, &ExceptionStatusRequest{
 		ClientAddr:   clientAddr,
@@ -331,12 +326,7 @@ func (ms *Server) handleExceptionStatus(ctx context.Context, req *adu.Request, t
 func (ms *Server) handleCommEventCounter(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(CommEventCounterHandler)
 	if !ok {
-		return &adu.Response{
-			UnitID:        req.UnitID,
-			FunctionCode:  req.FunctionCode | 0x80,
-			Payload:       []byte{byte(exIllegalFunction)},
-			TransactionID: txnID,
-		}, nil
+		return nil, ErrIllegalFunction
 	}
 	cr, err := h.HandleCommEventCounter(ctx, &CommEventCounterRequest{
 		ClientAddr:   clientAddr,
@@ -356,12 +346,7 @@ func (ms *Server) handleCommEventCounter(ctx context.Context, req *adu.Request, 
 func (ms *Server) handleCommEventLog(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(CommEventLogHandler)
 	if !ok {
-		return &adu.Response{
-			UnitID:        req.UnitID,
-			FunctionCode:  req.FunctionCode | 0x80,
-			Payload:       []byte{byte(exIllegalFunction)},
-			TransactionID: txnID,
-		}, nil
+		return nil, ErrIllegalFunction
 	}
 	cl, err := h.HandleCommEventLog(ctx, &CommEventLogRequest{
 		ClientAddr:   clientAddr,

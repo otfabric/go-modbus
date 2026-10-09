@@ -128,6 +128,10 @@ func (e *Engine) Execute(ctx context.Context, req *adu.Request) (*adu.Response, 
 
 		if !usePool {
 			e.mu.Lock()
+			if e.closed {
+				e.mu.Unlock()
+				return nil, errors.Join(err, protocol.ErrClientNotOpen)
+			}
 			if e.tr != nil {
 				_ = e.tr.Close()
 				e.tr = nil
@@ -148,6 +152,12 @@ func (e *Engine) Execute(ctx context.Context, req *adu.Request) (*adu.Response, 
 
 		if !usePool {
 			e.mu.Lock()
+			// Close may have run while this request was failing or backing off: do not
+			// bring the engine back to life with a connection nobody would close.
+			if e.closed {
+				e.mu.Unlock()
+				return nil, errors.Join(err, protocol.ErrClientNotOpen)
+			}
 			if !e.isOpen {
 				dialStart := time.Now()
 				t, dialErr := e.cfg.Dial()

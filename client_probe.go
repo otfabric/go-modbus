@@ -13,8 +13,8 @@ import (
 )
 
 // runOneProbe runs a single detection probe.
-// Returns (true, nil) on valid response, (false, nil) on expected probe-negative
-// outcomes (timeout, Modbus exception, gateway failure), (false, err) on real
+// Returns (true, nil) when the response shows the function is implemented, (false, nil) on
+// expected probe-negative outcomes (timeout, Illegal Function, gateway failure), (false, err) on real
 // transport/client errors (broken socket, protocol corruption, client not open, etc.).
 func (mc *Client) runOneProbe(ctx context.Context, unitID uint8, p protocol.DetectionProbe) (bool, error) {
 	select {
@@ -33,10 +33,11 @@ func (mc *Client) runOneProbe(ctx context.Context, unitID uint8, p protocol.Dete
 
 	res, err := mc.executeRequest(ctx, req)
 	if err != nil {
+		// Every OnRequest gets exactly one outcome, cancellation included.
+		reportOutcome(m, unitID, fc, start, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return false, err
 		}
-		reportOutcome(m, unitID, fc, start, err)
 		if errors.Is(err, ErrRequestTimedOut) ||
 			errors.Is(err, ErrGWTargetFailedToRespond) {
 			return false, nil
@@ -57,7 +58,10 @@ func (mc *Client) runOneProbe(ctx context.Context, unitID uint8, p protocol.Dete
 }
 
 // SupportsFunction probes the given unit with a single function code and returns whether
-// the unit responded with a structurally valid Modbus response (normal or exception). Use after Open().
+// the unit implements it: it answered with a structurally valid normal response, or with an
+// exception that shows the function was recognised (illegal data address or value, device
+// failure, acknowledge, busy, memory parity error). Illegal Function, the gateway exceptions
+// and a timeout mean not supported. Use ProbeFunction to tell these outcomes apart. Use after Open().
 // Only FCs that have a detection probe are supported: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20.
 // For an unsupported fc, returns (false, ErrUnexpectedParameters).
 func (mc *Client) SupportsFunction(ctx context.Context, unitID uint8, fc FunctionCode) (bool, error) {
@@ -161,10 +165,11 @@ func (mc *Client) ProbeFunction(ctx context.Context, unitID uint8, fc FunctionCo
 
 	res, err := mc.executeRequest(ctx, req)
 	if err != nil {
+		// Every OnRequest gets exactly one outcome, cancellation included.
+		reportOutcome(m, unitID, fc, start, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return ProbeResult{}, err
 		}
-		reportOutcome(m, unitID, fc, start, err)
 		if errors.Is(err, ErrRequestTimedOut) || errors.Is(err, ErrGWTargetFailedToRespond) {
 			return ProbeResult{Outcome: ProbeTimeout, Err: err, Reason: "request timed out"}, nil
 		}

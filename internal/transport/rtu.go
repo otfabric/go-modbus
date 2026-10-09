@@ -172,23 +172,15 @@ func (rt *RTU) readRTUFrame() (*adu.Response, error) {
 		}
 	}
 	if bytesNeeded == protocol.RTUResponseLengthFIFO {
-		byteCount, err = io.ReadFull(rt.Link, rxbuf[3:4])
-		if (byteCount > 0 || err == nil) && byteCount != 1 {
-			return nil, protocol.ErrShortFrame
-		}
-		if err != nil && err != io.ErrUnexpectedEOF {
-			return nil, err
+		if _, err = io.ReadFull(rt.Link, rxbuf[3:4]); err != nil {
+			return nil, midFrameErr(err)
 		}
 		bytesNeeded = (int(rxbuf[2]) << 8) | int(rxbuf[3])
 		if bytesNeeded < 0 || 4+bytesNeeded+2 > adu.MaxRTUFrameLength {
 			return nil, protocol.ErrProtocolError
 		}
-		byteCount, err = io.ReadFull(rt.Link, rxbuf[4:4+bytesNeeded+2])
-		if err != nil && err != io.ErrUnexpectedEOF {
-			return nil, err
-		}
-		if byteCount != bytesNeeded+2 {
-			return nil, protocol.ErrShortFrame
+		if _, err = io.ReadFull(rt.Link, rxbuf[4:4+bytesNeeded+2]); err != nil {
+			return nil, midFrameErr(err)
 		}
 		frameLen := 4 + bytesNeeded + 2
 		if !adu.ValidateRTUCRC(rxbuf[:frameLen]) {
@@ -201,13 +193,12 @@ func (rt *RTU) readRTUFrame() (*adu.Response, error) {
 	if byteCount+bytesNeeded > adu.MaxRTUFrameLength {
 		return nil, protocol.ErrProtocolError
 	}
-	byteCount, err = io.ReadFull(rt.Link, rxbuf[3:3+bytesNeeded])
-	if err != nil && err != io.ErrUnexpectedEOF {
+	n, err := io.ReadFull(rt.Link, rxbuf[3:3+bytesNeeded])
+	if err != nil {
+		if err = midFrameErr(err); err == protocol.ErrShortFrame {
+			rt.Logger.Warnf("expected %v bytes, received %v", bytesNeeded, n)
+		}
 		return nil, err
-	}
-	if byteCount != bytesNeeded {
-		rt.Logger.Warnf("expected %v bytes, received %v", bytesNeeded, byteCount)
-		return nil, protocol.ErrShortFrame
 	}
 	frameLen := 3 + bytesNeeded
 	if !adu.ValidateRTUCRC(rxbuf[:frameLen]) {
@@ -215,6 +206,15 @@ func (rt *RTU) readRTUFrame() (*adu.Response, error) {
 	}
 	unitID, fc, payload := adu.ParseRTUFrame(rxbuf[:frameLen])
 	return &adu.Response{UnitID: unitID, FunctionCode: fc, Payload: payload}, nil
+}
+
+// midFrameErr maps the end of the stream inside a frame, after its header was received, to
+// ErrShortFrame: the response was cut short. Other errors (timeouts in particular) pass through.
+func midFrameErr(err error) error {
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return protocol.ErrShortFrame
+	}
+	return err
 }
 
 // readVariableLengthResponse reads an RTU response whose length is not known

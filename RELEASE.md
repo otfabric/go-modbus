@@ -1,5 +1,49 @@
 # go-modbus Releases
 
+## v1.2.0
+
+**Date:** 2026-10-09
+**Previous release:** v1.1.3
+
+## Summary
+
+Adds a **Modbus ASCII** client transport: `ascii://<device>` for serial lines and `asciiovertcp://<host:port>` for serial-to-Ethernet bridges. Existing transports and wire behaviour are unchanged; two behaviour changes are listed under **Changed** (function probing and 48-bit codec range checks).
+
+## Changes
+
+### Added
+
+- **`ascii://<device>`** — Modbus ASCII over serial (RS-232 / RS-485). Uses the same `Speed`, `DataBits`, `Parity` and `StopBits` settings as RTU. Defaults: 19200 bps, **7 data bits**, no parity, 2 stop bits without parity or 1 with, 1 s request timeout.
+- **`asciiovertcp://<host:port>`** — Modbus ASCII framing tunnelled over TCP. Supports connection pooling (`MaxConns > 1`) like the other TCP-based transports.
+- **`ErrBadLRC`** — returned when a received ASCII frame fails its LRC check (the ASCII counterpart of `ErrBadCRC`; not retried).
+- **`TransportASCII`**, **`TransportASCIIOverTCP`** — new `TransportKind` values reported by `Client.Info()`.
+- **Framing** — frames are `:` + hex(unit, function, data, LRC) + CR LF. The receiver discards bytes before the start delimiter, restarts on a `:` received mid-frame, accepts lower-case hex, and drops a late response left over from a timed-out request.
+
+### Changed
+
+- **`SupportsFunction` / `SupportsDeviceIdentification` — behaviour change.** They now answer "does the unit implement this function?". Previously any well-formed exception counted as supported, so a device answering *Illegal Function* — or a gateway answering *Gateway Target Device Failed to Respond* for an absent unit — was reported as supporting every probed function. An exception now counts only when it shows the function was recognised (Illegal Data Address, Illegal Data Value, Server Device Failure, Acknowledge, Server Device Busy, Memory Parity Error). `ProbeFunction` is unchanged and still reports the exact outcome and exception code.
+- **FC08 probe** — a device that correctly echoes *Return Query Data* is now reported as supporting diagnostics. The probe previously accepted only an exception response.
+- **48-bit codecs reject out-of-range values.** `uint48` and `int48` `EncodeRegisters` return `*CodecValueError` for values that do not fit in 48 bits instead of silently truncating them (for example `1<<47` used to encode as the most negative int48).
+- **modbus-cli** — `--data-bits` now defaults to `0` (auto: 8 for RTU, 7 for ASCII) instead of `8`. RTU behaviour is unchanged; pass `--data-bits 8` for an 8-bit ASCII link.
+
+### Fixed
+
+- **Client stayed alive after `Close()` during a retry.** With a retry policy on a single connection (serial, TLS, or `MaxConns <= 1`), closing the client while a request was failing let the retry re-dial and run on a new connection that was never closed. The request now fails with `ErrClientNotOpen` and nothing is re-dialled.
+- **Probe metrics on cancellation.** `SupportsFunction` and `ProbeFunction` called `ClientMetrics.OnRequest` without any outcome callback when the request was cancelled or its deadline expired. Every `OnRequest` is now followed by exactly one outcome.
+- **RTU response cut short after its header.** A response that ended right after the header (including FC18 FIFO responses) was returned as a bare `io.EOF`, which the retry policy treats as a dropped connection. It is now `ErrShortFrame`, like every other truncated frame.
+- **Server metrics for unimplemented optional functions.** A request for FC07, FC0B, FC0C or FC43 on a handler that does not implement the matching optional interface was counted as `ServerMetrics.OnResponse`; it is now `OnError` with `ErrIllegalFunction`, as FC23 already was. The exception response on the wire is unchanged.
+- **`int48` / `int64` codecs** — a wrong register count passed directly to `DecodeRegisters` reported the unsigned codec's ID (`uint48/…`, `uint64/…`) in `CodecRegisterCountError.Codec`.
+
+### Tests
+
+- Statement coverage of the library packages raised from 86% to 99%, including serial `rtu://` and `ascii://` clients exercised end to end on a pseudo-terminal (Linux and macOS). A `codecov.yml` sets the project target.
+
+### Unchanged
+
+- Server transports (TCP, TLS), sunspec and every other function code behave as in v1.1.3.
+
+---
+
 ## v1.1.3
 
 **Date:** 2026-07-30

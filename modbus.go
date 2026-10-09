@@ -101,6 +101,7 @@ var (
 	ErrGWPathUnavailable              = protocol.ErrGWPathUnavailable
 	ErrGWTargetFailedToRespond        = protocol.ErrGWTargetFailedToRespond
 	ErrBadCRC                         = protocol.ErrBadCRC
+	ErrBadLRC                         = protocol.ErrBadLRC
 	ErrShortFrame                     = protocol.ErrShortFrame
 	ErrProtocolError                  = protocol.ErrProtocolError
 	ErrBadUnitID                      = protocol.ErrBadUnitID

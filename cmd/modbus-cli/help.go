@@ -29,6 +29,8 @@ Supported transports:
   rtu:///path/to/device           Modbus RTU (serial)
   rtuovertcp://host:port          RTU over TCP
   rtuoverudp://host:port          RTU over UDP
+  ascii:///path/to/device         Modbus ASCII (serial)
+  asciiovertcp://host:port        ASCII over TCP
   tcp://host:port                 Modbus TCP (MBAP)
   tcp+tls://host:port             Modbus TCP over TLS (requires --cert, --key, --ca)
   udp://host:port                 Modbus TCP over UDP

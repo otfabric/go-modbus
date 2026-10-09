@@ -16,7 +16,29 @@ func IsValidModbusException(reqFC FunctionCode, res Response) bool {
 		res.Payload[0] >= 0x01 && res.Payload[0] <= 0x0b
 }
 
-// DetectionProbe is one entry in the probe set used by SupportsFunction.
+// ExceptionImpliesSupport reports whether an exception response with the given code shows
+// that the device implements the requested function. A device that rejects the address or
+// value, or that is busy or failing, has recognised the function. Illegal Function (0x01)
+// says the opposite, and the gateway exceptions (0x0A, 0x0B) come from a gateway that could
+// not reach the target, so they say nothing about it.
+func ExceptionImpliesSupport(code uint8) bool {
+	switch code {
+	case 0x02, 0x03, 0x04, 0x05, 0x06, 0x08:
+		return true
+	default:
+		return false
+	}
+}
+
+// isSupportingException returns true when res is a well-formed exception to reqFC whose
+// code implies that the function is implemented (see [ExceptionImpliesSupport]).
+func isSupportingException(reqFC FunctionCode, res Response) bool {
+	return IsValidModbusException(reqFC, res) && ExceptionImpliesSupport(res.Payload[0])
+}
+
+// DetectionProbe is one entry in the probe set used by SupportsFunction. Validate reports
+// whether res shows that the device implements the probed function: a structurally valid
+// normal response, or an exception that implies support.
 type DetectionProbe struct {
 	FC       FunctionCode
 	Payload  []byte
@@ -32,14 +54,20 @@ func init() {
 			FC:      FCDiagnostics,
 			Payload: []byte{0x00, 0x00, 0x12, 0x34},
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				return IsValidModbusException(reqFC, res)
+				if isSupportingException(reqFC, res) {
+					return true
+				}
+				// Return Query Data (sub-function 0x0000) echoes the request.
+				return res.FunctionCode == reqFC && len(res.Payload) == 4 &&
+					res.Payload[0] == 0x00 && res.Payload[1] == 0x00 &&
+					res.Payload[2] == 0x12 && res.Payload[3] == 0x34
 			},
 		},
 		{
 			FC:      FCEncapsulatedInterface,
 			Payload: []byte{byte(MEIReadDeviceIdentification), ReadDeviceIDBasic, 0x00},
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				if IsValidModbusException(reqFC, res) {
+				if isSupportingException(reqFC, res) {
 					return true
 				}
 				return res.FunctionCode == reqFC && len(res.Payload) >= 6
@@ -49,7 +77,7 @@ func init() {
 			FC:      FCReadHoldingRegisters,
 			Payload: []byte{0, 0, 0, 1},
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				if IsValidModbusException(reqFC, res) {
+				if isSupportingException(reqFC, res) {
 					return true
 				}
 				return res.FunctionCode == reqFC && len(res.Payload) == 3 && res.Payload[0] == 2
@@ -59,7 +87,7 @@ func init() {
 			FC:      FCReadInputRegisters,
 			Payload: []byte{0, 0, 0, 1},
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				if IsValidModbusException(reqFC, res) {
+				if isSupportingException(reqFC, res) {
 					return true
 				}
 				return res.FunctionCode == reqFC && len(res.Payload) == 3 && res.Payload[0] == 2
@@ -69,7 +97,7 @@ func init() {
 			FC:      FCReadCoils,
 			Payload: []byte{0, 0, 0, 1},
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				if IsValidModbusException(reqFC, res) {
+				if isSupportingException(reqFC, res) {
 					return true
 				}
 				return res.FunctionCode == reqFC && len(res.Payload) == 2 && res.Payload[0] == 1
@@ -79,7 +107,7 @@ func init() {
 			FC:      FCReadDiscreteInputs,
 			Payload: []byte{0, 0, 0, 1},
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				if IsValidModbusException(reqFC, res) {
+				if isSupportingException(reqFC, res) {
 					return true
 				}
 				return res.FunctionCode == reqFC && len(res.Payload) == 2 && res.Payload[0] == 1
@@ -89,7 +117,7 @@ func init() {
 			FC:      FCReportServerID,
 			Payload: nil,
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				if IsValidModbusException(reqFC, res) {
+				if isSupportingException(reqFC, res) {
 					return true
 				}
 				if res.FunctionCode != reqFC || len(res.Payload) < 2 {
@@ -103,7 +131,7 @@ func init() {
 			FC:      FCReadFIFOQueue,
 			Payload: []byte{0, 0},
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				if IsValidModbusException(reqFC, res) {
+				if isSupportingException(reqFC, res) {
 					return true
 				}
 				return res.FunctionCode == reqFC && len(res.Payload) >= 4
@@ -113,7 +141,7 @@ func init() {
 			FC:      FCReadFileRecord,
 			Payload: []byte{7, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01},
 			Validate: func(reqFC FunctionCode, res Response) bool {
-				if IsValidModbusException(reqFC, res) {
+				if isSupportingException(reqFC, res) {
 					return true
 				}
 				if res.FunctionCode != reqFC || len(res.Payload) < 4 {

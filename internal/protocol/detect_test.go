@@ -110,17 +110,28 @@ func TestIsValidModbusException(t *testing.T) {
 	}
 }
 
+// An exception response counts as "function implemented" only when its code shows that the
+// device recognised the function: Illegal Function and the gateway exceptions do not.
 func TestDetectionProbeValidators(t *testing.T) {
-	probes := AllDetectionProbes()
-	for _, p := range probes {
-		t.Run(p.FC.String(), func(t *testing.T) {
+	supporting := map[uint8]bool{0x02: true, 0x03: true, 0x04: true, 0x05: true, 0x06: true, 0x08: true}
+	for code := uint8(0x00); code <= 0x0C; code++ {
+		if got := ExceptionImpliesSupport(code); got != supporting[code] {
+			t.Errorf("ExceptionImpliesSupport(0x%02X) = %v, want %v", code, got, supporting[code])
+		}
+	}
+	for _, p := range AllDetectionProbes() {
+		for code := uint8(0x01); code <= 0x0B; code++ {
 			excRes := Response{
 				FunctionCode: FunctionCode(uint8(p.FC) | 0x80),
-				Payload:      []byte{0x01},
+				Payload:      []byte{code},
 			}
-			if !p.Validate(p.FC, excRes) {
-				t.Error("expected all probes to accept a valid exception response")
+			if got := p.Validate(p.FC, excRes); got != supporting[code] {
+				t.Errorf("%v: Validate(exception 0x%02X) = %v, want %v", p.FC, code, got, supporting[code])
 			}
-		})
+		}
+		// An exception to a different function code is never accepted.
+		if p.Validate(p.FC, Response{FunctionCode: FunctionCode(uint8(p.FC)|0x80) ^ 0x01, Payload: []byte{0x02}}) {
+			t.Errorf("%v: accepted an exception for another function code", p.FC)
+		}
 	}
 }

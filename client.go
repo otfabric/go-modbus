@@ -41,19 +41,22 @@ type Config struct {
 	// URL sets the client mode and target location in the form
 	// <mode>://<serial device or host:port> e.g. tcp://plc:502
 	URL string
-	// Speed sets the serial link speed (in bps, rtu only)
+	// Speed sets the serial link speed (in bps, rtu and ascii only).
+	// Defaults to 19200.
 	Speed uint
-	// DataBits sets the number of bits per serial character (rtu only)
+	// DataBits sets the number of bits per serial character (rtu and ascii
+	// only). Defaults to 8 for rtu and 7 for ascii.
 	DataBits uint
-	// Parity sets the serial link parity mode (rtu only)
+	// Parity sets the serial link parity mode (rtu and ascii only)
 	Parity Parity
-	// StopBits sets the number of serial stop bits (rtu only)
+	// StopBits sets the number of serial stop bits (rtu and ascii only).
+	// Defaults to 2 without parity and 1 with parity.
 	StopBits uint
 	// Timeout sets the request timeout value
 	Timeout time.Duration
 	// DialTimeout sets the maximum time for establishing a connection (TCP dial,
 	// TLS handshake, UDP dial). Zero uses a sensible default (5s for TCP/UDP,
-	// 15s for TLS). Does not apply to serial (RTU) transports.
+	// 15s for TLS). Does not apply to serial (rtu, ascii) transports.
 	DialTimeout time.Duration
 	// TLSClientCert sets the client-side TLS key pair (tcp+tls only)
 	TLSClientCert *tls.Certificate
@@ -81,7 +84,8 @@ type Config struct {
 	Metrics ClientMetrics
 
 	// MinConns is the number of connections pre-warmed during Open().
-	// Applies only to TCP-based transports (tcp, rtuovertcp, rtuoverudp, udp).
+	// Applies only to network transports (tcp, udp, rtuovertcp, rtuoverudp,
+	// asciiovertcp).
 	// Zero disables pre-warming.
 	MinConns int
 
@@ -230,6 +234,40 @@ func New(conf Config) (mc *Client, err error) {
 
 		mc.transportType = modbusRTUOverUDP
 
+	case "ascii":
+		if mc.conf.Speed == 0 {
+			mc.conf.Speed = 19200
+		}
+
+		// note: the "modbus over serial line v1.02" document specifies a
+		// 10-bit character frame for ASCII mode: 7 data bits, even parity
+		// and 1 stop bit, with 2 stop bits when no parity is used.
+		if mc.conf.DataBits == 0 {
+			mc.conf.DataBits = 7
+		}
+
+		if mc.conf.StopBits == 0 {
+			if mc.conf.Parity == ParityNone {
+				mc.conf.StopBits = 2
+			} else {
+				mc.conf.StopBits = 1
+			}
+		}
+
+		// ASCII mode tolerates inter-character gaps of up to 1s.
+		if mc.conf.Timeout == 0 {
+			mc.conf.Timeout = 1 * time.Second
+		}
+
+		mc.transportType = modbusASCII
+
+	case "asciiovertcp":
+		if mc.conf.Timeout == 0 {
+			mc.conf.Timeout = 1 * time.Second
+		}
+
+		mc.transportType = modbusASCIIOverTCP
+
 	case "tcp":
 		if mc.conf.Timeout == 0 {
 			mc.conf.Timeout = 1 * time.Second
@@ -304,7 +342,7 @@ func ValidateConfig(conf Config) error {
 }
 
 // Open opens the underlying transport (network socket or serial line).
-// If MaxConns > 1 and the transport supports pooling (tcp, rtuovertcp, rtuoverudp, udp — not tcp+tls),
+// If MaxConns > 1 and the transport supports pooling (tcp, udp, rtuovertcp, rtuoverudp, asciiovertcp — not tcp+tls),
 // a connection pool pre-warmed with MinConns connections is created; subsequent requests draw from the
 // pool and may execute concurrently. For serial and tcp+tls, a single transport is used.
 //
@@ -401,6 +439,30 @@ func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.R
 			usw, mc.endpoint, mc.conf.Speed, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("rtu-transport(%s)", mc.endpoint), mc.conf.Logger)), nil
 
+	case modbusASCII:
+		spw := newSerialPortWrapper(&serialPortConfig{
+			Device:   mc.endpoint,
+			Speed:    mc.conf.Speed,
+			DataBits: mc.conf.DataBits,
+			Parity:   mc.conf.Parity,
+			StopBits: mc.conf.StopBits,
+		})
+		if err := spw.Open(); err != nil {
+			return nil, err
+		}
+		return inttrans.NewASCII(
+			spw, mc.conf.Timeout,
+			newLogger(fmt.Sprintf("ascii-transport(%s)", mc.endpoint), mc.conf.Logger)), nil
+
+	case modbusASCIIOverTCP:
+		sock, err := net.DialTimeout("tcp", mc.endpoint, mc.dialTimeout())
+		if err != nil {
+			return nil, err
+		}
+		return inttrans.NewASCII(
+			sock, mc.conf.Timeout,
+			newLogger(fmt.Sprintf("ascii-transport(%s)", mc.endpoint), mc.conf.Logger)), nil
+
 	case modbusTCP:
 		sock, err := net.DialTimeout("tcp", mc.endpoint, mc.dialTimeout())
 		if err != nil {
@@ -468,7 +530,7 @@ func (mc *Client) Close() (err error) {
 }
 
 // LastObservedTransactionID returns the most recently observed MBAP transaction ID
-// on this client instance. For RTU and other non-TCP transports it is always 0.
+// on this client instance. For RTU, ASCII and other non-MBAP transports it is always 0.
 // In pooled/concurrent use (MaxConns > 1), this is a shared diagnostic value and
 // is not correlated to any specific request.
 func (mc *Client) LastObservedTransactionID() uint16 {
@@ -481,12 +543,14 @@ func (mc *Client) LastObservedTransactionID() uint16 {
 type TransportKind string
 
 const (
-	TransportRTU        TransportKind = "rtu"
-	TransportRTUOverTCP TransportKind = "rtuovertcp"
-	TransportRTUOverUDP TransportKind = "rtuoverudp"
-	TransportTCP        TransportKind = "tcp"
-	TransportTCPOverTLS TransportKind = "tcp+tls"
-	TransportTCPOverUDP TransportKind = "udp"
+	TransportRTU          TransportKind = "rtu"
+	TransportRTUOverTCP   TransportKind = "rtuovertcp"
+	TransportRTUOverUDP   TransportKind = "rtuoverudp"
+	TransportTCP          TransportKind = "tcp"
+	TransportTCPOverTLS   TransportKind = "tcp+tls"
+	TransportTCPOverUDP   TransportKind = "udp"
+	TransportASCII        TransportKind = "ascii"
+	TransportASCIIOverTCP TransportKind = "asciiovertcp"
 )
 
 // ClientInfo contains read-only diagnostic information about a Client's
@@ -522,7 +586,8 @@ func (mc *Client) supportsPooling() bool {
 	return mc.transportType == modbusTCP ||
 		mc.transportType == modbusRTUOverTCP ||
 		mc.transportType == modbusRTUOverUDP ||
-		mc.transportType == modbusTCPOverUDP
+		mc.transportType == modbusTCPOverUDP ||
+		mc.transportType == modbusASCIIOverTCP
 }
 
 func (mc *Client) transportKind() TransportKind {
@@ -539,6 +604,10 @@ func (mc *Client) transportKind() TransportKind {
 		return TransportTCPOverTLS
 	case modbusTCPOverUDP:
 		return TransportTCPOverUDP
+	case modbusASCII:
+		return TransportASCII
+	case modbusASCIIOverTCP:
+		return TransportASCIIOverTCP
 	default:
 		return ""
 	}

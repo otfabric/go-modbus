@@ -10,8 +10,8 @@ github.com/otfabric/go-modbus          # public API — client, server, protocol
 ├── codec/                           # public codec package (numeric, text, time, …)
 ├── sunspec/                         # public SunSpec detection and discovery
 ├── internal/
-│   ├── adu/                         # ADU framing: MBAP, RTU CRC, wire encoding
-│   ├── transport/                   # concrete transports: TCP, RTU
+│   ├── adu/                         # ADU framing: MBAP, RTU CRC, ASCII LRC, wire encoding
+│   ├── transport/                   # concrete transports: TCP, RTU, ASCII
 │   ├── session/                     # execution engine: pool, retry, request dispatch
 │   ├── protocol/                    # protocol constants, function codes, error sentinels
 │   └── logging/                     # prefixed logger adapter
@@ -48,7 +48,7 @@ Each subsystem has a **single owner** package.
 | Subsystem | Owner | Notes |
 |---|---|---|
 | ADU framing & wire encoding | `internal/adu` | Leaf package — no internal deps |
-| TCP / RTU transports | `internal/transport` | |
+| TCP / RTU / ASCII transports | `internal/transport` | |
 | Connection pool, retry, execute | `internal/session` | |
 | Codecs (numeric, text, time, …) | `codec/` | Public subpackage; root has deprecated aliases |
 | SunSpec discovery | `sunspec/` | Public subpackage; root has deprecated aliases |

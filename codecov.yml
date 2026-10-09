@@ -1,0 +1,15 @@
+# Codecov configuration for go-modbus.
+# CI uploads coverage for the library packages; cmd/ and examples/ are not tested there.
+coverage:
+  status:
+    project:
+      default:
+        target: 90%
+        threshold: 1%
+    patch:
+      default:
+        target: 70%
+
+ignore:
+  - "examples/**"
+  - "cmd/**"
