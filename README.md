@@ -715,7 +715,9 @@ and import rules are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Contributing
 
-Bug reports, device-compatibility notes and pull requests are welcome. Please [open an issue](https://github.com/otfabric/go-modbus/issues) to discuss larger changes first. Package ownership and import rules are in [ARCHITECTURE.md](ARCHITECTURE.md).
+Bug reports, device-compatibility notes and pull requests are welcome. Please [open an issue](https://github.com/otfabric/go-modbus/issues) to discuss larger changes first. Package ownership and import rules are in [ARCHITECTURE.md](ARCHITECTURE.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and guidelines.
+
+Please report security vulnerabilities privately, as described in [SECURITY.md](SECURITY.md), not in a public issue.
 
 If go-modbus is useful to you, a star on GitHub helps other Go developers find it.
 

@@ -33,11 +33,13 @@ func (ms *Server) acceptTCPClients() {
 		if ms.started && uint(len(ms.tcpClients)) < ms.conf.MaxClients {
 			ms.tcpClients = append(ms.tcpClients, sock)
 			accepted = true
+			// Registered under the lock: Shutdown clears started under the same lock before
+			// it waits, so this Add can never run concurrently with its Wait.
+			ms.wg.Add(1)
 		}
 		ms.lock.Unlock()
 
 		if accepted {
-			ms.wg.Add(1)
 			go ms.handleTCPClient(sock)
 		} else {
 			ms.logger.Warningf("max. number of concurrent connections "+
