@@ -1,5 +1,30 @@
 # go-modbus Releases
 
+## v1.2.1
+
+**Date:** 2026-10-09
+**Previous release:** v1.2.0
+
+## Summary
+
+Patch release: fixes a data race in the server when a client connects while the server is stopping. No API or wire-semantics changes.
+
+## Changes
+
+### Fixed
+
+- **Server stop racing a new connection.** A client connecting while `Stop()`/`Shutdown()` ran could register its handler with the server's wait group after shutdown had started waiting on it (a data race, and a handler that shutdown did not wait for). The handler is now registered under the server lock.
+
+### Tests
+
+- New stress test (`TestServerStop_ConcurrentWithAccept`) that reproduces the race under `-race`.
+
+### Unchanged
+
+- Client, codecs, sunspec and all transports are identical to v1.2.0.
+
+---
+
 ## v1.2.0
 
 **Date:** 2026-10-09
