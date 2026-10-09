@@ -1,52 +1,186 @@
-# go-modbus — Modbus Protocol Library
+# go-modbus — Modbus TCP, RTU & TLS Library for Go (Golang)
 
-[![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/otfabric/go-modbus.svg)](https://pkg.go.dev/github.com/otfabric/go-modbus)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/otfabric/go-modbus/graph/badge.svg)](https://codecov.io/gh/otfabric/go-modbus)
-[![Release](https://img.shields.io/github/v/release/otfabric/go-modbus?label=release)](https://github.com/otfabric/go-modbus/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI Status](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml)
+[![Code Coverage](https://codecov.io/gh/otfabric/go-modbus/graph/badge.svg)](https://codecov.io/gh/otfabric/go-modbus)
+[![Latest Release](https://img.shields.io/github/v/release/otfabric/go-modbus?label=release)](https://github.com/otfabric/go-modbus/releases)
 
-A production-ready Go implementation of the Modbus application protocol, providing both **client** and **server** capabilities. No C dependencies, no CGo — just Go.
+**go-modbus is a production-ready Modbus client and server library for Go.** It supports Modbus TCP, Modbus RTU (RS-232/RS-485), Modbus over TLS (MBAPS), UDP, RTU-over-TCP and RTU-over-UDP, in pure Go with no CGO.
 
-The library exposes a high-level, idiomatic Go API for both client and server roles,
-working with native Go types across all supported transports. Every request carries a
-`context.Context` for cancellation and deadline propagation.
-Advanced features — connection pooling, automatic retries, structured logging, and
-metrics hooks — are built in.
+Use it to talk to PLCs, energy meters, solar inverters (SunSpec), sensors and other industrial devices from SCADA, industrial IoT (IIoT), energy-management and automation software, or to simulate Modbus devices for testing.
 
-> For the complete type signatures, configuration options, and runnable examples see
+Beyond basic register reads and writes, go-modbus adds what production systems need: typed register codecs with explicit byte/word order, connection pooling, automatic retries, `context.Context` cancellation, structured logging, metrics hooks and a CLI.
+
+**Quick links:** [Quick start](#quick-start) · [Comparison](#go-modbus-vs-other-go-modbus-libraries) · [Install](#install) · [API reference](API.md) · [CLI](#modbus-cli) · [FAQ](#faq)
+
+---
+
+## Why go-modbus?
+
+- **Every common transport** — Modbus TCP, RTU (serial), TLS (MBAPS / Modbus Security), UDP, RTU-over-TCP and RTU-over-UDP.
+- **Client and server** — Build Modbus masters (clients) and slaves (servers) with the same library.
+- **Broad function-code coverage** — Coils, discrete inputs, holding/input registers, mask write, read/write multiple, FIFO queue, file records, diagnostics and device identification (FC43/14).
+- **Typed register codecs** — Read and write `uint16`–`uint64`, `float32/64`, ASCII strings, BCD, IP addresses and timestamps, with per-value byte and word order for vendor-specific register layouts.
+- **SunSpec discovery** — Detect SunSpec devices and enumerate model chains (solar inverters, meters, storage).
+- **Built for concurrency** — `context.Context` on every call, a bounded connection pool and a `*Client` that is safe for concurrent use.
+- **Resilient** — Configurable retry policy with exponential back-off and a typed error taxonomy for `errors.Is` / `errors.As`.
+- **Observable** — Structured logging (`log/slog` adapters) and metrics hooks.
+- **CLI included** — `modbus-cli` for probing, scanning and troubleshooting devices, with `--json` output.
+- **Pure Go** — No CGO or native dependencies.
+
+> For complete type signatures, configuration options and runnable examples see
 > **[API.md](API.md)**. Error taxonomy: **[ERRORS.md](ERRORS.md)**. Logging and
 > metrics: **[OBSERVABILITY.md](OBSERVABILITY.md)**.
 
 ---
 
+## Quick start
+
+Install the library:
+
+```bash
+go get github.com/otfabric/go-modbus
+```
+
+Read four holding registers from unit 1 over Modbus TCP:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/otfabric/go-modbus"
+)
+
+func main() {
+	client, err := modbus.NewClient(modbus.NewConfig(
+		modbus.TransportConfig{URL: "tcp://192.168.1.10:502", DialTimeout: 5 * time.Second},
+		modbus.ExecutionConfig{Timeout: 3 * time.Second},
+		modbus.ObservabilityConfig{},
+	))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := client.Open(); err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	regs, err := client.ReadRegisters(ctx, 1, 100, 4, modbus.HoldingRegister)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(regs)
+}
+```
+
+Prefer the command line? Probe a device without writing any code:
+
+```bash
+modbus-cli --target tcp://192.168.1.10:502 rh:uint16:100+4
+```
+
+Switching transport is a one-line change to the URL (`rtu:///dev/ttyUSB0`, `tcp+tls://host:802`, `udp://host:502`, …). See [Transport modes](#transport-modes).
+
+---
+
+## go-modbus vs other Go Modbus libraries
+
+Several good Go Modbus libraries exist. This table shows where go-modbus differs from [simonvetter/modbus](https://github.com/simonvetter/modbus) and [goburrow/modbus](https://github.com/goburrow/modbus) so you can pick the right one for your project.
+
+| Capability | otfabric/go-modbus | simonvetter/modbus | goburrow/modbus |
+|---|:---:|:---:|:---:|
+| Modbus TCP client | ✅ | ✅ | ✅ |
+| Modbus RTU client (serial) | ✅ | ✅ | ✅ |
+| Modbus ASCII client | — | — | ✅ |
+| Modbus TCP server | ✅ | ✅ | — |
+| Modbus over TLS (MBAPS) | ✅ | ✅ | — |
+| UDP transport | ✅ | ✅ | — |
+| RTU-over-TCP / RTU-over-UDP | ✅ | ✅ | — |
+| Typed reads/writes (`uint32`, `float32`, …) | ✅ | ✅ | — |
+| Per-value byte/word order codecs (BCD, ASCII, time, IP, …) | ✅ | client-wide setting | — |
+| Device identification, diagnostics, file records | ✅ | — | — |
+| `context.Context` cancellation and deadlines | ✅ | — | — |
+| Connection pooling | ✅ | — | — |
+| Automatic retries with back-off | ✅ | — | — |
+| Structured logging (`log/slog`) | ✅ | stdlib `log` | stdlib `log` |
+| Metrics hooks | ✅ | — | — |
+| SunSpec discovery | ✅ | — | — |
+| CLI tool | ✅ | ✅ | — |
+| Pure Go (no CGO) | ✅ | ✅ | ✅ |
+
+✅ = documented feature · — = not documented / not available. Based on each project's public documentation as of October 2026. If you spot an inaccuracy, please [open an issue](https://github.com/otfabric/go-modbus/issues) and we will correct it.
+
+**Choose go-modbus if** you need a Modbus server and client in one library, per-request `context` control, concurrent access to a device, retries, observability, vendor-specific register layouts or SunSpec discovery.
+
+**Choose a smaller library if** you only need a minimal client with a tiny API surface, or (goburrow/modbus) Modbus ASCII support, which go-modbus does not currently provide.
+
+<!--
+Benchmarks (add once measured; avoid publishing numbers you have not reproduced):
+
+| Scenario | go-modbus | simonvetter/modbus | goburrow/modbus |
+|---|---|---|---|
+| Sequential FC03 reads, 125 registers (ops/s) | | | |
+| Allocations per read (allocs/op, B/op) | | | |
+| 32 goroutines, shared client (ops/s) | | | |
+| 32 goroutines, MaxConns=8 pool (ops/s) | | | |
+| Reconnect after dropped connection (ms) | | | |
+
+Run against the same local server on the same machine; publish the benchmark code under bench/ and state Go version, OS and CPU.
+-->
+
+---
+
+## Use cases
+
+- **PLC and SCADA integration** — Poll registers and coils from Modbus TCP/RTU PLCs and gateways.
+- **Industrial IoT gateways** — Bridge Modbus devices to MQTT, databases or cloud platforms with pooled, cancellable, retried requests.
+- **Energy and solar monitoring** — Read meters and inverters, and discover SunSpec model chains.
+- **Device simulation and testing** — Run a Modbus TCP or TLS server in Go to simulate devices in unit and CI tests.
+- **Field diagnostics** — Scan address spaces, ping devices and decode registers with `modbus-cli`.
+
+---
+
 ## Table of Contents
 
-- [API tiers](#api-tiers)
-- [Project structure](#project-structure)
+- [Why go-modbus?](#why-go-modbus)
+- [Quick start](#quick-start)
+- [go-modbus vs other Go Modbus libraries](#go-modbus-vs-other-go-modbus-libraries)
+- [Use cases](#use-cases)
 - [Install](#install)
+- [API tiers](#api-tiers)
 - [Transport modes](#transport-modes)
 - [Client](#client)
-- [Client supported function codes](#client-supported-function-codes)
-- [Codec API](#codec-api)
-- [Supported Go types](#supported-go-types)
-- [Byte order and layout](#byte-order-and-layout)
 - [Server](#server)
-  - [Server supported function codes](#server-supported-function-codes)
 - [Logging](#logging)
 - [Error handling](#error-handling)
 - [Advanced features](#advanced-features)
-  - [Retry policy](#retry-policy)
-  - [Connection pool](#connection-pool)
-  - [Concurrency](#concurrency)
-  - [Metrics hooks](#metrics-hooks)
-  - [Client diagnostics](#client-diagnostics)
-  - [Configuration grouping](#configuration-grouping)
-- [CLI client](#cli-client)
+- [modbus-cli](#modbus-cli)
 - [Examples](#examples)
+- [FAQ](#faq)
+- [Project structure](#project-structure)
+- [Contributing](#contributing)
 - [Dependencies](#dependencies)
 - [License](#license)
+
+---
+
+## Install
+
+```bash
+go get github.com/otfabric/go-modbus
+```
+
+Requires **Go 1.23** or later.
 
 ---
 
@@ -65,46 +199,6 @@ The library is organized into five distinct API tiers, from lowest to highest le
 Each tier builds on the one below. For example, the Codec API uses the Raw Modbus API
 internally; the CLI uses the Codec and Raw APIs. Pick the tier that matches your
 use case — you never need to use a higher tier.
-
----
-
-## Project structure
-
-```
-go-modbus/
-├── .                  Public API — client, server, config, retry, metrics, errors
-├── codec/             Typed encode/decode for multi-register values
-├── sunspec/           SunSpec marker detection and model-chain discovery
-├── internal/
-│   ├── adu/           ADU framing (MBAP, RTU CRC, wire encoding)
-│   ├── transport/     TCP / RTU / UDP transports
-│   ├── session/       Execution engine (pool, retry, dispatch)
-│   ├── protocol/      Function codes, limits, shared sentinels
-│   └── logging/       Prefixed logger adapter
-├── cmd/modbus-cli/    Command-line client
-├── examples/          Runnable TCP/TLS server and client samples
-├── spec/              Protocol notes / reference material
-├── testdata/          Fuzz corpora and test fixtures
-├── API.md             Full public API reference
-├── ARCHITECTURE.md    Package ownership and dependency rules
-├── ERRORS.md          Error taxonomy
-├── OBSERVABILITY.md   Logging and metrics
-├── CODECS.md          Codec design notes
-└── RELEASE.md         Release history
-```
-
-Root package files are split by concern (`client_*.go`, `server_*.go`, …). Ownership
-and import rules are in [ARCHITECTURE.md](ARCHITECTURE.md).
-
----
-
-## Install
-
-```bash
-go get github.com/otfabric/go-modbus
-```
-
-Requires **Go 1.23** or later.
 
 ---
 
@@ -405,7 +499,7 @@ The flat `Config` struct remains fully supported and backward-compatible.
 
 ---
 
-## CLI client
+## modbus-cli
 
 A command-line Modbus client is included in `cmd/modbus-cli/`:
 
@@ -413,6 +507,9 @@ A command-line Modbus client is included in `cmd/modbus-cli/`:
 go build -o modbus-cli ./cmd/modbus-cli/
 ./modbus-cli --help
 ```
+
+<details>
+<summary>Full <code>modbus-cli</code> reference: operations, flags and examples</summary>
 
 Usage:
 
@@ -512,6 +609,9 @@ Flags:
 Use "modbus-cli [command] --help" for more information about a command.
 ```
 
+</details>
+
+
 Use `--json` for machine-readable line-delimited JSON output (one JSON object per
 result), suitable for piping into `jq` or other tools. Scan and ping operations
 also produce structured JSON when `--json` is set.
@@ -535,6 +635,85 @@ runs all operations and exits with a non-zero status code if any failed.
 
 For the full public API reference — all types, method signatures, configuration
 details, and annotated examples — see **[API.md](API.md)**.
+
+---
+
+## FAQ
+
+### How do I read Modbus registers in Go?
+
+Create a client with a `tcp://`, `rtu://` or other transport URL, call `Open()`, then use `ReadRegisters` (raw `[]uint16`) or a typed codec from the `codec` package. See the [Quick start](#quick-start) and [Client](#client).
+
+### Does go-modbus support Modbus TCP, RTU and TLS?
+
+Yes. Modbus TCP, serial RTU (RS-232/RS-485), Modbus TCP over TLS (MBAPS), UDP, RTU-over-TCP and RTU-over-UDP are supported by the client. The server supports TCP and TLS. See [Transport modes](#transport-modes).
+
+### Can I run a Modbus server in Go for testing or simulation?
+
+Yes. Implement the `RequestHandler` interface and start a TCP or TLS server. Runnable samples are in [Examples](#examples).
+
+### How do I handle byte order and word order (endianness)?
+
+Layout is defined per value by the codec, for example `codec.NewUint32Codec(codec.Layout32_2143)` for CDAB word order. This lets one client read devices and registers that use different layouts. See [Byte order and layout](#byte-order-and-layout).
+
+### Does go-modbus support SunSpec solar inverters?
+
+go-modbus detects the SunSpec marker and enumerates model chains for fingerprinting and inventory. It does not decode SunSpec points or schemas. See the `sunspec` package.
+
+### Is the client safe for concurrent use?
+
+Yes. By default requests are serialized over one connection. Set `MaxConns > 1` on TCP-based transports to run requests in parallel over a bounded connection pool. See [Concurrency](#concurrency).
+
+### Should I enable retries for writes?
+
+Be careful. If a write reaches the device but the response is lost, a retry can deliver the write more than once. Prefer no retries, or application-level idempotency, for non-idempotent writes. See [Retry policy](#retry-policy).
+
+### Does it need CGO?
+
+No. go-modbus is pure Go. Serial access uses [otfabric/go-serial](https://github.com/otfabric/go-serial).
+
+---
+
+## Project structure
+
+<details>
+<summary>Repository layout and package ownership</summary>
+
+```
+go-modbus/
+├── .                  Public API — client, server, config, retry, metrics, errors
+├── codec/             Typed encode/decode for multi-register values
+├── sunspec/           SunSpec marker detection and model-chain discovery
+├── internal/
+│   ├── adu/           ADU framing (MBAP, RTU CRC, wire encoding)
+│   ├── transport/     TCP / RTU / UDP transports
+│   ├── session/       Execution engine (pool, retry, dispatch)
+│   ├── protocol/      Function codes, limits, shared sentinels
+│   └── logging/       Prefixed logger adapter
+├── cmd/modbus-cli/    Command-line client
+├── examples/          Runnable TCP/TLS server and client samples
+├── spec/              Protocol notes / reference material
+├── testdata/          Fuzz corpora and test fixtures
+├── API.md             Full public API reference
+├── ARCHITECTURE.md    Package ownership and dependency rules
+├── ERRORS.md          Error taxonomy
+├── OBSERVABILITY.md   Logging and metrics
+├── CODECS.md          Codec design notes
+└── RELEASE.md         Release history
+```
+
+Root package files are split by concern (`client_*.go`, `server_*.go`, …). Ownership
+and import rules are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+</details>
+
+---
+
+## Contributing
+
+Bug reports, device-compatibility notes and pull requests are welcome. Please [open an issue](https://github.com/otfabric/go-modbus/issues) to discuss larger changes first. Package ownership and import rules are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+If go-modbus is useful to you, a star on GitHub helps other Go developers find it.
 
 ---
 
