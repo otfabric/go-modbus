@@ -1175,7 +1175,12 @@ func TestClose_WhileGoroutinesActive(t *testing.T) {
 			}
 			go func(c net.Conn) {
 				defer func() { _ = c.Close() }()
-				frame, _ := readMBAPFrame(c)
+				// Close interrupts the requests in flight: the connection may be
+				// gone before a request was sent on it.
+				frame, err := readMBAPFrame(c)
+				if err != nil {
+					return
+				}
 				txid, unitID, fc := frame[0:2], frame[6], frame[7]
 				_ = writeMBAPNormal(c, txid, unitID, fc, []byte{0x02, 0x00, 0x01})
 			}(sock)

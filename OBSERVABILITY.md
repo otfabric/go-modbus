@@ -48,6 +48,13 @@ Pluggable synchronous callbacks via `Config.Metrics` / `ServerConfig.Metrics`:
 protocol validation failures), **not** each internal retry. Implement
 `AttemptMetrics` on the same value when you need per-attempt visibility.
 
+`OnRetryDial` reports every re-dial of a single connection: between retry
+attempts and, with attempt 0, when a request starts without a usable connection
+(the previous one was lost, or dropped after a timeout on `tcp`/`tcp+tls`). A
+request cancelled through its context is an `OnError` with `context.Canceled`; an
+expired deadline is an `OnTimeout`. On the server, a request for a function code
+it does not serve is an `OnError` with `ErrIllegalFunction`.
+
 Callbacks run on the request path and must not block. Absence of a metrics
 implementation is intentional for simple apps — attach one only when you have a
 concrete consumer (Prometheus, statsd, …).

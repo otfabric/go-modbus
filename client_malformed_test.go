@@ -247,21 +247,42 @@ func TestReadDeviceIdentification_MalformedResponses(t *testing.T) {
 	}
 }
 
-// A device that keeps announcing more pages must not keep the client busy forever.
-func TestReadDeviceIdentification_PageLimit(t *testing.T) {
+// A device that keeps announcing more pages must not keep the client busy forever:
+// being sent back to an object ID that was already requested ends the read.
+func TestReadDeviceIdentification_PageLoop(t *testing.T) {
 	c, tr, _ := newScriptedClient(t, func(req *adu.Request) (*adu.Response, error) {
-		// Alternate NextObjectID so the "not advancing" check does not fire.
+		// Alternate NextObjectID between 0 and 1: never the same twice in a row.
 		next := req.Payload[2] ^ 0x01
 		obj := DeviceIdentificationObject{ID: DeviceIDObjectID(0x80 + req.Payload[2]), Value: "x"}
 		return okRes(req, devIDPage(DeviceIDExtended, 0x83, 0xFF, next, obj)...), nil
 	})
 	di, err := c.ReadAllDeviceIdentification(context.Background(), 1)
-	wantProtocolErrorText(t, err, "pagination exceeded max page count (32)")
+	wantProtocolErrorText(t, err, "pagination stuck: NextObjectID not advancing (0x00)")
 	if di != nil {
 		t.Errorf("identification returned alongside the error: %+v", di)
 	}
-	if n := len(tr.requests()); n != 32 {
-		t.Fatalf("%d requests, want exactly 32", n)
+	if n := len(tr.requests()); n != 2 {
+		t.Fatalf("%d requests, want exactly 2", n)
+	}
+}
+
+// A device may need many pages: every object ID can start one.
+func TestReadDeviceIdentification_ManyPages(t *testing.T) {
+	const pages = 200
+	c, tr, _ := newScriptedClient(t, func(req *adu.Request) (*adu.Response, error) {
+		cur := req.Payload[2]
+		obj := DeviceIdentificationObject{ID: DeviceIDObjectID(cur), Value: "x"}
+		if int(cur) == pages-1 {
+			return okRes(req, devIDPage(DeviceIDExtended, 0x83, 0x00, 0x00, obj)...), nil
+		}
+		return okRes(req, devIDPage(DeviceIDExtended, 0x83, 0xFF, cur+1, obj)...), nil
+	})
+	di, err := c.ReadAllDeviceIdentification(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("ReadAllDeviceIdentification: %v", err)
+	}
+	if len(di.Objects) != pages || len(tr.requests()) != pages {
+		t.Fatalf("%d objects in %d requests, want %d in %d", len(di.Objects), len(tr.requests()), pages, pages)
 	}
 }
 

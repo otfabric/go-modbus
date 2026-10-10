@@ -44,9 +44,11 @@ type AttemptMetrics interface {
 	// attempt is the zero-based attempt index (0 = first try). err is nil on success.
 	OnAttempt(unitID uint8, functionCode FunctionCode, attempt int, duration time.Duration, err error)
 
-	// OnRetryDial is called when the engine re-dials the transport between retry
-	// attempts. attempt is the zero-based retry attempt that triggered the dial.
-	// err is nil on successful dial.
+	// OnRetryDial is called when the engine re-dials the single connection: between
+	// retry attempts, and when a request finds the client without a usable
+	// connection (after the previous one was lost or dropped). attempt is the
+	// zero-based index of the attempt the dial is for: 0 for a request's first
+	// attempt. err is nil on successful dial. Pooled connections are not reported.
 	OnRetryDial(attempt int, duration time.Duration, err error)
 }
 
@@ -66,7 +68,9 @@ type ServerMetrics interface {
 	// duration is the handler execution time.
 	OnResponse(unitID uint8, functionCode FunctionCode, duration time.Duration)
 
-	// OnError is called when the handler returns an error.
-	// duration is the handler execution time.
+	// OnError is called when the handler returns an error, and when the server
+	// answers with an exception of its own: ErrIllegalFunction for a function
+	// code it does not serve, ErrServerDeviceFailure for a response too large
+	// to send. duration is the handler execution time.
 	OnError(unitID uint8, functionCode FunctionCode, duration time.Duration, err error)
 }

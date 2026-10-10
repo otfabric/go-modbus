@@ -98,7 +98,9 @@ func (ms *Server) handleWriteSingleCoil(ctx context.Context, req *adu.Request, t
 
 // handleWriteMultipleCoils handles FC15 (WriteMultipleCoils).
 func (ms *Server) handleWriteMultipleCoils(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
-	if len(req.Payload) < 6 {
+	// Address, quantity and byte count: without them the request cannot be
+	// read at all.
+	if len(req.Payload) < 5 {
 		return nil, ErrProtocolError
 	}
 
@@ -108,18 +110,23 @@ func (ms *Server) handleWriteMultipleCoils(ctx context.Context, req *adu.Request
 	if quantity > maxWriteCoils || quantity == 0 {
 		return nil, ErrIllegalDataValue
 	}
-	if uint32(addr)+uint32(quantity)-1 > 0xffff {
-		return nil, ErrIllegalDataAddress
-	}
 
+	// A byte count that is not the one the quantity asks for is an illegal
+	// data value, checked together with the quantity and before the address
+	// (Modbus Application Protocol V1.1b3, figure 21).
 	expectedLen := int(quantity) / 8
 	if quantity%8 != 0 {
 		expectedLen++
 	}
-
 	if req.Payload[4] != uint8(expectedLen) {
-		return nil, ErrProtocolError
+		return nil, ErrIllegalDataValue
 	}
+
+	if uint32(addr)+uint32(quantity)-1 > 0xffff {
+		return nil, ErrIllegalDataAddress
+	}
+
+	// The frame carries more or less data than it announces: malformed.
 	if len(req.Payload)-5 != expectedLen {
 		return nil, ErrProtocolError
 	}

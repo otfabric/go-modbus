@@ -236,7 +236,7 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 			name:    "FC23 byte count disagrees with write quantity",
 			handler: &fnHandler{readWrite: okRW},
 			fc:      FCReadWriteMultipleRegs, payload: append(append(u16(0, 1, 0, 1), 0x04), u16(7, 8)...),
-			wantErr: ErrProtocolError,
+			wantExc: exIllegalDataValue, wantErr: ErrIllegalDataValue,
 		},
 		{
 			name:    "FC23 handler error",
@@ -482,11 +482,12 @@ func TestServerAccept_SurvivesTransientErrors(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	ln := &flakyListener{errs: []error{errors.New("too many open files"), errors.New("connection aborted")}}
-	ms.tcpListener = ln
+	run := &serverRun{ctx: context.Background(), listener: ln, wg: &sync.WaitGroup{}}
+	run.wg.Add(1)
 
 	done := make(chan struct{})
 	go func() {
-		ms.acceptTCPClients()
+		ms.acceptTCPClients(run)
 		close(done)
 	}()
 	select {
@@ -505,13 +506,13 @@ func TestServerHandleTCPClient_UnknownTransportClosesConnection(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	ms.transportType = transportType(0xEE)
-	ms.stopCtx = context.Background()
+	run := &serverRun{ctx: context.Background(), wg: &sync.WaitGroup{}}
 
 	c1, c2 := net.Pipe()
 	defer func() { _ = c2.Close() }()
 	ms.tcpClients = []net.Conn{c1}
-	ms.wg.Add(1)
-	ms.handleTCPClient(c1)
+	run.wg.Add(1)
+	ms.handleTCPClient(run, c1)
 
 	if len(ms.tcpClients) != 0 {
 		t.Fatalf("client still tracked: %d", len(ms.tcpClients))

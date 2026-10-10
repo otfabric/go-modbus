@@ -74,25 +74,61 @@ func (tt *TCP) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 	return res, err
 }
 
-// ReadRequest reads one request from the socket (server use).
+// Interrupt makes the I/O of a request in flight fail at once with a timeout,
+// without closing the socket. It may be called from any goroutine. A stream
+// interrupted in the middle of an exchange is out of sync and must not be reused.
+func (tt *TCP) Interrupt() {
+	_ = tt.Socket.SetDeadline(time.Unix(1, 0))
+}
+
+// ReadRequest reads one request from the socket (server use). Timeout bounds the
+// wait for the request only; it does not carry over to WriteResponse.
 func (tt *TCP) ReadRequest() (*adu.Request, uint16, error) {
-	if err := tt.Socket.SetDeadline(time.Now().Add(tt.Timeout)); err != nil {
+	if err := tt.Socket.SetReadDeadline(time.Now().Add(tt.Timeout)); err != nil {
 		return nil, 0, err
 	}
+	req, txnID, err := tt.ReadFrame()
+	if err != nil {
+		return nil, 0, err
+	}
+	tt.lastTxnID = txnID
+	return req, txnID, nil
+}
+
+// WriteResponse writes a response to the request last returned by ReadRequest
+// (server use). The write gets its own deadline of Timeout.
+func (tt *TCP) WriteResponse(res *adu.Response) error {
+	return tt.WriteFrame(tt.lastTxnID, res)
+}
+
+// ReadFrame reads one request from the socket without touching deadlines or the
+// transport's transaction state: the caller manages the read deadline (see
+// SetReadDeadline). Together with WriteFrame it lets a server read requests in
+// one goroutine while it answers earlier ones in another.
+func (tt *TCP) ReadFrame() (*adu.Request, uint16, error) {
 	req, txnID, err := tt.readMBAPFrameRaw()
 	if err != nil {
 		return nil, 0, err
 	}
 	tt.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", req.UnitID, req.FunctionCode, req.Payload)
-	tt.lastTxnID = txnID
 	return req, txnID, nil
 }
 
-// WriteResponse writes a response (server use).
-func (tt *TCP) WriteResponse(res *adu.Response) error {
-	frame := adu.AssembleMBAP(tt.lastTxnID, res.UnitID, res.FunctionCode, res.Payload)
+// WriteFrame writes res under transaction ID txnID, with a write deadline of
+// Timeout. It does not use the transport's transaction state and may run
+// concurrently with ReadFrame.
+func (tt *TCP) WriteFrame(txnID uint16, res *adu.Response) error {
+	frame := adu.AssembleMBAP(txnID, res.UnitID, res.FunctionCode, res.Payload)
 	tt.Logger.Debugf("TX: % X", frame)
+	if err := tt.Socket.SetWriteDeadline(time.Now().Add(tt.Timeout)); err != nil {
+		return err
+	}
 	return writeFull(tt.Socket, frame)
+}
+
+// SetReadDeadline sets the deadline of pending and future reads (zero: none).
+func (tt *TCP) SetReadDeadline(t time.Time) error {
+	return tt.Socket.SetReadDeadline(t)
 }
 
 const maxAnomalies = 10

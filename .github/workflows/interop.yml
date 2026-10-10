@@ -1,0 +1,109 @@
+name: Interop
+run-name: "Interop (${{ github.event_name }}) on ${{ github.ref_name }} by @${{ github.actor }}"
+
+# Runs go-modbus against the reference implementations published by
+# otfabric/modbus-interop, as client and as server. The images are consumed as
+# published: nothing of modbus-interop is cloned or built here.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+    inputs:
+      libmodbus_image:
+        description: "libmodbus reference image (default: the pinned release)"
+        required: false
+      pymodbus_image:
+        description: "PyModbus reference image (default: the pinned release)"
+        required: false
+      digitalpetri_image:
+        description: "digitalpetri/modbus reference image (default: the pinned release)"
+        required: false
+      nmodbus_image:
+        description: "NModbus reference image (default: the pinned release)"
+        required: false
+      tokiomodbus_image:
+        description: "tokio-modbus reference image (default: the pinned release)"
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  # otfabric/modbus-interop v0.1.0: libmodbus v3.2.0, PyModbus 3.15.0,
+  # digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus 0.17.0.
+  # Pinned by the multi-arch index digests of its release manifest.
+  # Keep in step with the Makefile and interop/harness.go.
+  MODBUS_INTEROP_LIBMODBUS_IMAGE: ${{ inputs.libmodbus_image || 'ghcr.io/otfabric/modbus-interop-libmodbus@sha256:d51da912841f7afc78095fb043193601e13c463b847384d5316d1ed37d7d0b6d' }}
+  MODBUS_INTEROP_PYMODBUS_IMAGE: ${{ inputs.pymodbus_image || 'ghcr.io/otfabric/modbus-interop-pymodbus@sha256:bae6b6cffd82108ac017e157d8a21d36ef2cbec960d938990eb07a52e765a738' }}
+  MODBUS_INTEROP_DIGITALPETRI_IMAGE: ${{ inputs.digitalpetri_image || 'ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:7d78a87dc88cdca4b09b639aa4ed25c604620984233b157df8ab57fc98c79da6' }}
+  MODBUS_INTEROP_NMODBUS_IMAGE: ${{ inputs.nmodbus_image || 'ghcr.io/otfabric/modbus-interop-nmodbus@sha256:6da5066a5274ece1788d545ee7ca9153e8366767a5d6599f916ca69b16e408fb' }}
+  MODBUS_INTEROP_TOKIOMODBUS_IMAGE: ${{ inputs.tokiomodbus_image || 'ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:23f93e71653ef8fdc62de05826a4f015de5141770402b3c398fabd129b7122e7' }}
+  GOPRIVATE: github.com/otfabric/*
+
+jobs:
+  interop:
+    name: libmodbus + PyModbus + digitalpetri + NModbus + tokio-modbus, client and server
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Pull reference images
+        run: |
+          images=("${MODBUS_INTEROP_LIBMODBUS_IMAGE}" "${MODBUS_INTEROP_PYMODBUS_IMAGE}" "${MODBUS_INTEROP_DIGITALPETRI_IMAGE}" "${MODBUS_INTEROP_NMODBUS_IMAGE}" "${MODBUS_INTEROP_TOKIOMODBUS_IMAGE}")
+          # GHCR is occasionally slow or rate limiting: try each pull a few times.
+          for image in "${images[@]}"; do
+            for attempt in 1 2 3 4 5; do
+              docker pull "${image}" && break
+              [[ "${attempt}" == 5 ]] && { echo "::error::cannot pull ${image}"; exit 1; }
+              sleep $((attempt * 15))
+            done
+          done
+          {
+            echo "| Reference | Image | Upstream |"
+            echo "|---|---|---|"
+            for image in "${images[@]}"; do
+              docker run --rm "${image}" print-capabilities \
+                | jq -r --arg image "${image}" '"| \(.adapter) \(.adapterVersion) | `\($image)` | \(.upstream.name) \(.upstream.version) |"'
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the interop suite
+        run: make interop
+
+      - name: Collect container logs on failure
+        if: failure()
+        run: |
+          mkdir -p artifacts
+          docker ps -a > artifacts/docker-ps.txt || true
+          for c in $(docker ps -aq --filter name=go-modbus-interop); do
+            docker logs "$c" > "artifacts/${c}.log" 2>&1 || true
+          done
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-logs
+          path: artifacts/
+          if-no-files-found: ignore

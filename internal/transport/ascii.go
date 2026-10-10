@@ -45,6 +45,12 @@ func (at *ASCII) Close() error {
 	return at.Link.Close()
 }
 
+// Interrupt makes the I/O of a request in flight fail at once with a timeout,
+// without closing the link. It may be called from any goroutine.
+func (at *ASCII) Interrupt() {
+	_ = at.Link.SetDeadline(time.Unix(1, 0))
+}
+
 // ExecuteRequest sends req and returns the response.
 func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
 	var deadline time.Time

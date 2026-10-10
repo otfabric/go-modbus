@@ -21,7 +21,12 @@ var modbusRoleOID asn1.ObjectIdentifier = asn1.ObjectIdentifier{
 
 // Server configuration object.
 type ServerConfig struct {
-	URL                 string
+	URL string
+	// Timeout is the idle timeout of a client connection: a connection on which
+	// no complete request arrives for this long, while no request is being
+	// served, is closed. It does not limit how long a handler may run. Each
+	// response is written under a deadline of its own, of the same duration.
+	// Defaults to 120 s.
 	Timeout             time.Duration
 	MaxClients          uint
 	TLSServerCert       *tls.Certificate
@@ -95,9 +100,10 @@ type InputRegistersRequest struct {
 // other synchronization when accessing shared state).
 //
 // Each handler method receives a context that is cancelled when the client
-// disconnects or the server stops. A panic inside any handler method is
-// recovered and logged (with a stack trace); the client receives a
-// ServerDeviceFailure exception response.
+// disconnects (also while the handler is running; a client that merely shuts
+// down its sending side counts as disconnected) or the server stops. A panic
+// inside any handler method is recovered and logged (with a stack trace); the
+// client receives a ServerDeviceFailure exception response.
 type RequestHandler interface {
 	HandleCoils(ctx context.Context, req *CoilsRequest) (res []bool, err error)
 	HandleDiscreteInputs(ctx context.Context, req *DiscreteInputsRequest) (res []bool, err error)
@@ -192,18 +198,36 @@ type CommEventLogHandler interface {
 
 // Modbus server object.
 type Server struct {
-	conf          ServerConfig
-	logger        *logger
-	lock          sync.Mutex
-	wg            sync.WaitGroup
-	started       bool
-	handler       RequestHandler
-	metrics       ServerMetrics
-	tcpListener   net.Listener
+	conf    ServerConfig
+	logger  *logger
+	lock    sync.Mutex
+	started bool
+	handler RequestHandler
+	metrics ServerMetrics
+	// tcpClients holds the sockets of the connected clients.
 	tcpClients    []net.Conn
 	transportType transportType
-	stopCancel    context.CancelFunc
-	stopCtx       context.Context
+
+	// run is what the last Start created. The fields below it are copies of its
+	// members, written by Start under lock and kept after the server has stopped.
+	run         *serverRun
+	wg          *sync.WaitGroup
+	tcpListener net.Listener
+	stopCancel  context.CancelFunc
+	stopCtx     context.Context
+}
+
+// serverRun groups what belongs to one Start..Stop cycle. Every goroutine of a
+// cycle is handed its serverRun and uses nothing else to reach the listener,
+// the stop context or the WaitGroup: a Server that is started again gets a new
+// one, and goroutines of the previous cycle that are still winding down (after
+// a Shutdown whose context expired) cannot mix with the new cycle.
+type serverRun struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	listener net.Listener
+	// wg counts the accept loop and the client goroutines of this cycle.
+	wg *sync.WaitGroup
 }
 
 // Returns a new modbus server.
@@ -222,6 +246,7 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 		conf:    *conf,
 		handler: reqHandler,
 		metrics: conf.Metrics,
+		wg:      &sync.WaitGroup{},
 	}
 
 	splitURL = strings.SplitN(ms.conf.URL, "://", 2)
@@ -280,7 +305,8 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 }
 
 // Start begins accepting client connections. It is safe to call multiple times;
-// subsequent calls on an already-started server are no-ops.
+// subsequent calls on an already-started server are no-ops. A server that has
+// been stopped can be started again.
 func (ms *Server) Start() (err error) {
 	ms.lock.Lock()
 	defer ms.lock.Unlock()
@@ -289,23 +315,30 @@ func (ms *Server) Start() (err error) {
 		return
 	}
 
-	ms.stopCtx, ms.stopCancel = context.WithCancel(context.Background())
+	run := &serverRun{wg: &sync.WaitGroup{}}
+	run.ctx, run.cancel = context.WithCancel(context.Background())
+	ms.stopCtx, ms.stopCancel = run.ctx, run.cancel
 
 	switch ms.transportType {
 	case modbusTCP, modbusTCPOverTLS:
-		ms.tcpListener, err = net.Listen("tcp", ms.conf.URL)
+		run.listener, err = net.Listen("tcp", ms.conf.URL)
 		if err != nil {
-			ms.stopCancel()
+			run.cancel()
 			return
 		}
-		go ms.acceptTCPClients()
+		ms.tcpListener = run.listener
+		// The accept loop is part of what Stop and Shutdown wait for.
+		run.wg.Add(1)
+		go ms.acceptTCPClients(run)
 
 	default:
-		ms.stopCancel()
+		run.cancel()
 		err = ErrConfigurationError
 		return
 	}
 
+	ms.run = run
+	ms.wg = run.wg
 	ms.started = true
 
 	return
@@ -313,9 +346,9 @@ func (ms *Server) Start() (err error) {
 
 // Shutdown gracefully shuts down the server. It stops accepting new
 // connections, cancels all per-connection contexts, closes client sockets,
-// and waits for in-flight handler goroutines to exit. If ctx expires before
-// all handlers finish, Shutdown returns ctx.Err(). Use Stop() as a
-// convenience wrapper that waits indefinitely.
+// and waits for the accept loop and the in-flight handler goroutines to exit.
+// If ctx expires before all handlers finish, Shutdown returns ctx.Err(). Use
+// Stop() as a convenience wrapper that waits indefinitely.
 func (ms *Server) Shutdown(ctx context.Context) error {
 	ms.lock.Lock()
 	if !ms.started {
@@ -323,20 +356,18 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	ms.started = false
-	ms.stopCancel()
+	run := ms.run
+	run.cancel()
 
-	var listenErr error
-	if ms.transportType == modbusTCP || ms.transportType == modbusTCPOverTLS {
-		listenErr = ms.tcpListener.Close()
-		for _, sock := range ms.tcpClients {
-			_ = sock.Close()
-		}
+	listenErr := run.listener.Close()
+	for _, sock := range ms.tcpClients {
+		_ = sock.Close()
 	}
 	ms.lock.Unlock()
 
 	done := make(chan struct{})
 	go func() {
-		ms.wg.Wait()
+		run.wg.Wait()
 		close(done)
 	}()
 

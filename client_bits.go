@@ -80,6 +80,12 @@ func (mc *Client) WriteCoilRaw(ctx context.Context, unitID uint8, addr uint16, p
 
 // Writes multiple coils (function code 15).
 func (mc *Client) WriteCoils(ctx context.Context, unitID uint8, addr uint16, values []bool) (err error) {
+	// Checked on the real length: converting to uint16 first would let 65537
+	// values pass as 1.
+	if len(values) > maxWriteCoils {
+		return newParameterError("WriteCoils", "quantity",
+			fmt.Sprintf("must be 1..%d, got %d", maxWriteCoils, len(values)))
+	}
 	quantity := uint16(len(values))
 	if err = validateWriteBitsRange(addr, quantity); err != nil {
 		return

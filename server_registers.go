@@ -126,7 +126,9 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 	if !ok {
 		return nil, ErrIllegalFunction
 	}
-	if len(req.Payload) < 10 {
+	// Both addresses, both quantities and the byte count: without them the
+	// request cannot be read at all.
+	if len(req.Payload) < 9 {
 		return nil, ErrProtocolError
 	}
 
@@ -142,16 +144,20 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 	if writeQty == 0 || writeQty > maxRWWriteRegs {
 		return nil, ErrIllegalDataValue
 	}
+	// A byte count that is not twice the write quantity is an illegal data
+	// value, checked together with the quantities and before the addresses
+	// (Modbus Application Protocol V1.1b3, figure 27).
+	expectedLen := int(writeQty) * 2
+	if int(byteCount) != expectedLen {
+		return nil, ErrIllegalDataValue
+	}
 	if uint32(readAddr)+uint32(readQty)-1 > 0xffff {
 		return nil, ErrIllegalDataAddress
 	}
 	if uint32(writeAddr)+uint32(writeQty)-1 > 0xffff {
 		return nil, ErrIllegalDataAddress
 	}
-	expectedLen := int(writeQty) * 2
-	if int(byteCount) != expectedLen {
-		return nil, ErrProtocolError
-	}
+	// The frame carries more or less data than it announces: malformed.
 	if len(req.Payload)-9 != expectedLen {
 		return nil, ErrProtocolError
 	}
@@ -183,7 +189,9 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 
 // handleWriteMultipleRegisters handles FC16 (WriteMultipleRegisters).
 func (ms *Server) handleWriteMultipleRegisters(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
-	if len(req.Payload) < 6 {
+	// Address, quantity and byte count: without them the request cannot be
+	// read at all.
+	if len(req.Payload) < 5 {
 		return nil, ErrProtocolError
 	}
 
@@ -193,14 +201,19 @@ func (ms *Server) handleWriteMultipleRegisters(ctx context.Context, req *adu.Req
 	if quantity > maxWriteRegisters || quantity == 0 {
 		return nil, ErrIllegalDataValue
 	}
+	// A byte count that is not twice the quantity is an illegal data value,
+	// checked together with the quantity and before the address (Modbus
+	// Application Protocol V1.1b3, figure 22).
+	expectedLen := int(quantity) * 2
+	if req.Payload[4] != uint8(expectedLen) {
+		return nil, ErrIllegalDataValue
+	}
+
 	if uint32(addr)+uint32(quantity)-1 > 0xffff {
 		return nil, ErrIllegalDataAddress
 	}
 
-	expectedLen := int(quantity) * 2
-	if req.Payload[4] != uint8(expectedLen) {
-		return nil, ErrProtocolError
-	}
+	// The frame carries more or less data than it announces: malformed.
 	if len(req.Payload)-5 != expectedLen {
 		return nil, ErrProtocolError
 	}

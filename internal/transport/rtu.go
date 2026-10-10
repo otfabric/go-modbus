@@ -75,6 +75,12 @@ func (rt *RTU) Close() error {
 	return rt.Link.Close()
 }
 
+// Interrupt makes the I/O of a request in flight fail at once with a timeout,
+// without closing the link. It may be called from any goroutine.
+func (rt *RTU) Interrupt() {
+	_ = rt.Link.SetDeadline(time.Unix(1, 0))
+}
+
 // sleepCtx sleeps for d, returning early if ctx is cancelled.
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
