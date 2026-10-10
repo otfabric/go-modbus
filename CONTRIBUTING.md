@@ -40,6 +40,9 @@ make fuzz
 
 # Build modbus-cli and the examples into ./bin
 make build
+
+# Run the interop suite against libmodbus, PyModbus, digitalpetri/modbus, NModbus and tokio-modbus (needs Docker)
+make interop
 ```
 
 Run `make` (or `make help`) for the full list of targets.
@@ -87,6 +90,42 @@ Examples:
 - Library coverage is above 90% and enforced by Codecov; new code should come with tests
 - If your change affects what is sent to or accepted from a device, verify against real hardware when possible and say which device in the pull request
 
+### End-to-end, chaos and stress tests
+
+Three suites in the root package run the real client against the real server on loopback:
+
+- `e2e_*_test.go`: the functional matrix (every client function over `tcp` and `tcp+tls`); `e2e_matrix_test.go` lists what is covered and where.
+- `chaos_*_test.go`: a fault-injecting TCP proxy (`chaos_proxy_test.go`) and a self-checking workload (`chaos_harness_test.go`). `TestChaosMonkey` runs randomized scenarios, `TestChaosFaultMatrix` one precisely placed fault per case, and `chaos_regression_test.go` one test per defect found this way.
+- `stress_*_test.go`: parallel load, lifecycle races and hostile peers.
+
+```bash
+# The three suites, as CI runs them
+GOWORK=off go test -race -count=1 -run 'E2E|Chaos|Stress' .
+
+# Soak: keep looping for SOAKTIME per suite (default 2m), new seed every round
+make soak SOAKTIME=10m
+
+# Replay a failing chaos round (the seed is logged on failure)
+MODBUS_CHAOS_SEED=1234567 GOWORK=off go test -race -count=1 -run 'TestChaosMonkey/tcp/pool$' .
+```
+
+When you change connection handling, retries, timeouts, cancellation or the server's connection loop, run the soak for a few minutes. When a scenario fails, reduce it to a deterministic test (a scripted fault in the proxy usually does it) and add that to `chaos_regression_test.go` with the fix. Helpers are prefixed `e2e`, `chaos` or `stress`; the suites must stay fast (bounded rounds, short timeouts) in a normal run.
+
+### Interop tests
+
+The `interop` package (build tag `interop`, so it is not part of `go test ./...`) runs the client against five reference servers and five reference clients against a go-modbus server. The reference stacks are container images published by [otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) and are consumed as images only: nothing of that repository is cloned or built here, and the scenarios, expected values and assertions are this repository's.
+
+```bash
+# All five stacks (needs Docker; the Interop workflow runs this on every push)
+make interop
+
+# One stack, or another build of an image
+MODBUS_INTEROP_ADAPTERS=pymodbus make interop
+make interop MODBUS_INTEROP_PYMODBUS_IMAGE=ghcr.io/otfabric/modbus-interop-pymodbus:dev
+```
+
+A change to what is sent to or accepted from a peer (framing, request validation, exception responses, FC43 paging) must keep `make interop` green. When go-modbus and a reference stack disagree, the specification decides, not the test: fix go-modbus if it is wrong, and if the other stack is, say so in a comment that names the stack and its version and keep the exception as narrow as the one request it is about. `make vet`, `make lint` and `make lint-ci` compile and lint the package (they pass `-tags=interop`); gopls needs `-tags=interop` in `buildFlags` to do the same.
+
 ### Documentation
 
 When you change **public API or behaviour**, update:
@@ -94,6 +133,7 @@ When you change **public API or behaviour**, update:
 - Doc comments on the affected symbols
 - [API.md](API.md), and [README.md](README.md) where it references the changed behaviour
 - [CODECS.md](CODECS.md), [ERRORS.md](ERRORS.md) or [OBSERVABILITY.md](OBSERVABILITY.md) where relevant
+- [INTEROPERABILITY.md](INTEROPERABILITY.md) for protocol coverage and for how the server answers a request
 - [RELEASE.md](RELEASE.md), calling out behaviour changes and anything that breaks existing callers
 
 ## Submitting Changes
@@ -129,6 +169,7 @@ internal/session/      Execute, retry and connection-pool layer
 internal/protocol/     Function codes, exceptions, response validation, probes
 internal/logging/      Logger plumbing
 cmd/modbus-cli/        Command-line client
+interop/               Tests against other Modbus stacks (build tag "interop", needs Docker)
 examples/              Runnable examples
 spec/                  Protocol reference notes
 ```

@@ -21,8 +21,11 @@ Modbus exception from the unit.
 |-----------|--------------------|
 | Bad `Config` / `ServerConfig` | `*ConfigurationError` (`errors.Is` → `ErrConfigurationError`) |
 | Invalid method arguments | `*ParameterError` (`errors.Is` → `ErrUnexpectedParameters`) |
-| Request before `Open` / after `Close` | `ErrClientNotOpen` |
-| Deadline / configured timeout | `ErrRequestTimedOut` (and/or `context` errors) |
+| Request before `Open` / after `Close`, or interrupted by `Close` | `ErrClientNotOpen` (never while the client is open) |
+| Configured timeout, or context deadline expiring in flight | `ErrRequestTimedOut` |
+| Context already cancelled or expired when the call starts | `ctx.Err()` (`context.Canceled` / `context.DeadlineExceeded`); nothing is sent |
+| Context cancelled while the request is in flight | `context.Canceled` (`errors.Is`); returns promptly |
+| Connection lost, refused or reset | stdlib error (`io.EOF`, `*net.OpError`, …); the next request reconnects |
 | Malformed / unexpected peer response | `*ProtocolError` (`errors.Is` → `ErrProtocolError`) |
 | RTU CRC / ASCII LRC / short frame | `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` |
 | Peer Modbus exception (0x01–0x0B) | `*ExceptionError` (`errors.Is` → matching `ErrIllegal…` sentinel) |
@@ -70,6 +73,16 @@ if err != nil {
 
 `ValidateConfig` / `ValidateServerConfig` run the same config checks without
 creating a client or server.
+
+## Errors and the connection
+
+On `tcp://` and `tcp+tls://` a timeout, a cancelled request, a framing or
+protocol error and a transport error all end the connection the request ran on:
+it is closed, and the next request dials a new one (a pooled connection is
+discarded). A Modbus exception does not. The client itself stays open through
+all of them; only `Close` makes it return `ErrClientNotOpen`. The serial-framed
+transports and `udp` keep their link unless it is down. See
+[API.md § 2.2](API.md#22-lifecycle).
 
 ## Retries
 

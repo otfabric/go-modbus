@@ -5,13 +5,16 @@ package modbus
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/protocol"
 	"github.com/otfabric/go-modbus/internal/session"
 	inttrans "github.com/otfabric/go-modbus/internal/transport"
 )
@@ -52,7 +55,9 @@ type Config struct {
 	// StopBits sets the number of serial stop bits (rtu and ascii only).
 	// Defaults to 2 without parity and 1 with parity.
 	StopBits uint
-	// Timeout sets the request timeout value
+	// Timeout sets the request timeout value. On tcp and tcp+tls the connection
+	// a request timed out on is closed and the next request dials a new one: the
+	// late response must not be taken for the answer to a later request.
 	Timeout time.Duration
 	// DialTimeout sets the maximum time for establishing a connection (TCP dial,
 	// TLS handshake, UDP dial). Zero uses a sensible default (5s for TCP/UDP,
@@ -75,6 +80,9 @@ type Config struct {
 	// Use ExponentialBackoff or NewExponentialBackoff to configure automatic retries.
 	// On retry the client closes and re-dials the transport before each attempt;
 	// when a connection pool is configured only the failed connection is replaced.
+	// With or without a RetryPolicy, a client that is open stays open: a
+	// connection that is lost or no longer trustworthy is replaced by the next
+	// request (see Open).
 	// Retries apply to reads and writes alike; after bytes may have been sent,
 	// a retry can deliver a write at least once (see API.md § 7).
 	RetryPolicy RetryPolicy
@@ -348,6 +356,12 @@ func ValidateConfig(conf Config) error {
 //
 // Open is idempotent: calling it on an already-open client is a no-op and returns nil.
 // A client can be re-opened after Close to establish a new connection.
+//
+// Once Open has succeeded the client stays open until Close: no request fails
+// with ErrClientNotOpen in between. When the client has no usable connection
+// (the peer closed it, or it was dropped after an error that may have left it
+// out of sync, see Config.Timeout) the next request dials a new one; if that
+// fails, the request fails with the dial error and the one after it tries again.
 func (mc *Client) Open() (err error) {
 	mc.lock.Lock()
 	if mc.state.engine != nil {
@@ -371,6 +385,8 @@ func (mc *Client) Open() (err error) {
 		Retry:    mc.conf.RetryPolicy,
 		Logger:   mc.conf.Logger,
 		Attempts: obs,
+		Broken:   mc.brokenBy(),
+		Suspect:  mc.suspectResponse(),
 	})
 
 	if err = eng.Open(); err != nil {
@@ -385,6 +401,75 @@ func (mc *Client) Open() (err error) {
 	}
 	mc.state.engine = eng
 	return
+}
+
+// brokenBy returns the rule that decides, for this client's transport, whether
+// an error leaves the single connection unusable (see session.Config.Broken).
+//
+// On a Modbus/TCP stream (tcp, tcp+tls) every error does: after a timeout, a
+// short read or a framing error the stream may hold the rest of an old frame,
+// and a later request could be answered with it. The connection is closed and
+// the next request dials a new one.
+//
+// The serial-framed transports (rtu, ascii, and their TCP/UDP tunnels) keep their
+// link across timeouts and bad frames (a unit that does not answer is routine on
+// a bus, and these transports resynchronize on the next request), as does
+// Modbus/TCP over UDP, where datagrams keep requests apart. They are replaced
+// only when the link itself is down.
+func (mc *Client) brokenBy() func(error) bool {
+	switch mc.transportType {
+	case modbusTCP, modbusTCPOverTLS:
+		return nil
+	default:
+		return linkDown
+	}
+}
+
+// linkDown reports whether err says that the link is gone, as opposed to a
+// request that timed out or a response that was damaged.
+func linkDown(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) || errors.Is(err, ErrSerialPortNotOpen) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && !netErr.Timeout()
+}
+
+// suspectResponse returns the check applied to every response received on a
+// Modbus/TCP stream (see session.Config.Suspect), nil for other transports.
+func (mc *Client) suspectResponse() func(*adu.Request, *adu.Response) bool {
+	switch mc.transportType {
+	case modbusTCP, modbusTCPOverTLS:
+		return mbapResponseOutOfSync
+	default:
+		return nil
+	}
+}
+
+// mbapResponseOutOfSync reports whether res, received as the answer to req on a
+// Modbus/TCP stream, shows that the stream can no longer be trusted: it comes
+// from another unit or answers another function, or its length disagrees with
+// what its own content announces (a frame cut short or run together with the
+// next one). The caller still gets the response and reports the protocol error;
+// the connection is just not used again.
+func mbapResponseOutOfSync(req *adu.Request, res *adu.Response) bool {
+	if res.UnitID != req.UnitID {
+		return true
+	}
+	if res.FunctionCode == req.FunctionCode|0x80 {
+		return len(res.Payload) != 1
+	}
+	if res.FunctionCode != req.FunctionCode || len(res.Payload) == 0 {
+		return true
+	}
+	// The same table tells the RTU transport how long a response is.
+	n, err := protocol.ExpectedRTUResponseLength(protocol.FunctionCode(res.FunctionCode), res.Payload[0])
+	if err != nil || n < 0 {
+		// Unknown or variable-length function: nothing to compare with.
+		return false
+	}
+	return len(res.Payload) != 1+n
 }
 
 func (mc *Client) dialTimeout() time.Duration {
@@ -514,10 +599,11 @@ func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.R
 // Close closes the underlying transport (or connection pool).
 // It is safe to call Close multiple times; subsequent calls are no-ops.
 //
-// If requests are in flight when Close is called, they may fail with a
-// transport error. There is no graceful drain — the underlying connections
-// are closed immediately. After Close returns, the client can be re-opened
-// by calling Open again.
+// There is no graceful drain: every connection is closed immediately, including
+// the ones requests are running on. Requests in flight, callers waiting for a
+// connection and requests waiting between two retry attempts return promptly
+// with ErrClientNotOpen. After Close returns, the client can be re-opened by
+// calling Open again.
 func (mc *Client) Close() (err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()

@@ -10,16 +10,19 @@ import (
 	"errors"
 	"net"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
 	inttrans "github.com/otfabric/go-modbus/internal/transport"
 )
 
-// Accepts new client connections if the configured connection limit allows it.
-func (ms *Server) acceptTCPClients() {
+// acceptTCPClients accepts new client connections for one Start..Stop cycle, as
+// long as the configured connection limit allows it.
+func (ms *Server) acceptTCPClients(run *serverRun) {
+	defer run.wg.Done()
 	for {
-		sock, err := ms.tcpListener.Accept()
+		sock, err := run.listener.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -30,17 +33,18 @@ func (ms *Server) acceptTCPClients() {
 
 		accepted := false
 		ms.lock.Lock()
-		if ms.started && uint(len(ms.tcpClients)) < ms.conf.MaxClients {
+		// ms.run != run once the server has been stopped (and maybe started again).
+		if ms.started && ms.run == run && uint(len(ms.tcpClients)) < ms.conf.MaxClients {
 			ms.tcpClients = append(ms.tcpClients, sock)
 			accepted = true
 			// Registered under the lock: Shutdown clears started under the same lock before
 			// it waits, so this Add can never run concurrently with its Wait.
-			ms.wg.Add(1)
+			run.wg.Add(1)
 		}
 		ms.lock.Unlock()
 
 		if accepted {
-			go ms.handleTCPClient(sock)
+			go ms.handleTCPClient(run, sock)
 		} else {
 			ms.logger.Warningf("max. number of concurrent connections "+
 				"reached, rejecting %v", sock.RemoteAddr())
@@ -50,12 +54,12 @@ func (ms *Server) acceptTCPClients() {
 }
 
 // handleTCPClient handles a single TCP client connection. A per-connection
-// context is derived from the server's stopCtx and cancelled when this
-// function returns (client disconnect or server stop).
-func (ms *Server) handleTCPClient(sock net.Conn) {
-	defer ms.wg.Done()
+// context is derived from the run's stop context and cancelled when the client
+// disconnects, when the server stops, and when this function returns.
+func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
+	defer run.wg.Done()
 
-	connCtx, connCancel := context.WithCancel(ms.stopCtx)
+	connCtx, connCancel := context.WithCancel(run.ctx)
 	defer connCancel()
 
 	var err error
@@ -66,7 +70,7 @@ func (ms *Server) handleTCPClient(sock net.Conn) {
 
 	switch ms.transportType {
 	case modbusTCP:
-		ms.handleTransport(connCtx,
+		ms.serveConn(connCtx, connCancel,
 			newTCPTransport(sock, ms.conf.Timeout, ms.conf.Logger),
 			sock.RemoteAddr().String(), "")
 
@@ -86,7 +90,7 @@ func (ms *Server) handleTCPClient(sock net.Conn) {
 			}
 			ms.lock.Unlock()
 
-			ms.handleTransport(connCtx,
+			ms.serveConn(connCtx, connCancel,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
 		}
@@ -108,57 +112,160 @@ func (ms *Server) handleTCPClient(sock net.Conn) {
 	_ = effectiveConn.Close()
 }
 
+// serverPipelineDepth is the number of requests a client may have sent ahead of
+// the one being served before the server stops reading from its socket.
+const serverPipelineDepth = 16
+
+// serveConn serves one Modbus/TCP connection.
+//
+// Requests are read by a goroutine of their own and handed, in order, to the
+// loop below, which dispatches them one at a time and writes the responses. The
+// reader keeps watching the socket while a handler runs, which is how a client
+// that disconnects is noticed: the read fails and connCtx, which the handlers
+// receive, is cancelled. (A client that only shuts down its sending side cannot
+// be told apart from one that left, and has the same effect.) Requests that were
+// already read are still served, in order.
+//
+// ServerConfig.Timeout is an idle timeout: it limits how long the server waits
+// for (the rest of) a request while it has none to answer. The read deadline is
+// therefore armed only while no request is being served; a slow handler does
+// not time out its own connection. Each response is written under a deadline of
+// its own (see inttrans.TCP.WriteFrame).
+func (ms *Server) serveConn(connCtx context.Context, connCancel context.CancelFunc, t *inttrans.TCP, clientAddr, clientRole string) {
+	type inbound struct {
+		req   *adu.Request
+		txnID uint16
+	}
+	queue := make(chan inbound, serverPipelineDepth)
+	quit := make(chan struct{})
+	readerDone := make(chan struct{})
+
+	// pending counts the requests read and not yet answered. It and the read
+	// deadline change together, under mu.
+	var mu sync.Mutex
+	pending := 0
+	_ = t.SetReadDeadline(time.Now().Add(ms.conf.Timeout))
+
+	go func() {
+		defer close(readerDone)
+		defer close(queue)
+		for {
+			req, txnID, err := t.ReadFrame()
+			if err != nil {
+				// Disconnected, idle for too long, or not speaking Modbus/TCP.
+				connCancel()
+				return
+			}
+			mu.Lock()
+			pending++
+			_ = t.SetReadDeadline(time.Time{})
+			mu.Unlock()
+			select {
+			case queue <- inbound{req: req, txnID: txnID}:
+			case <-quit:
+				return
+			}
+		}
+	}()
+
+	for in := range queue {
+		res, closeLink := ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
+		if closeLink {
+			break
+		}
+		if writeErr := t.WriteFrame(in.txnID, res); writeErr != nil {
+			ms.logger.Warningf("failed to write response: %v", writeErr)
+		}
+		mu.Lock()
+		pending--
+		if pending == 0 {
+			_ = t.SetReadDeadline(time.Now().Add(ms.conf.Timeout))
+		}
+		mu.Unlock()
+	}
+
+	// Closing the socket ends the reader if it is still reading; quit ends it if
+	// it is waiting to hand over a request.
+	close(quit)
+	_ = t.Close()
+	<-readerDone
+}
+
+// serverTransport is what handleTransport needs from a transport.
+type serverTransport interface {
+	ReadRequest() (*adu.Request, uint16, error)
+	WriteResponse(res *adu.Response) error
+	Close() error
+}
+
 // handleTransport reads requests from the transport, dispatches them to the
-// appropriate handler, and writes responses. The connCtx is cancelled when the
-// client disconnects or the server stops; handlers observe it for cooperative
-// cancellation.
-func (ms *Server) handleTransport(connCtx context.Context, t inttrans.Transport, clientAddr string, clientRole string) {
+// appropriate handler, and writes responses, strictly one after the other. It
+// is the serving loop for a transport that cannot be read while a response is
+// pending. TCP and TLS connections, the only ones the server accepts today, are
+// served by serveConn; the unit tests drive the dispatch logic through this loop.
+func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, clientAddr string, clientRole string) {
 	for {
 		req, txnID, err := t.ReadRequest()
 		if err != nil {
 			return
 		}
-
-		var reqStart time.Time
-		if ms.metrics != nil {
-			ms.metrics.OnRequest(req.UnitID, FunctionCode(req.FunctionCode))
-			reqStart = time.Now()
+		res, closeLink := ms.serveRequest(connCtx, req, txnID, clientAddr, clientRole)
+		if closeLink {
+			_ = t.Close()
+			return
 		}
-
-		res, err := ms.safeDispatch(connCtx, req, txnID, clientAddr, clientRole)
-
-		if err == nil && res == nil {
-			err = ErrServerDeviceFailure
-			ms.logger.Errorf("internal server error (req: %v, res: %v, err: %v)", req, res, err)
-		}
-
-		if err != nil {
-			if err == ErrProtocolError {
-				ms.logger.Warningf("protocol error, closing link (client address: '%s')", clientAddr)
-				if ms.metrics != nil {
-					ms.metrics.OnError(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart), err)
-				}
-				_ = t.Close()
-				return
-			}
-
-			if ms.metrics != nil {
-				ms.metrics.OnError(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart), err)
-			}
-			res = &adu.Response{
-				UnitID:        req.UnitID,
-				FunctionCode:  req.FunctionCode | 0x80,
-				Payload:       []byte{byte(mapErrorToExceptionCode(err))},
-				TransactionID: txnID,
-			}
-		} else if ms.metrics != nil {
-			ms.metrics.OnResponse(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart))
-		}
-
 		if writeErr := t.WriteResponse(res); writeErr != nil {
 			ms.logger.Warningf("failed to write response: %v", writeErr)
 		}
 	}
+}
+
+// serveRequest dispatches one request and returns the response to send.
+// closeLink is true when the request violates the protocol: nothing is sent and
+// the connection must be closed.
+func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (res *adu.Response, closeLink bool) {
+	var reqStart time.Time
+	if ms.metrics != nil {
+		ms.metrics.OnRequest(req.UnitID, FunctionCode(req.FunctionCode))
+		reqStart = time.Now()
+	}
+
+	res, err := ms.safeDispatch(ctx, req, txnID, clientAddr, clientRole)
+
+	if err == nil && res == nil {
+		err = ErrServerDeviceFailure
+		ms.logger.Errorf("internal server error (req: %v, res: %v, err: %v)", req, res, err)
+	}
+	// A response that does not fit in a frame cannot be sent: the handler returned
+	// more data than the function code can carry.
+	if err == nil && len(res.Payload)+2 > adu.MBAPLengthMax {
+		ms.logger.Errorf("response to FC 0x%02x from %s is %d bytes long, the maximum is %d: answering with Server Device Failure",
+			req.FunctionCode, clientAddr, len(res.Payload)+1, adu.MBAPLengthMax-1)
+		err = ErrServerDeviceFailure
+	}
+
+	if err != nil {
+		if err == ErrProtocolError {
+			ms.logger.Warningf("protocol error, closing link (client address: '%s')", clientAddr)
+			if ms.metrics != nil {
+				ms.metrics.OnError(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart), err)
+			}
+			return nil, true
+		}
+
+		if ms.metrics != nil {
+			ms.metrics.OnError(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart), err)
+		}
+		res = &adu.Response{
+			UnitID:        req.UnitID,
+			FunctionCode:  req.FunctionCode | 0x80,
+			Payload:       []byte{byte(mapErrorToExceptionCode(err))},
+			TransactionID: txnID,
+		}
+	} else if ms.metrics != nil {
+		ms.metrics.OnResponse(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart))
+	}
+	return res, false
 }
 
 // safeDispatch wraps dispatchRequest with panic recovery so that a handler
@@ -203,12 +310,9 @@ func (ms *Server) dispatchRequest(ctx context.Context, req *adu.Request, txnID u
 	case FCEncapsulatedInterface:
 		return ms.handleReadDeviceIdentification(ctx, req, txnID, clientAddr, clientRole)
 	default:
-		return &adu.Response{
-			UnitID:        req.UnitID,
-			FunctionCode:  req.FunctionCode | 0x80,
-			Payload:       []byte{byte(exIllegalFunction)},
-			TransactionID: txnID,
-		}, nil
+		// Reported like an optional handler that is not implemented: the client gets
+		// an Illegal Function exception, ServerMetrics an OnError.
+		return nil, ErrIllegalFunction
 	}
 }
 
@@ -239,6 +343,9 @@ func (ms *Server) startTLS(tcpSock net.Conn) (
 		return
 	}
 	clientRole = ms.extractRole(connState.PeerCertificates[0])
+
+	// The handshake deadline must not outlive the handshake.
+	err = tlsSock.SetDeadline(time.Time{})
 
 	return
 }

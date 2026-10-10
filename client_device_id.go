@@ -94,10 +94,15 @@ func objectDescription(id DeviceIDObjectID) string {
 // access; for Individual, pass the desired object ID). The device responds at its
 // conformity level if a higher category is requested.
 //
-// Pagination is bounded to 32 round-trips as a safety cap to prevent runaway
-// loops when a device incorrectly keeps setting MoreFollows.
+// Pagination follows MoreFollows until the device is done. A device that sends
+// the reader back to an object ID it already continued from is reported as a
+// protocol error; since every response of a valid device continues from a new
+// one of the 256 object IDs, no valid device needs more than 256 round-trips.
 func (mc *Client) ReadDeviceIdentification(ctx context.Context, unitID uint8, category DeviceIDCategory, startObject DeviceIDObjectID) (di *DeviceIdentification, err error) {
-	const maxPages = 32
+	// One page per object ID at most (see above).
+	const maxPages = 256
+	// requested marks the object IDs a request has already started from.
+	var requested [256]bool
 
 	var req *adu.Request
 	var res *adu.Response
@@ -128,6 +133,7 @@ func (mc *Client) ReadDeviceIdentification(ctx context.Context, unitID uint8, ca
 	defer func() { reportOutcome(m, unitID, FCEncapsulatedInterface, start, err) }()
 
 	for page := 0; page < maxPages; page++ {
+		requested[nextObjID] = true
 		req = &adu.Request{
 			UnitID:       unitID,
 			FunctionCode: byte(FCEncapsulatedInterface),
@@ -240,7 +246,7 @@ func (mc *Client) ReadDeviceIdentification(ctx context.Context, unitID uint8, ca
 				return
 			}
 			newNextObjID := DeviceIDObjectID(res.Payload[4])
-			if newNextObjID == nextObjID {
+			if requested[newNextObjID] {
 				err = newProtocolError("ReadDeviceIdentification",
 					fmt.Sprintf("pagination stuck: NextObjectID not advancing (0x%02X)", uint8(newNextObjID)))
 				return

@@ -83,7 +83,8 @@ type Config struct {
     StopBits uint
 
     // Timeout is the per-request I/O deadline. If 0, a sensible default is applied:
-    // 300 ms for RTU, 1 s for all TCP/UDP modes.
+    // 300 ms for RTU, 1 s for all TCP/UDP modes. On tcp and tcp+tls the connection a
+    // request timed out on is closed; the next request dials a new one (see 2.2).
     Timeout time.Duration
 
     // DialTimeout is the maximum time to establish a connection (TCP dial, TLS
@@ -159,8 +160,32 @@ connection. It returns typed `*ConfigurationError` values on failure.
 for CLIs and config-driven systems. `NewConfig` builds a `Config` from grouped
 sub-configurations — a convenience alternative to the flat struct literal.
 Call `Open` to establish the transport. `Open` is idempotent — calling it on an
-already-open client is a no-op. `Close` closes all connections (or drains the
-pool when `MaxConns > 1`).
+already-open client is a no-op. `Close` closes all connections, including the
+ones requests are running on: requests in flight, callers waiting for a
+connection and requests sleeping between two retry attempts return promptly with
+`ErrClientNotOpen`.
+
+**An open client stays open.** Between `Open` and `Close` a request never fails
+with `ErrClientNotOpen`. When the client has no usable connection, the next
+request dials one, with or without a `RetryPolicy`; if that dial fails, the
+request fails with the dial error and the request after it tries again.
+
+**When a connection is replaced.** On `tcp://` and `tcp+tls://` a connection is
+never reused after an error that can leave it in the middle of a frame or out of
+step with the server: a timeout (including an expired or cancelled context), a
+short read, a framing or protocol error (bad MBAP header, wrong unit ID or
+function code, a length that contradicts the response), or a transport error.
+The connection is closed and the next request runs on a new one. Reusing it
+could deliver the rest of an old response as the answer to a new request. A
+well-formed Modbus exception response does not affect the connection. The
+serial-framed transports (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`,
+`asciiovertcp`) and `udp` keep their link across timeouts and bad frames — a
+unit that does not answer is routine on a bus — and replace it only when the
+link itself is down (EOF, reset, closed). A pooled connection (`MaxConns > 1`)
+is discarded after any error.
+
+Without a `RetryPolicy` the request that hit the error still fails; it is the
+*following* request that runs on the new connection.
 
 **Config auto-correction:** `MaxConns > 1` on non-poolable transports (serial RTU/ASCII, TCP+TLS)
 is silently clamped to 1 with a warning log message.
@@ -219,7 +244,12 @@ func (mc *Client) <Method>(ctx context.Context, unitID uint8, addr uint16, ...) 
 ```
 
 `ctx` propagates cancellation and deadlines. If the context carries a deadline it
-overrides the configured `Timeout`. `unitID` is the Modbus slave/unit ID (1–247;
+overrides the configured `Timeout`. A context that is already cancelled or
+expired fails the call with `ctx.Err()` before anything is sent. Cancelling the
+context while the request is in flight makes the call return promptly with an
+error for which `errors.Is(err, context.Canceled)` is true; an expiring deadline
+is reported as `ErrRequestTimedOut`. Either way the request may already have
+reached the device. `unitID` is the Modbus slave/unit ID (1–247;
 255 is broadcast).
 
 #### Coils and discrete inputs
@@ -698,7 +728,18 @@ type ProbeResult struct {
 
 Transport-level **read-only** SunSpec discovery helpers live in the `sunspec` subpackage (`import "github.com/otfabric/go-modbus/sunspec"`). They detect the SunSpec "SunS" marker, probe candidate base addresses, and enumerate the model chain (model ID and length only). These APIs do not modify device state and do **not** implement point decoding, scale factors, or schema-driven parsing; that belongs in a higher-level SunSpec library.
 
-See the `sunspec` package documentation for the full API (`sunspec.DetectSunSpec`, `sunspec.ReadSunSpecModelHeaders`, `sunspec.DiscoverSunSpec`).
+See the `sunspec` package documentation for the full API: `sunspec.Detect`, `sunspec.ReadModelHeaders` and `sunspec.Discover`. They read through the one-method `sunspec.Reader` interface, which `*modbus.Client` satisfies through a small adapter (as in `examples/sunspec_detect`):
+
+```go
+// reader adapts *modbus.Client to sunspec.Reader.
+type reader struct{ client *modbus.Client }
+
+func (r reader) ReadRawBytes(ctx context.Context, unitID uint8, addr, byteCount uint16, regType sunspec.RegType) ([]byte, error) {
+    return r.client.ReadRegisterBytes(ctx, unitID, addr, byteCount, regType)
+}
+
+result, err := sunspec.Discover(ctx, reader{client}, &sunspec.Options{UnitID: 1, RegType: sunspec.HoldingRegister})
+```
 
 ---
 
@@ -925,8 +966,10 @@ type ServerConfig struct {
     // URL defines where to listen. e.g. "tcp://[::]:502", "tcp+tls://[::]:802"
     URL string
 
-    // Timeout is the idle session timeout. Connections idle for longer are closed.
-    // Default: 120 s.
+    // Timeout is the idle session timeout: a connection on which no complete
+    // request arrives for this long, while none is being served, is closed.
+    // It does not limit how long a handler may run. Each response is written
+    // under a separate deadline of the same duration. Default: 120 s.
     Timeout time.Duration
 
     // MaxClients limits concurrent client connections. Default: 10.
@@ -965,16 +1008,25 @@ func (ms *Server) Stop() error
 `NewServer` validates the configuration and handler (handler must be non-nil).
 `ValidateServerConfig` runs the same validation without creating a server.
 `Start` binds the listener and begins accepting connections. `Shutdown(ctx)` stops
-accepting, cancels per-connection contexts, closes sockets, and blocks until all
-handler goroutines exit or `ctx` expires (returning `ctx.Err()`). `Stop()` is
-equivalent to `Shutdown(context.Background())` — it blocks indefinitely.
+accepting, cancels per-connection contexts, closes sockets, and blocks until the
+accept loop and all handler goroutines exit or `ctx` expires (returning
+`ctx.Err()`). `Stop()` is equivalent to `Shutdown(context.Background())` — it
+blocks indefinitely. A stopped server can be started again with `Start`.
 
-**Supported function codes:** The server currently handles the following 8 FCs:
-FC01 (Read Coils), FC02 (Read Discrete Inputs), FC03 (Read Holding Registers),
-FC04 (Read Input Registers), FC05 (Write Single Coil), FC06 (Write Single Register),
-FC15 (Write Multiple Coils), FC16 (Write Multiple Registers). Any other FC receives
-an `Illegal Function` exception response. Advanced FCs (FC08, FC20/21, FC22, FC23,
-FC24, FC43) are not supported on the server side.
+**Responses that do not fit.** If a handler returns more data than one Modbus
+frame can carry (for example an FC43 object longer than 244 bytes, or an FC0C
+event log of several hundred events), the server logs an error and answers with a
+`ServerDeviceFailure` exception instead of sending an invalid frame.
+
+**Supported function codes:** The server handles FC01 (Read Coils), FC02 (Read
+Discrete Inputs), FC03 (Read Holding Registers), FC04 (Read Input Registers),
+FC05 (Write Single Coil), FC06 (Write Single Register), FC15 (Write Multiple
+Coils), FC16 (Write Multiple Registers), FC22 (Mask Write Register), FC23
+(Read/Write Multiple Registers), FC07 (Read Exception Status), FC11 (Get Comm
+Event Counter), FC12 (Get Comm Event Log) and FC43/14 (Read Device
+Identification). The function codes beyond the first eight are served when the
+handler implements the corresponding optional interface; otherwise, and for any
+other function code, the client receives an `Illegal Function` exception.
 
 **Panic recovery:** Handler panics are caught by the server. A panic in any handler
 method results in a `ServerDeviceFailure` exception response and a log entry; the
@@ -1011,6 +1063,13 @@ different client goroutines. Implementations must be safe for concurrent use
 
 A panic inside any handler method is recovered and logged with a full stack
 trace; the client receives a `ServerDeviceFailure` exception response.
+
+The `ctx` passed to a handler is cancelled when the server stops and when the
+client disconnects, including while the handler is running: the server keeps
+reading the connection during a handler call. (A client that only shuts down
+its sending side cannot be told apart from one that left, and has the same
+effect.) Requests a client pipelined before disconnecting are still dispatched,
+in order.
 
 ```go
 type RequestHandler interface {
@@ -1569,6 +1628,11 @@ type ServerMetrics interface {
 }
 ```
 
+A request the server answers with an exception of its own is an `OnError` too:
+a function code it does not serve (`ErrIllegalFunction`, whether the code is
+unknown or its optional handler is not implemented) and a response too large
+for one frame (`ErrServerDeviceFailure`).
+
 ### Example — Prometheus-style counters
 
 ```go
@@ -1673,9 +1737,14 @@ retried unless `RetryOnTimeout` is explicitly enabled.
 
 On each retry the client automatically:
 1. Closes the failed connection.
-2. Sleeps for the policy-specified delay, releasing the lock so other goroutines
-   are not blocked.
-3. Dials a fresh connection before the next attempt.
+2. Sleeps for the policy-specified delay. `Close` and the cancellation of the
+   request's context end the wait at once.
+3. Dials a fresh connection before the next attempt. If that dial fails, the
+   request fails with the error of its last attempt joined with the dial error;
+   the client stays open and the next request dials again.
+
+On a single connection other goroutines wait for their turn while a request is
+being retried; they are never refused with `ErrClientNotOpen`.
 
 When a connection pool is active (`MaxConns > 1`), a retry may use a different
 underlying TCP connection. Metrics are request-level, not per-attempt — retries
@@ -1700,11 +1769,12 @@ client.Open()
 - Applies to all network transports except TLS (`tcp`, `udp`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`).
 - Serial (`rtu`, `ascii`) always uses a single connection; pooling is silently ignored.
 - When the pool is at capacity and all connections are in use, goroutines block
-  until one is returned, until the context is cancelled, or until the pool is closed.
-- Failed connections are discarded; the pool dials replacements lazily on the next
-  `acquire` call.
-- `Close()` drains and closes all idle pool connections and wakes any goroutines
-  blocked waiting for an idle connection.
+  until one is returned or discarded, until the context is cancelled, or until the
+  pool is closed.
+- Failed connections are discarded; a goroutine waiting for a connection, or the
+  next request, dials the replacement.
+- `Close()` closes all pool connections, idle and in use, and wakes any goroutines
+  blocked waiting for a connection; requests in flight return `ErrClientNotOpen`.
 
 ---
 
@@ -1778,18 +1848,18 @@ inspecting `ExceptionError` or implementing metrics.
 
 ### SunSpec constants
 
-Exported constants for SunSpec marker detection, end-of-chain detection, and default probe addresses. These allow callers that process raw register data (e.g. strategies parsing `ScanResult.Data`) to use the canonical values without duplication.
+The `sunspec` subpackage exports the constants for SunSpec marker detection, end-of-chain detection, and default probe addresses. These allow callers that process raw register data to use the canonical values without duplication.
 
 | Constant | Type | Value | Description |
 |---|---|---|---|
-| `SunSpecMarkerReg0` | `uint16` | `0x5375` | First register of "SunS" marker (`'S'<<8 \| 'u'`) |
-| `SunSpecMarkerReg1` | `uint16` | `0x6E53` | Second register of "SunS" marker (`'n'<<8 \| 'S'`) |
-| `SunSpecEndModelID` | `uint16` | `0xFFFF` | Model ID indicating end of SunSpec model chain |
-| `SunSpecEndModelLength` | `uint16` | `0` | Model length for end-of-chain sentinel |
+| `sunspec.MarkerReg0` | `uint16` | `0x5375` | First register of "SunS" marker (`'S'<<8 \| 'u'`) |
+| `sunspec.MarkerReg1` | `uint16` | `0x6E53` | Second register of "SunS" marker (`'n'<<8 \| 'S'`) |
+| `sunspec.EndModelID` | `uint16` | `0xFFFF` | Model ID indicating end of SunSpec model chain |
+| `sunspec.EndModelLength` | `uint16` | `0` | Model length for end-of-chain sentinel |
 
 | Variable | Type | Value | Description |
 |---|---|---|---|
-| `SunSpecDefaultBaseAddresses` | `[]uint16` | `{0, 40000, 50000, 1, 39999, 40001, 49999, 50001}` | Default candidate base addresses for SunSpec probe |
+| `sunspec.DefaultBaseAddresses` | `[]uint16` | `{0, 40000, 50000, 1, 39999, 40001, 49999, 50001}` | Default candidate base addresses for SunSpec probe |
 
 ---
 

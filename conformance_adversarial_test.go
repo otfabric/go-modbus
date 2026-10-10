@@ -90,14 +90,14 @@ func TestB2B_Adversarial_ServerBranches(t *testing.T) {
 		{"FC05 wrong length", refUnitID, 0x05, []byte{0, 0, 0xff}, true, 0},
 		{"FC06 wrong length", refUnitID, 0x06, []byte{0, 0, 0}, true, 0},
 		{"FC15 too short", refUnitID, 0x0f, []byte{0, 0, 0, 1, 1}, true, 0},
-		{"FC15 byte-count mismatch", refUnitID, 0x0f, []byte{0, 0, 0, 8, 0x02, 0xff}, true, 0},
+		{"FC15 without byte count", refUnitID, 0x0f, []byte{0, 0, 0, 1}, true, 0},
 		{"FC15 data-length mismatch", refUnitID, 0x0f, []byte{0, 0, 0, 16, 0x02, 0xff}, true, 0},
 		{"FC16 too short", refUnitID, 0x10, []byte{0, 0, 0, 1, 2}, true, 0},
-		{"FC16 byte-count mismatch", refUnitID, 0x10, []byte{0, 0, 0, 1, 0x04, 0x00, 0x01}, true, 0},
+		{"FC16 without byte count", refUnitID, 0x10, []byte{0, 0, 0, 1}, true, 0},
 		{"FC16 data-length mismatch", refUnitID, 0x10, []byte{0, 0, 0, 2, 0x04, 0x00, 0x01, 0x00}, true, 0},
 		{"FC22 wrong length", refUnitID, 0x16, []byte{0, 0, 0, 0, 0}, true, 0},
 		{"FC23 too short", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1, 2}, true, 0},
-		{"FC23 byte-count mismatch", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1, 0x04, 0x00, 0x01}, true, 0},
+		{"FC23 without byte count", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1}, true, 0},
 		{"FC43 short payload", refUnitID, 0x2b, []byte{0x0e, 0x01}, true, 0},
 
 		// --- Semantic errors: server returns a Modbus exception ---
@@ -109,6 +109,24 @@ func TestB2B_Adversarial_ServerBranches(t *testing.T) {
 		{"FC05 invalid value", refUnitID, 0x05, []byte{0, 0, 0x01, 0x00}, false, exIllegalDataValue},
 		{"FC15 quantity zero", refUnitID, 0x0f, []byte{0, 0, 0, 0, 0, 0}, false, exIllegalDataValue},
 		{"FC16 quantity zero", refUnitID, 0x10, []byte{0, 0, 0, 0, 0, 0}, false, exIllegalDataValue},
+		// A byte count that is not the one the quantity asks for is an illegal
+		// data value (Modbus Application Protocol V1.1b3, figures 21, 22 and
+		// 27), also when the data does not have that length either, and it
+		// is checked before the address. Only a request whose byte count is
+		// right and whose data is not is a framing error (above).
+		{"FC15 byte-count mismatch", refUnitID, 0x0f, []byte{0, 0, 0, 8, 0x02, 0xff}, false, exIllegalDataValue},
+		{"FC15 byte count too large, data to match", refUnitID, 0x0f, []byte{0, 0, 0, 8, 0x02, 0xff, 0xff}, false, exIllegalDataValue},
+		{"FC15 byte count too small, data to match", refUnitID, 0x0f, []byte{0, 0, 0, 9, 0x01, 0xff}, false, exIllegalDataValue},
+		{"FC15 byte-count mismatch, addr overflow", refUnitID, 0x0f, []byte{0xff, 0xff, 0, 9, 0x01, 0xff}, false, exIllegalDataValue},
+		{"FC15 quantity zero, no data", refUnitID, 0x0f, []byte{0, 0, 0, 0, 0}, false, exIllegalDataValue},
+		{"FC16 byte-count mismatch", refUnitID, 0x10, []byte{0, 0, 0, 1, 0x04, 0x00, 0x01}, false, exIllegalDataValue},
+		{"FC16 byte count too large, data to match", refUnitID, 0x10, []byte{0, 0, 0, 1, 0x04, 0x00, 0x01, 0x00, 0x02}, false, exIllegalDataValue},
+		{"FC16 byte count too small, data to match", refUnitID, 0x10, []byte{0, 0, 0, 2, 0x02, 0x00, 0x01}, false, exIllegalDataValue},
+		{"FC16 byte-count mismatch, addr overflow", refUnitID, 0x10, []byte{0xff, 0xff, 0, 2, 0x02, 0x00, 0x01}, false, exIllegalDataValue},
+		{"FC16 quantity zero, no data", refUnitID, 0x10, []byte{0, 0, 0, 0, 0}, false, exIllegalDataValue},
+		{"FC23 byte-count mismatch", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1, 0x04, 0x00, 0x01}, false, exIllegalDataValue},
+		{"FC23 byte count too large, data to match", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1, 0x04, 0x00, 0x01, 0x00, 0x02}, false, exIllegalDataValue},
+		{"FC23 write quantity zero, no data", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 0, 0}, false, exIllegalDataValue},
 		{"FC22 addr out of range", refUnitID, 0x16, []byte{0x0f, 0xff, 0, 0, 0, 0}, false, exIllegalDataAddress},
 		{"FC23 readQty zero", refUnitID, 0x17, []byte{0, 0, 0, 0, 0, 0, 0, 1, 0x02, 0x00, 0x01}, false, exIllegalDataValue},
 		{"FC43 illegal category", refUnitID, 0x2b, []byte{0x0e, 0x05, 0x00}, false, exIllegalDataValue},

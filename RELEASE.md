@@ -1,5 +1,71 @@
 # go-modbus Releases
 
+## v1.3.0
+
+**Date:** 2026-10-10
+**Previous release:** v1.2.1
+
+## Summary
+
+A robustness release. New end-to-end, chaos (fault-injecting proxy) and stress test suites exposed defects in how the client and the server behave when things go wrong: timeouts, lost or stalled connections, cancellation, shutdown, restarts. All of them are fixed. No exported identifier was removed or changed, but several fixes change behaviour a caller can observe; they are listed under **Behaviour changes**. The most important one: a Modbus/TCP client could return the tail of an earlier, timed-out response as the data of a later request.
+
+## Changes
+
+### Behaviour changes
+
+- **A Modbus/TCP connection is closed after a timeout or a framing error.** On `tcp://` and `tcp+tls://` a connection is never reused after an error that can leave it in the middle of a frame or out of step with the server: a timeout (configured `Timeout`, context deadline, cancellation), a short read, an invalid MBAP header, a response from the wrong unit or for the wrong function, a response whose length contradicts its content, or a transport error. The next request runs on a new connection (visible as a new TCP connection on the server, and as the transaction ID restarting at 1). A well-formed exception response does not close the connection. Serial-framed transports (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`) and `udp` keep their link across timeouts and bad frames, as before, and now replace it when the link itself is down (EOF, reset).
+- **An open client stays open and reconnects by itself.** Between `Open` and `Close` no request returns `ErrClientNotOpen`. When the client has no usable connection the next request dials one — also without a `RetryPolicy`, where a client used to keep a dead connection until it was closed and opened again. The request that hits a dead connection still fails (unless a `RetryPolicy` retries it); the following one succeeds on a new connection. A failed dial fails that request only.
+- **Context cancellation is honoured in flight.** Cancelling a request's context returns promptly with `context.Canceled` (it used to return when `Timeout` expired, as `ErrRequestTimedOut`). A context that is already cancelled or expired when the call starts returns `ctx.Err()` without sending anything (the request used to be sent, and could succeed). An expiring deadline is still `ErrRequestTimedOut`. A caller waiting for its turn on a single connection now gives up when its context ends.
+- **`Close` interrupts requests.** `Client.Close` closes the connections requests are running on, also in a pool, and ends the wait between two retry attempts: those requests return promptly with `ErrClientNotOpen` (pooled requests used to run until their timeout, and could report a private "connection pool is closed" error).
+- **`AttemptMetrics.OnRetryDial`** is also called, with attempt 0, when a request re-dials because the client had no usable connection. A failed re-dial ends that request, as before; the difference is that the next request dials again.
+- **`ServerConfig.Timeout` is an idle timeout only.** It limits how long the server waits for a request while it has none to serve. It no longer cuts off the response of a handler that runs longer than `Timeout`; each response is written under its own deadline.
+- **Handler contexts are cancelled when the client disconnects**, also while the handler is running (as documented). A handler that honours its context now returns early in that case, and the connection's `MaxClients` slot is freed. A client that only shuts down its sending side is treated as disconnected. Because the server now reads a connection while a handler runs, a client that disconnects mid-request is noticed immediately rather than at the next read.
+- **`ServerMetrics`**: a request with a function code the server does not know is reported as `OnError` with `ErrIllegalFunction` (it was `OnResponse`); a response too large to send is `OnError` with `ErrServerDeviceFailure`. The exception on the wire for an unknown function code is unchanged.
+- **The server answers a wrong byte count with exception 3.** An FC15, FC16 or FC23 request whose byte count is not the one its quantity asks for is answered with *Illegal Data Value*, as the specification prescribes (V1.1b3, figures 21, 22 and 27), and so is one with quantity 0 and no data at all. The server used to close the connection. The byte count is checked together with the quantity, before the address range. A request whose byte count is right but whose data has another length is still a framing error and closes the connection.
+- **`ReadDeviceIdentification`** follows `MoreFollows` for as long as the device continues from a new object ID (up to 256 pages; it used to give up after 32). A device that sends the reader back to an object ID already requested is a protocol error ("pagination stuck"), now also when the loop spans several pages.
+
+### Fixed
+
+Client:
+
+- **Wrong data after a timeout.** A response that arrived, in whole or in part, after its request had timed out stayed in the connection's stream; a later request could be answered with its bytes. See the first behaviour change.
+- **Client dead after a failed reconnect.** With a `RetryPolicy`, a request whose reconnect failed (server down, TLS handshake reset) left the client returning `ErrClientNotOpen` for good; `Open` did not help.
+- **`ErrClientNotOpen` for concurrent callers.** While one goroutine's request was being retried on a single connection, every other goroutine's request failed at once with `ErrClientNotOpen`. They now wait for their turn.
+- **Half-open connections were never replaced.** A single-connection client whose connection went dark (server power cycle, NAT timeout) timed out on every request forever unless `RetryOnTimeout` was set.
+- **Pool: callers waiting for a connection were stranded** when the connections in use failed and were discarded; they waited until an unrelated request returned a connection, forever if none did. Waiters are now woken on discard and on a failed dial.
+- **Pool: connection leak on `Close`.** A request finishing while `Close` ran could put its connection back into the pool after it had been emptied, leaving the socket open.
+- **Cancellation ignored**, and **`Close` not interrupting pooled requests or a retry back-off**: see the behaviour changes.
+- **Oversized writes reported as a transport error.** `WriteRegisters`, `WriteRegisterBytes`, `WriteCoils` and `ReadWriteMultipleRegisters` converted the number of values to 16 bits before checking it, so 32769 registers or 65537 coils passed validation and failed in the transport with "invalid mbap length". They now return a `*ParameterError`.
+- **FC43 limited to 32 pages**, although a device (including this library's server) may legitimately need more.
+
+Server:
+
+- **Data race when a stopped server was started again.** The accept loop of the previous run was not waited for by `Stop`/`Shutdown` and read the listener while `Start` replaced it; it could also keep accepting on the new listener. `Stop`/`Shutdown` now wait for the accept loop, and each `Start` gets its own listener, stop context and wait group.
+- **Handler context not cancelled on disconnect**, and a blocked handler holding its `MaxClients` slot until the server stopped.
+- **Slow handler's response dropped**: the deadline armed for reading a request also covered writing its response, so a handler slower than `Timeout` (or a request arriving late in the idle window) lost its response and the client timed out; `OnResponse` was reported nevertheless.
+- **Invalid oversized frames.** An FC43 object too large for one response (245 bytes or more) and an FC0C event log too large for one response were sent as frames longer than the protocol allows. The server now answers with a *Server Device Failure* exception and logs the cause; this applies to any response that does not fit.
+- **Unknown function codes counted as successful responses** in `ServerMetrics`.
+- **Connection closed on a byte count that does not match the quantity** (FC15, FC16, FC23) instead of an exception 3: see the behaviour changes. Found by the interop suite: libmodbus, PyModbus and digitalpetri/modbus answer with the exception.
+
+Documentation:
+
+- API.md named SunSpec functions and constants that do not exist (`sunspec.DetectSunSpec`, `ReadSunSpecModelHeaders`, `DiscoverSunSpec`, root-package `SunSpec*` constants). It now documents `sunspec.Detect`, `sunspec.ReadModelHeaders`, `sunspec.Discover`, `sunspec.MarkerReg0` and friends, and the adapter `*Client` needs to satisfy `sunspec.Reader`.
+
+### Tests
+
+- **End-to-end matrix** (`e2e_*_test.go`): every client function against the library's own server over `tcp` and `tcp+tls`, including limits, error paths, metrics, TLS roles and server lifecycle. `e2e_matrix_test.go` holds the index.
+- **Chaos suite** (`chaos_*_test.go`): a fault-injecting proxy between a real client and a real server (latency, fragmentation at every byte boundary, coalescing, black holes, truncation, RST/FIN before, during and after a request, half-open connections, duplicated, stale and reordered frames, corruption of every MBAP header field, refused and reset connections), plus handlers that are slow, fail, panic or block, and server restarts. A self-checking workload verifies that every successful call returns the caller's own data, that failures have the expected error class, that the client recovers by itself, that writes are applied as sent (at most once without a `RetryPolicy`), that nothing leaks and that metrics are consistent. `TestChaosFaultMatrix` applies each fault to exactly one frame; `chaos_regression_test.go` pins each defect fixed in this release.
+- **Stress suite** (`stress_*_test.go`): 128 goroutines on one pooled client, more clients than `MaxClients`, Open/Close/request races, `Close` with requests in flight, server Stop/Shutdown/restart under load, cancellation storms, slow-loris peers and invalid MBAP headers.
+- The suites take about 15 s under `-race` in a normal run. **`make soak`** runs them for longer: `MODBUS_CHAOS_DURATION` and `MODBUS_STRESS_DURATION` (Go durations, `SOAKTIME=2m` each by default) make the scenarios loop with a new seed per round; a failing round logs its seed, and `MODBUS_CHAOS_SEED=<seed>` replays it.
+- **Interop suite** (`interop/`, build tag `interop`, `make interop`, the Interop workflow): the client against the servers of five independent stacks (libmodbus v3.2.0, PyModbus 3.15.0, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus 0.17.0), and their clients against a go-modbus server, using the container images of otfabric/modbus-interop. [INTEROPERABILITY.md](INTEROPERABILITY.md) is new and records what is implemented, how the server answers invalid requests and the result per stack.
+- The TLS server tests generate their role certificate at run time; the embedded one would have expired on 2026-11-01.
+
+### Unchanged
+
+- Wire format, exported API, codecs and the `sunspec` package.
+
+---
+
 ## v1.2.1
 
 **Date:** 2026-10-09

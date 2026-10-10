@@ -4,6 +4,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/otfabric/go-modbus.svg)](https://pkg.go.dev/github.com/otfabric/go-modbus)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI Status](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml)
+[![Interop](https://github.com/otfabric/go-modbus/actions/workflows/interop.yml/badge.svg)](https://github.com/otfabric/go-modbus/actions/workflows/interop.yml)
 [![Code Coverage](https://codecov.io/gh/otfabric/go-modbus/graph/badge.svg)](https://codecov.io/gh/otfabric/go-modbus)
 [![Latest Release](https://img.shields.io/github/v/release/otfabric/go-modbus?label=release)](https://github.com/otfabric/go-modbus/releases)
 
@@ -166,6 +167,7 @@ Run against the same local server on the same machine; publish the benchmark cod
 - [Advanced features](#advanced-features)
 - [modbus-cli](#modbus-cli)
 - [Examples](#examples)
+- [Interop tests](#interop-tests)
 - [FAQ](#faq)
 - [Project structure](#project-structure)
 - [Contributing](#contributing)
@@ -642,6 +644,53 @@ details, and annotated examples — see **[API.md](API.md)**.
 
 ---
 
+## Interop tests
+
+The `interop` package tests go-modbus against five independent Modbus TCP
+implementations, [libmodbus](https://github.com/stephane/libmodbus) (C),
+[PyModbus](https://github.com/pymodbus-dev/pymodbus) (Python),
+[digitalpetri/modbus](https://github.com/digitalpetri/modbus) (Java),
+[NModbus](https://github.com/NModbus/NModbus) (C#) and
+[tokio-modbus](https://github.com/slowtec/tokio-modbus) (Rust), packaged as
+container images by [otfabric/modbus-interop](https://github.com/otfabric/modbus-interop).
+
+```sh
+make interop    # needs Docker; about five minutes
+```
+
+| Direction | What is checked |
+|-----------|-----------------|
+| go-modbus client → reference servers | FC01 to FC04 over every table of the reference device, at the block boundaries and with the largest request of each function, value by value; FC05, FC06, FC15, FC16, FC22 and FC23 read back on a second connection, together with everything that must not have changed; FC43/14 in every category; exceptions 1, 2 and 11; two thousand requests on one connection; sixteen connections at once and a pooled client |
+| reference clients → go-modbus server | 92 operations per client against a go-modbus device that serves the same fixture: every operation the client has, up to 1000 requests on one connection, raw PDUs, exceptions 1, 2, 3 and 11. Each must have the outcome the specification prescribes, a write must leave the device in exactly the expected state, and the client's result document must equal, field by field, what it gets from a reference server |
+
+The images are the only thing shared with modbus-interop; nothing of it is
+cloned or built here. Scenarios, expected values and assertions live in this
+repository.
+
+This version is qualified against modbus-interop v0.1.0 (libmodbus v3.2.0,
+PyModbus 3.15.0, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
+0.17.0). The five images are named in `interop/harness.go`, the Makefile and
+the Interop workflow, which runs on every push and pull request. To test
+against another build, set `MODBUS_INTEROP_<ADAPTER>_IMAGE` (`LIBMODBUS`,
+`PYMODBUS`, `DIGITALPETRI`, `NMODBUS`, `TOKIOMODBUS`); to run some stacks
+only, `MODBUS_INTEROP_ADAPTERS=libmodbus,pymodbus`.
+
+The references do not all support the same. The suite asks each image what
+it declares (`print-capabilities`) and skips, rather than fails, what an
+image lacks:
+
+| | libmodbus | PyModbus | digitalpetri | NModbus | tokio-modbus |
+|---|:---:|:---:|:---:|:---:|:---:|
+| FC01 to FC06, FC15, FC16, FC23, exceptions, both directions | ✅ | ✅ | ✅ | ✅ | ✅ |
+| FC22, both directions | ✅ | ✅ | ✅ | — no FC22 | ✅ |
+| FC43/14, reference as server | — no FC43 | ✅ | — no FC43 | — no FC43 | ✅ |
+| FC43/14, reference as client | — | ✅ | raw PDU only | ✅ | ✅ |
+
+What is implemented, how the server answers invalid requests and what the
+suite found is in [INTEROPERABILITY.md](INTEROPERABILITY.md).
+
+---
+
 ## FAQ
 
 ### How do I read Modbus registers in Go?
@@ -695,12 +744,15 @@ go-modbus/
 │   ├── protocol/      Function codes, limits, shared sentinels
 │   └── logging/       Prefixed logger adapter
 ├── cmd/modbus-cli/    Command-line client
+├── interop/           Tests against libmodbus, PyModbus, digitalpetri, NModbus and
+│                      tokio-modbus (build tag "interop", needs Docker)
 ├── examples/          Runnable TCP/TLS server and client samples
 ├── spec/              Protocol notes / reference material
 ├── testdata/          Fuzz corpora and test fixtures
 ├── API.md             Full public API reference
 ├── ARCHITECTURE.md    Package ownership and dependency rules
 ├── ERRORS.md          Error taxonomy
+├── INTEROPERABILITY.md  Protocol coverage and verification against other stacks
 ├── OBSERVABILITY.md   Logging and metrics
 ├── CODECS.md          Codec design notes
 └── RELEASE.md         Release history

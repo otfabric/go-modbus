@@ -64,8 +64,8 @@ func TestNewPool_PreWarm(t *testing.T) {
 	if calls != 3 {
 		t.Errorf("dial called %d times, want 3", calls)
 	}
-	if p.total != 3 {
-		t.Errorf("total = %d, want 3", p.total)
+	if p.total() != 3 {
+		t.Errorf("total = %d, want 3", p.total())
 	}
 }
 

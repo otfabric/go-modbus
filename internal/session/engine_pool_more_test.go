@@ -298,9 +298,14 @@ func TestEngine_Execute_RedialFailureJoinsErrors(t *testing.T) {
 	if len(obs.dials) != 1 || obs.dials[0].attempt != 1 || !errors.Is(obs.dials[0].err, dialErr) {
 		t.Fatalf("unexpected OnRetryDial records %+v", obs.dials)
 	}
-	// The failed transport was dropped, so the engine is no longer open.
-	if _, err := e.Execute(context.Background(), &adu.Request{}); !errors.Is(err, protocol.ErrClientNotOpen) {
-		t.Fatalf("Execute after failed reconnect: want ErrClientNotOpen, got %v", err)
+	// The failed transport was dropped, but the engine stays open: the next request
+	// dials again, and fails with the dial error alone.
+	_, err = e.Execute(context.Background(), &adu.Request{})
+	if !errors.Is(err, dialErr) || errors.Is(err, protocol.ErrClientNotOpen) {
+		t.Fatalf("Execute after failed reconnect: want the dial error, got %v", err)
+	}
+	if got := dials.Load(); got != 3 {
+		t.Fatalf("dials = %d, want 3 (open, failed reconnect, failed lazy reconnect)", got)
 	}
 }
 
@@ -348,8 +353,8 @@ func TestNewPool_ClampsNonPositiveLimits(t *testing.T) {
 	if p.maxConns != 1 {
 		t.Errorf("maxConns = %d, want 1", p.maxConns)
 	}
-	if dials != 0 || p.total != 0 {
-		t.Errorf("negative minConns pre-warmed connections: dials=%d total=%d", dials, p.total)
+	if dials != 0 || p.total() != 0 {
+		t.Errorf("negative minConns pre-warmed connections: dials=%d total=%d", dials, p.total())
 	}
 }
 
@@ -374,8 +379,8 @@ func TestPool_Execute_DialErrorFreesSlot(t *testing.T) {
 	if res != nil {
 		t.Fatalf("want nil response on acquire failure, got %+v", res)
 	}
-	if p.total != 0 {
-		t.Fatalf("failed dial leaked a slot: total=%d", p.total)
+	if p.total() != 0 {
+		t.Fatalf("failed dial leaked a slot: total=%d", p.total())
 	}
 	// With maxConns=1 a leaked slot would block this call forever.
 	fail = false
@@ -455,16 +460,13 @@ func TestPool_ReleaseWithFullIdleQueueClosesConnection(t *testing.T) {
 	defer func() { _ = p.CloseAll() }()
 
 	extra := &fakeTransport{}
-	p.mu.Lock()
-	p.total++
-	p.mu.Unlock()
 	p.release(extra)
 
 	if !extra.closed {
 		t.Error("surplus transport was not closed")
 	}
-	if p.total != 1 || len(p.idle) != 1 {
-		t.Errorf("total=%d idle=%d, want 1/1", p.total, len(p.idle))
+	if p.total() != 1 || len(p.idle) != 1 {
+		t.Errorf("total=%d idle=%d, want 1/1", p.total(), len(p.idle))
 	}
 }
 
@@ -484,8 +486,8 @@ func TestPool_CloseAllJoinsCloseErrors(t *testing.T) {
 	if !errors.Is(err, errA) || !errors.Is(err, errB) {
 		t.Fatalf("CloseAll: want both close errors joined, got %v", err)
 	}
-	if p.total != 0 {
-		t.Fatalf("total = %d after CloseAll, want 0", p.total)
+	if p.total() != 0 {
+		t.Fatalf("total = %d after CloseAll, want 0", p.total())
 	}
 }
 

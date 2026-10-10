@@ -251,6 +251,13 @@ func (mc *Client) WriteRegisterBytes(ctx context.Context, unitID uint8, addr uin
 //	readQty:  1–125 (0x7D)
 //	writeQty: 1–121 (0x79), implied by len(writeValues)
 func (mc *Client) ReadWriteMultipleRegisters(ctx context.Context, unitID uint8, readAddr, readQty, writeAddr uint16, writeValues []uint16) (values []uint16, err error) {
+	// Checked on the real length: converting to uint16 first would let 65537
+	// values pass as 1.
+	if len(writeValues) > maxRWWriteRegs {
+		err = newParameterError("ReadWriteMultipleRegisters", "writeValues",
+			fmt.Sprintf("length must be 1..%d, got %d", maxRWWriteRegs, len(writeValues)))
+		return
+	}
 	writeQty := uint16(len(writeValues))
 
 	if readQty == 0 || readQty > maxRWReadRegs {
@@ -462,6 +469,12 @@ func (mc *Client) writeRegisterPayload(ctx context.Context, unitID uint8, addr u
 	if len(values)%2 != 0 {
 		return newParameterError("WriteRegisters", "values",
 			fmt.Sprintf("byte slice length %d is odd, expected even", len(values)))
+	}
+	// Checked on the real length: converting to uint16 first would let 32769
+	// registers pass as 1.
+	if len(values)/2 > maxWriteRegisters {
+		return newParameterError("WriteRegisters", "quantity",
+			fmt.Sprintf("must be 1..%d, got %d", maxWriteRegisters, len(values)/2))
 	}
 	payloadLength := uint16(len(values))
 	quantity := payloadLength / 2
