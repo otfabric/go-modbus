@@ -1,5 +1,30 @@
 # go-modbus Releases
 
+## v1.4.0
+
+**Date:** 2026-10-13
+**Previous release:** v1.3.0
+
+## Summary
+
+One addition to the server: a handler can leave a request unanswered. Nothing else changes.
+
+## Changes
+
+### Added
+
+- **`ErrNoResponse`.** A handler method that returns it makes the server send nothing for that request and keep the connection; the client runs into its timeout. It is meant for a device that must stay silent: the units behind a gateway that received a broadcast (unit id 0), or a device simulated as unresponsive. Requests the client sent after the unanswered one are served as usual. `ServerMetrics.OnError` is called with `ErrNoResponse`. It applies to every handler interface, including the optional ones. Until now a handler could only answer with a response or an exception.
+
+### Tests
+
+- The dispatch loop and a pipelined exchange over TCP with an unanswered request in the middle.
+
+### Unchanged
+
+- Wire format, the client, codecs and the `sunspec` package. A handler that does not return `ErrNoResponse` behaves as before.
+
+---
+
 ## v1.3.0
 
 **Date:** 2026-10-10

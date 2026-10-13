@@ -457,6 +457,83 @@ func TestServerHandleTransport_ContinuesAfterWriteError(t *testing.T) {
 	}
 }
 
+// A handler that returns ErrNoResponse leaves its request unanswered; the link
+// stays up and the next request is served.
+func TestServerHandleTransport_NoResponse(t *testing.T) {
+	h := &fnHandler{holding: func(req *HoldingRegistersRequest) ([]uint16, error) {
+		if req.UnitID == 0 {
+			return nil, ErrNoResponse
+		}
+		return make([]uint16, req.Quantity), nil
+	}}
+	m := &eventMetrics{}
+	ms, err := NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Metrics: m}, h)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	tr := &memServerTransport{reqs: []*adu.Request{
+		{UnitID: 0, FunctionCode: 0x03, Payload: u16(0, 1)},
+		{UnitID: 1, FunctionCode: 0x03, Payload: u16(4, 2)},
+	}}
+	ms.handleTransport(context.Background(), tr, "client", "")
+
+	if tr.closed {
+		t.Fatal("link closed after an unanswered request")
+	}
+	if len(tr.responses) != 1 || tr.responses[0].TransactionID != 0x0102 || tr.responses[0].UnitID != 1 {
+		t.Fatalf("responses = %+v, want only the one to the second request", tr.responses)
+	}
+	events := m.snapshot()
+	if len(events) != 4 || events[1].kind != "error" || !errors.Is(events[1].err, ErrNoResponse) || events[3].kind != "response" {
+		t.Fatalf("metrics events = %v", events)
+	}
+}
+
+// Over TCP, the client of an unanswered request times out and the connection
+// is still served afterwards.
+func TestServer_NoResponseOverTCP(t *testing.T) {
+	h := &fnHandler{holding: func(req *HoldingRegistersRequest) ([]uint16, error) {
+		if req.Addr == 7 {
+			return nil, ErrNoResponse
+		}
+		return []uint16{0x1234}, nil
+	}}
+	ms, err := NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0"}, h)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := ms.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = ms.Stop() }()
+
+	conn, err := net.Dial("tcp", ms.tcpListener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	frame := func(txn byte, addr byte) []byte {
+		return []byte{0, txn, 0, 0, 0, 6, 1, 0x03, 0, addr, 0, 1}
+	}
+	// The unanswered request and the next one in a single segment.
+	if _, err := conn.Write(append(frame(1, 7), frame(2, 0)...)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got := make([]byte, 11)
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if want := []byte{0, 2, 0, 0, 0, 5, 1, 0x03, 2, 0x12, 0x34}; !bytes.Equal(got, want) {
+		t.Fatalf("response % x, want % x (the answer to the second request only)", got, want)
+	}
+	// Nothing else arrives: the first request stays unanswered.
+	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if n, err := conn.Read(got); err == nil {
+		t.Fatalf("unexpected %d more bytes: % x", n, got[:n])
+	}
+}
+
 // flakyListener fails Accept with the scripted errors, then reports closure.
 type flakyListener struct {
 	errs  []error
