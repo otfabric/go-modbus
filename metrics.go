@@ -18,6 +18,9 @@ type ClientMetrics interface {
 	// OnRequest is called immediately before the first attempt to send a request.
 	// unitID and functionCode identify the target device and operation.
 	// This is called exactly once per logical request, regardless of retries.
+	// It is also called for a request that Config.AllowedFunctionCodes refuses:
+	// that request is not sent, and its outcome is OnError with an error that
+	// wraps ErrFunctionCodeNotAllowed.
 	OnRequest(unitID uint8, functionCode FunctionCode)
 
 	// OnResponse is called after a successful round-trip (possibly after retries).

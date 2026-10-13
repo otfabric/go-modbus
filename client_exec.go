@@ -5,6 +5,7 @@ package modbus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
@@ -15,11 +16,22 @@ import (
 // self-locking: it grabs the engine reference under lock, runs the request
 // without holding the lock, and updates lastResponseTransactionID under lock.
 //
+// It is the only path from a client method to the transport, and it is where
+// Config.AllowedFunctionCodes is enforced: a request whose function code is not
+// on the list is refused here, before the engine is looked at, so nothing is
+// dialled, sent or retried, whether the client is open or not. The error wraps
+// ErrFunctionCodeNotAllowed. Callers have already called OnRequest and report
+// the refusal as OnError, like any other failure.
+//
 // This method does NOT report to ClientMetrics. Outcome metrics are reported
 // by the calling public/internal method after all protocol-level validation
 // (checkResponseFC, payload checks, echo mismatches) completes, so that
 // metrics accurately reflect the logical API outcome.
 func (mc *Client) executeRequest(ctx context.Context, req *adu.Request) (res *adu.Response, err error) {
+	if mc.allowedFCs != nil && !mc.allowedFCs[req.FunctionCode] {
+		return nil, fmt.Errorf("%w: %s", ErrFunctionCodeNotAllowed, FunctionCode(req.FunctionCode))
+	}
+
 	mc.lock.Lock()
 	engine := mc.state.engine
 	if engine == nil {

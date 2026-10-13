@@ -1,5 +1,37 @@
 # go-modbus Releases
 
+## v1.5.0
+
+**Date:** 2026-10-14
+**Previous release:** v1.4.2
+
+## Summary
+
+One addition to the client: a function code allow-list. A client can be limited to the function codes it is meant to send, for example to make it read-only. Nothing else changes.
+
+## Changes
+
+### Added
+
+- **`Config.AllowedFunctionCodes`** (also `ExecutionConfig.AllowedFunctionCodes` for `NewConfig`). When the list is set, a request with a function code that is not on it is refused before anything reaches the transport: nothing is sent, no connection is dialled, the `RetryPolicy` is not consulted, and the client stays usable. Nil or empty, the default, means no restriction. The check sits at the one place every request passes, so it covers every client method on every transport, the probe helpers (`SupportsFunction`, `SupportsDeviceIdentification`, `ProbeFunction`), and the `sunspec` and `codec` helpers. A read-only client for registers: `AllowedFunctionCodes: []modbus.FunctionCode{modbus.FCReadHoldingRegisters, modbus.FCReadInputRegisters}`. Until now the only way to stop a request was to panic in `ClientMetrics.OnRequest` and recover.
+- **`ErrFunctionCodeNotAllowed`.** The error of a refused request wraps it and names the function code ("modbus: function code not allowed: Write Single Register (0x06)"). It is returned whether the client is open or not. `ProbeFunction` returns it as an error, not as a probe result: it says nothing about the device.
+- `New` and `ValidateConfig` reject a list that holds 0x00 or a code with the exception bit set (0x80..0xFF) with a `*ConfigurationError` for the field `AllowedFunctionCodes`. `New` copies the list; changing the slice afterwards has no effect.
+
+### Metrics
+
+- A refused request is reported like any other failed request: `ClientMetrics.OnRequest`, then `OnError` with the error that wraps `ErrFunctionCodeNotAllowed`. Every `OnRequest` still gets exactly one outcome. `AttemptMetrics` is not called, as there is no transport attempt.
+
+### Notes
+
+- Each request is checked on its own. `WriteRegisterBit` and `UpdateRegisterMask` read a register (FC03) before they write it (FC06): with only the reads allowed, the read is sent and the write is refused.
+- Function code 0x08 (Diagnostics) covers sub-functions that change the state of a device (restart communications, clear counters, force listen-only mode). The list works on function codes, not on sub-functions: leave 0x08 out of a list that must be read-only.
+
+### Unchanged
+
+- Wire format, server and codecs. A client without `AllowedFunctionCodes` behaves as in v1.4.2.
+
+---
+
 ## v1.4.2
 
 **Date:** 2026-10-13

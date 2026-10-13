@@ -47,6 +47,7 @@ func (ec ExceptionCode) String() string {
 var (
 	ErrConfigurationError             = errors.New("modbus: configuration error")
 	ErrClientNotOpen                  = errors.New("modbus: client is not open")
+	ErrFunctionCodeNotAllowed         = errors.New("modbus: function code not allowed")
 	ErrRequestTimedOut                = errors.New("modbus: request timed out")
 	ErrIllegalFunction                = errors.New("modbus: illegal function")
 	ErrIllegalDataAddress             = errors.New("modbus: illegal data address")

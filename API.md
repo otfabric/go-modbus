@@ -113,6 +113,12 @@ type Config struct {
     // Nil (default) disables collection.
     Metrics ClientMetrics
 
+    // AllowedFunctionCodes restricts the function codes the client sends.
+    // Nil or empty (default) means no restriction. A request with any other
+    // function code fails with ErrFunctionCodeNotAllowed and is not sent.
+    // See "Function code allow-list" below.
+    AllowedFunctionCodes []FunctionCode
+
     // MinConns is the number of connections pre-warmed during Open().
     // Applies to TCP-based transports only. 0 = no pre-warming.
     MinConns int
@@ -132,7 +138,7 @@ type TransportConfig struct {
 }
 
 type ExecutionConfig struct {
-    Timeout, RetryPolicy, MinConns, MaxConns
+    Timeout, RetryPolicy, MinConns, MaxConns, AllowedFunctionCodes
 }
 
 type ObservabilityConfig struct {
@@ -141,6 +147,39 @@ type ObservabilityConfig struct {
 
 func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) Config
 ```
+
+**Function code allow-list** — `AllowedFunctionCodes` limits what a client can
+send, for example to make it read-only:
+
+```go
+client, err := modbus.New(modbus.Config{
+    URL: "tcp://plc:502",
+    AllowedFunctionCodes: []modbus.FunctionCode{
+        modbus.FCReadHoldingRegisters, modbus.FCReadInputRegisters,
+    },
+})
+// client.WriteRegister(...) now fails with modbus.ErrFunctionCodeNotAllowed.
+```
+
+- The check is made at the one place every request passes on its way to the
+  transport, on every transport. It covers every client method, the probe
+  helpers (`SupportsFunction`, `SupportsDeviceIdentification`, `ProbeFunction`),
+  and the `sunspec` and `codec` helpers, which read and write through the client.
+- A refused request fails with an error that wraps `ErrFunctionCodeNotAllowed`
+  and names the function code. Nothing is sent, no connection is dialled, the
+  `RetryPolicy` is not consulted, and the client and its connections are left as
+  they were. The refusal does not depend on the client being open.
+- Each request is checked on its own. `WriteRegisterBit` and `UpdateRegisterMask`
+  read a register (FC03) and then write it (FC06): with only the reads allowed,
+  the read is sent and the write is refused.
+- Arguments are validated first: a call with invalid arguments fails with its
+  `*ParameterError`, as it does without a list.
+- Metrics: a refused request is reported as `OnRequest` followed by `OnError`
+  with the wrapped `ErrFunctionCodeNotAllowed`. `AttemptMetrics` sees nothing,
+  as there is no transport attempt.
+- `New` copies the list, and rejects (`*ConfigurationError`) a list that holds
+  0x00 or a code with the exception bit set (0x80..0xFF). Any code from 0x01 to
+  0x7F is accepted.
 
 ### 2.2 Lifecycle
 
@@ -1332,6 +1371,7 @@ conditions and `errors.As` to access structured exception details.
 var (
     ErrConfigurationError      // invalid configuration passed to New/NewServer
     ErrClientNotOpen           // request before Open() or after Close()
+    ErrFunctionCodeNotAllowed  // function code not in Config.AllowedFunctionCodes; nothing was sent
     ErrRequestTimedOut         // request exceeded deadline or configured timeout
     ErrIllegalFunction         // Modbus exception 0x01
     ErrIllegalDataAddress      // Modbus exception 0x02
@@ -1738,6 +1778,7 @@ pipe, connection reset, dial failures, `net.ErrClosed`, and (when `RetryOnTimeou
 true) `ErrRequestTimedOut`.
 
 **Never retried**: `context.Canceled`, `context.DeadlineExceeded`, `ErrClientNotOpen`,
+`ErrFunctionCodeNotAllowed` (the request never reaches the retry loop),
 `ErrConfigurationError`, `ErrProtocolError`, `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame`,
 `ErrBadTransactionID`, `ErrBadUnitID`, `ErrUnknownProtocolID`, `ErrInvalidMBAPLength`,
 `ErrUnexpectedParameters`, all Modbus exception responses (`*ExceptionError`), and

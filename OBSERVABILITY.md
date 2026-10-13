@@ -48,6 +48,10 @@ Pluggable synchronous callbacks via `Config.Metrics` / `ServerConfig.Metrics`:
 protocol validation failures), **not** each internal retry. Implement
 `AttemptMetrics` on the same value when you need per-attempt visibility.
 
+A request refused by `Config.AllowedFunctionCodes` is reported like any other
+failure: `OnRequest`, then `OnError` with an error wrapping
+`ErrFunctionCodeNotAllowed`. It is never sent, so `AttemptMetrics` is not called.
+
 `OnRetryDial` reports every re-dial of a single connection: between retry
 attempts and, with attempt 0, when a request starts without a usable connection
 (the previous one was lost, or dropped after a timeout on `tcp`/`tcp+tls`). A

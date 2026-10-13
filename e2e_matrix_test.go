@@ -142,6 +142,8 @@ import (
 //   retry with a pool                            -> TestE2E_Client_RetryWithPool (tcp)
 //   pool after a server restart                  -> TestE2E_Client_PoolAfterServerRestart (tcp)
 //   retry after a failed reconnect               -> TestE2E_Client_RetryRecoversAfterFailedRedial
+//   AllowedFunctionCodes: every method refused or served, nothing on the wire,
+//     metrics, probes, sunspec                   -> TestAllowedFunctionCodes_* (allowed_function_codes_test.go)
 //
 // Metrics and logging
 //   ClientMetrics and ServerMetrics: one outcome per request for every method,
