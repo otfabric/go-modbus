@@ -1351,7 +1351,7 @@ var (
     ErrUnknownProtocolID       // non-zero MBAP protocol identifier
     ErrInvalidMBAPLength      // MBAP length &lt; 2 or &gt; 254 (error may wrap value)
     ErrUnexpectedParameters          // invalid arguments passed to a client method
-    ErrSunSpecModelChainInvalid      // malformed or non-progressing SunSpec model chain
+    ErrSunSpecModelChainInvalid      // malformed SunSpec model chain: no progress, or a model that does not fit in the address space
     ErrSunSpecModelChainLimitExceeded // SunSpec model chain exceeded MaxAddressSpan
     ErrNoResponse                     // server handlers only: leave the request unanswered
 )

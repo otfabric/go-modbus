@@ -186,8 +186,9 @@ func ReadModelHeaders(ctx context.Context, r Reader, opts *Options, baseAddress 
 	if err := ValidateOptions(&o); err != nil {
 		return nil, err
 	}
+	// The first model header takes two registers after the two of the marker.
 	start := uint32(baseAddress) + 2
-	if start > 0xFFFF {
+	if start+1 > 0xFFFF {
 		return nil, protocol.ErrSunSpecModelChainInvalid
 	}
 	addr := uint16(start)
@@ -218,9 +219,13 @@ func ReadModelHeaders(ctx context.Context, r Reader, opts *Options, baseAddress 
 
 		isEnd := (id == EndModelID && length == EndModelLength)
 
+		// A model that runs past register 0xFFFF cannot exist, and one that
+		// is not the end model must leave room for the two registers of the
+		// header after it. Both are a chain the device cannot have, whatever
+		// the exact length it announces.
 		endExclusive := uint32(addr) + 2 + uint32(length)
 		if endExclusive > 0x10000 {
-			return models, protocol.ErrProtocolError
+			return models, protocol.ErrSunSpecModelChainInvalid
 		}
 		endAddr := uint16(endExclusive)
 		nextAddr := endAddr
@@ -243,7 +248,7 @@ func ReadModelHeaders(ctx context.Context, r Reader, opts *Options, baseAddress 
 		if length == 0 && id != EndModelID {
 			return models, protocol.ErrSunSpecModelChainInvalid
 		}
-		if nextAddr <= addr {
+		if endExclusive+2 > 0x10000 {
 			return models, protocol.ErrSunSpecModelChainInvalid
 		}
 
