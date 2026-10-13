@@ -90,6 +90,7 @@ const (
 var (
 	ErrConfigurationError             = protocol.ErrConfigurationError
 	ErrClientNotOpen                  = protocol.ErrClientNotOpen
+	ErrFunctionCodeNotAllowed         = protocol.ErrFunctionCodeNotAllowed
 	ErrRequestTimedOut                = protocol.ErrRequestTimedOut
 	ErrIllegalFunction                = protocol.ErrIllegalFunction
 	ErrIllegalDataAddress             = protocol.ErrIllegalDataAddress

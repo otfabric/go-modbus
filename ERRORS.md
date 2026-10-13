@@ -22,6 +22,7 @@ Modbus exception from the unit.
 | Bad `Config` / `ServerConfig` | `*ConfigurationError` (`errors.Is` → `ErrConfigurationError`) |
 | Invalid method arguments | `*ParameterError` (`errors.Is` → `ErrUnexpectedParameters`) |
 | Request before `Open` / after `Close`, or interrupted by `Close` | `ErrClientNotOpen` (never while the client is open) |
+| Function code not in `Config.AllowedFunctionCodes` | error wrapping `ErrFunctionCodeNotAllowed` (`errors.Is`); nothing is sent, the client stays usable |
 | Configured timeout, or context deadline expiring in flight | `ErrRequestTimedOut` |
 | Context already cancelled or expired when the call starts | `ctx.Err()` (`context.Canceled` / `context.DeadlineExceeded`); nothing is sent |
 | Context cancelled while the request is in flight | `context.Canceled` (`errors.Is`); returns promptly |

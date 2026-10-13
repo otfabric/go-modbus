@@ -140,8 +140,10 @@ type ProbeResult struct {
 // ProbeFunction probes the given unit with a single function code and returns
 // a detailed ProbeResult describing the outcome. Unlike SupportsFunction, it
 // never returns a non-nil error for expected probe-negative outcomes (timeout,
-// exception); those are captured in the result. Only context cancellation and
-// unsupported probe FCs return a non-nil error.
+// exception); those are captured in the result. Only context cancellation,
+// unsupported probe FCs and a function code that Config.AllowedFunctionCodes
+// does not allow (ErrFunctionCodeNotAllowed, nothing is sent) return a non-nil
+// error.
 func (mc *Client) ProbeFunction(ctx context.Context, unitID uint8, fc FunctionCode) (ProbeResult, error) {
 	p, ok := protocol.GetProbeForFC(fc)
 	if !ok {
@@ -168,6 +170,10 @@ func (mc *Client) ProbeFunction(ctx context.Context, unitID uint8, fc FunctionCo
 		// Every OnRequest gets exactly one outcome, cancellation included.
 		reportOutcome(m, unitID, fc, start, err)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return ProbeResult{}, err
+		}
+		if errors.Is(err, ErrFunctionCodeNotAllowed) {
+			// Not a statement about the device: nothing was sent.
 			return ProbeResult{}, err
 		}
 		if errors.Is(err, ErrRequestTimedOut) || errors.Is(err, ErrGWTargetFailedToRespond) {

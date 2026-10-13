@@ -91,6 +91,23 @@ type Config struct {
 	// A nil Metrics (the default) disables metric collection.
 	Metrics ClientMetrics
 
+	// AllowedFunctionCodes restricts the function codes the client sends.
+	// Nil or empty (the default) means no restriction. When set, a request with
+	// any other function code fails with an error that wraps
+	// ErrFunctionCodeNotAllowed before anything reaches the transport: no
+	// connection is dialled and no byte is sent. It applies to every client
+	// method, the probe helpers (SupportsFunction, ProbeFunction) and the
+	// sunspec package included. The list is copied by New; changing the slice
+	// afterwards has no effect. New rejects 0x00 and codes with the exception
+	// bit (0x80) set.
+	//
+	// A read-only client for holding and input registers:
+	//
+	//	AllowedFunctionCodes: []modbus.FunctionCode{
+	//		modbus.FCReadHoldingRegisters, modbus.FCReadInputRegisters,
+	//	}
+	AllowedFunctionCodes []FunctionCode
+
 	// MinConns is the number of connections pre-warmed during Open().
 	// Applies only to network transports (tcp, udp, rtuovertcp, rtuoverudp,
 	// asciiovertcp).
@@ -125,6 +142,9 @@ type ExecutionConfig struct {
 	RetryPolicy RetryPolicy
 	MinConns    int
 	MaxConns    int
+	// AllowedFunctionCodes restricts the function codes the client sends
+	// (see Config.AllowedFunctionCodes). Nil or empty means no restriction.
+	AllowedFunctionCodes []FunctionCode
 }
 
 // ObservabilityConfig groups logging and metrics settings. Use with NewConfig
@@ -138,20 +158,21 @@ type ObservabilityConfig struct {
 // convenience alternative to the flat Config literal for larger setups.
 func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) Config {
 	return Config{
-		URL:           tc.URL,
-		Speed:         tc.Speed,
-		DataBits:      tc.DataBits,
-		Parity:        tc.Parity,
-		StopBits:      tc.StopBits,
-		DialTimeout:   tc.DialTimeout,
-		TLSClientCert: tc.TLSClientCert,
-		TLSRootCAs:    tc.TLSRootCAs,
-		Timeout:       ec.Timeout,
-		RetryPolicy:   ec.RetryPolicy,
-		MinConns:      ec.MinConns,
-		MaxConns:      ec.MaxConns,
-		Logger:        oc.Logger,
-		Metrics:       oc.Metrics,
+		URL:                  tc.URL,
+		Speed:                tc.Speed,
+		DataBits:             tc.DataBits,
+		Parity:               tc.Parity,
+		StopBits:             tc.StopBits,
+		DialTimeout:          tc.DialTimeout,
+		TLSClientCert:        tc.TLSClientCert,
+		TLSRootCAs:           tc.TLSRootCAs,
+		Timeout:              ec.Timeout,
+		RetryPolicy:          ec.RetryPolicy,
+		MinConns:             ec.MinConns,
+		MaxConns:             ec.MaxConns,
+		Logger:               oc.Logger,
+		Metrics:              oc.Metrics,
+		AllowedFunctionCodes: ec.AllowedFunctionCodes,
 	}
 }
 
@@ -169,6 +190,10 @@ type Client struct {
 	lock          sync.Mutex
 	state         clientState
 	transportType transportType
+	// allowedFCs is the function code allow-list built by New from
+	// Config.AllowedFunctionCodes. Nil means no restriction. It is never
+	// modified after New, so it is read without the lock.
+	allowedFCs *[256]bool
 }
 
 // New creates, configures and returns a modbus client object.
@@ -336,6 +361,22 @@ func New(conf Config) (mc *Client, err error) {
 		mc.logger.Warningf("MinConns (%d) > MaxConns (%d), clamping MinConns to MaxConns",
 			mc.conf.MinConns, mc.conf.MaxConns)
 		mc.conf.MinConns = mc.conf.MaxConns
+	}
+
+	if len(mc.conf.AllowedFunctionCodes) > 0 {
+		// Own copy: the caller's slice must not change the list later.
+		mc.conf.AllowedFunctionCodes = append([]FunctionCode(nil), mc.conf.AllowedFunctionCodes...)
+		allowed := new([256]bool)
+		for _, fc := range mc.conf.AllowedFunctionCodes {
+			if fc == 0 || fc.IsException() {
+				mc.logger.Errorf("invalid function code 0x%02X in AllowedFunctionCodes", uint8(fc))
+				err = newConfigurationError("AllowedFunctionCodes",
+					fmt.Sprintf("0x%02X is not a request function code (valid: 0x01..0x7F)", uint8(fc)))
+				return
+			}
+			allowed[uint8(fc)] = true
+		}
+		mc.allowedFCs = allowed
 	}
 
 	return

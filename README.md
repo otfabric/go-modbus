@@ -115,6 +115,7 @@ Several good Go Modbus libraries exist. This table shows where go-modbus differs
 | Automatic retries with back-off | ✅ | — | — |
 | Structured logging (`log/slog`) | ✅ | stdlib `log` | stdlib `log` |
 | Metrics hooks | ✅ | — | — |
+| Function code allow-list (read-only client) | ✅ | — | — |
 | SunSpec discovery | ✅ | — | — |
 | CLI tool | ✅ | ✅ | — |
 | Pure Go (no CGO) | ✅ | ✅ | ✅ |
@@ -462,6 +463,25 @@ per-connection contexts, closes sockets, and waits for handlers to exit — or r
 
 **Handler validation:** `NewServer()` rejects a nil `reqHandler` at construction time
 with a typed `*ConfigurationError`, preventing surprising nil-pointer panics at runtime.
+
+### Function code allow-list
+
+`Config.AllowedFunctionCodes` restricts the function codes a client sends. A
+request with any other function code fails with `ErrFunctionCodeNotAllowed`
+before anything reaches the transport: nothing is sent and no connection is
+dialled. Nil or empty (the default) means no restriction.
+
+```go
+// A read-only client for holding and input registers.
+client, err := modbus.New(modbus.Config{
+    URL: "tcp://plc:502",
+    AllowedFunctionCodes: []modbus.FunctionCode{
+        modbus.FCReadHoldingRegisters, modbus.FCReadInputRegisters,
+    },
+})
+```
+
+See [API.md § 2.1](API.md#21-config).
 
 ### Metrics hooks
 
