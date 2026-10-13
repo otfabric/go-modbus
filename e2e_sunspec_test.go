@@ -234,7 +234,7 @@ func TestE2E_SunSpec_EdgesAndErrors(t *testing.T) {
 		}
 		// A model running past the address space is a protocol error.
 		dev.setHolding(2000, sunspec.MarkerReg0, sunspec.MarkerReg1, 1, 0xFFF0)
-		if _, err := sunspec.ReadModelHeaders(ctx, r, broken, 2000); !errors.Is(err, ErrProtocolError) {
+		if _, err := sunspec.ReadModelHeaders(ctx, r, broken, 2000); !errors.Is(err, ErrSunSpecModelChainInvalid) {
 			t.Errorf("ReadModelHeaders with an oversized model: %v", err)
 		}
 		dev.takeCalls()

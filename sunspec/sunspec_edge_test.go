@@ -127,7 +127,7 @@ func TestDetect_ShortProbeResponse(t *testing.T) {
 
 func TestReadModelHeaders_BaseAddressOverflow(t *testing.T) {
 	r := &mockReader{responses: map[uint16][]byte{}}
-	for _, base := range []uint16{0xFFFE, 0xFFFF} {
+	for _, base := range []uint16{0xFFFD, 0xFFFE, 0xFFFF} {
 		models, err := ReadModelHeaders(context.Background(), r, nil, base)
 		if !errors.Is(err, protocol.ErrSunSpecModelChainInvalid) {
 			t.Errorf("base %#x: want ErrSunSpecModelChainInvalid, got %v", base, err)
@@ -175,8 +175,8 @@ func TestReadModelHeaders_ModelBeyondAddressSpace(t *testing.T) {
 	// Model body would end past register 0xFFFF.
 	r := &mockReader{responses: map[uint16][]byte{0xFF00: modelHeaderBytes(101, 0x0200)}}
 	models, err := ReadModelHeaders(context.Background(), r, nil, 0xFF00-2)
-	if !errors.Is(err, protocol.ErrProtocolError) {
-		t.Fatalf("want ErrProtocolError, got %v", err)
+	if !errors.Is(err, protocol.ErrSunSpecModelChainInvalid) {
+		t.Fatalf("want ErrSunSpecModelChainInvalid, got %v", err)
 	}
 	if len(models) != 0 {
 		t.Fatalf("out-of-range model was returned: %+v", models)
@@ -242,5 +242,56 @@ func TestDiscover_ChainErrorKeepsPartialModels(t *testing.T) {
 	}
 	if len(disc.Models) != 1 || disc.Models[0].ID != 1 || disc.Models[0].NextAddress != 40070 {
 		t.Fatalf("partial models not returned: %+v", disc.Models)
+	}
+}
+
+// A model that leaves no room for the header after it is reported the same
+// way whatever length it announces: to the last register, one short of it, or
+// past the address space.
+func TestReadModelHeaders_NoRoomForNextHeader(t *testing.T) {
+	const start = 2
+	for _, tc := range []struct {
+		length     uint16
+		wantModels int
+	}{
+		{65531, 1}, // ends at 0xFFFE: one register left, a header needs two
+		{65532, 1}, // ends at 0xFFFF
+		{65533, 0}, // ends past 0xFFFF
+		{65535, 0},
+	} {
+		reads := 0
+		r := funcReader(func(_ context.Context, _ uint8, addr, _ uint16, _ RegType) ([]byte, error) {
+			reads++
+			if addr != start {
+				t.Errorf("length %d: unexpected read at %#x", tc.length, addr)
+			}
+			return modelHeaderBytes(101, tc.length), nil
+		})
+		models, err := ReadModelHeaders(context.Background(), r, nil, start-2)
+		if !errors.Is(err, protocol.ErrSunSpecModelChainInvalid) {
+			t.Errorf("length %d: want ErrSunSpecModelChainInvalid, got %v", tc.length, err)
+		}
+		if len(models) != tc.wantModels {
+			t.Errorf("length %d: got %d models, want %d", tc.length, len(models), tc.wantModels)
+		}
+		if reads != 1 {
+			t.Errorf("length %d: %d reads, want 1", tc.length, reads)
+		}
+	}
+}
+
+// The end model needs no header after it: a chain may end on the last two
+// registers.
+func TestReadModelHeaders_EndModelOnLastRegisters(t *testing.T) {
+	r := &mockReader{responses: map[uint16][]byte{
+		0xFFF0: modelHeaderBytes(1, 12),
+		0xFFFE: modelHeaderBytes(EndModelID, EndModelLength),
+	}}
+	models, err := ReadModelHeaders(context.Background(), r, nil, 0xFFF0-2)
+	if err != nil {
+		t.Fatalf("ReadModelHeaders: %v", err)
+	}
+	if len(models) != 2 || !models[1].IsEndModel || models[1].StartAddress != 0xFFFE {
+		t.Fatalf("unexpected models %+v", models)
 	}
 }

@@ -1,5 +1,27 @@
 # go-modbus Releases
 
+## v1.4.1
+
+**Date:** 2026-10-13
+**Previous release:** v1.4.0
+
+## Summary
+
+One fix in the `sunspec` package: a SunSpec model that does not fit in the address space is always reported as an invalid model chain. Nothing else changes.
+
+## Changes
+
+### Fixed
+
+- **`sunspec.ReadModelHeaders` (and `Discover`, which uses it) reported the same fault three ways.** A model that leaves no room for the header after it was reported differently depending on the exact length the device announced: `ErrSunSpecModelChainInvalid` when it ended on register 65535, `ErrProtocolError` when it ran past it, and a parameter error from the next read ("range 0xFFFF+2 overflows address space") when it ended on register 65534. All three are now `ErrSunSpecModelChainInvalid`, and the last no longer attempts the read. The same holds for a base address that leaves one register for the first header (65533). A caller that matched `ErrProtocolError` for a model running past the address space must match `ErrSunSpecModelChainInvalid` instead; discovery failed in every case and still does.
+- An end model on the last two registers (65534 and 65535) is accepted, as before: nothing has to follow it.
+
+### Unchanged
+
+- Wire format, client, server and codecs.
+
+---
+
 ## v1.4.0
 
 **Date:** 2026-10-13
