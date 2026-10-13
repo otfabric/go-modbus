@@ -173,8 +173,11 @@ func (ms *Server) serveConn(connCtx context.Context, connCancel context.CancelFu
 		if closeLink {
 			break
 		}
-		if writeErr := t.WriteFrame(in.txnID, res); writeErr != nil {
-			ms.logger.Warningf("failed to write response: %v", writeErr)
+		// res is nil when the handler chose not to answer (ErrNoResponse).
+		if res != nil {
+			if writeErr := t.WriteFrame(in.txnID, res); writeErr != nil {
+				ms.logger.Warningf("failed to write response: %v", writeErr)
+			}
 		}
 		mu.Lock()
 		pending--
@@ -214,6 +217,9 @@ func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, cl
 			_ = t.Close()
 			return
 		}
+		if res == nil {
+			continue
+		}
 		if writeErr := t.WriteResponse(res); writeErr != nil {
 			ms.logger.Warningf("failed to write response: %v", writeErr)
 		}
@@ -222,7 +228,8 @@ func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, cl
 
 // serveRequest dispatches one request and returns the response to send.
 // closeLink is true when the request violates the protocol: nothing is sent and
-// the connection must be closed.
+// the connection must be closed. res is nil with closeLink false when the handler
+// returned ErrNoResponse: nothing is sent and the connection is kept.
 func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (res *adu.Response, closeLink bool) {
 	var reqStart time.Time
 	if ms.metrics != nil {
@@ -255,6 +262,9 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 
 		if ms.metrics != nil {
 			ms.metrics.OnError(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart), err)
+		}
+		if errors.Is(err, ErrNoResponse) {
+			return nil, false
 		}
 		res = &adu.Response{
 			UnitID:        req.UnitID,

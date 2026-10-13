@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -93,6 +94,15 @@ type InputRegistersRequest struct {
 	Quantity     uint16
 }
 
+// ErrNoResponse is returned by a handler method to leave the request unanswered:
+// the server sends nothing and keeps the connection, so the client runs into its
+// timeout. It is how a server models a device that stays silent, such as the
+// units behind a gateway that received a broadcast (unit id 0), or one that is
+// simulated as unresponsive. Requests the client sent after it are served as usual.
+//
+// It has this meaning only when returned by a handler; no client method returns it.
+var ErrNoResponse = errors.New("modbus: no response")
+
 // RequestHandler is the interface implemented by the application to serve Modbus
 // requests. Each connected client is served in its own goroutine, so handler
 // methods may be called concurrently from different client goroutines.
@@ -104,6 +114,10 @@ type InputRegistersRequest struct {
 // down its sending side counts as disconnected) or the server stops. A panic
 // inside any handler method is recovered and logged (with a stack trace); the
 // client receives a ServerDeviceFailure exception response.
+//
+// An error returned by a handler method is sent to the client as the matching
+// Modbus exception (ServerDeviceFailure when there is none), with one exception:
+// ErrNoResponse makes the server send nothing at all.
 type RequestHandler interface {
 	HandleCoils(ctx context.Context, req *CoilsRequest) (res []bool, err error)
 	HandleDiscreteInputs(ctx context.Context, req *DiscreteInputsRequest) (res []bool, err error)

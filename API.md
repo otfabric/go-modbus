@@ -1064,6 +1064,27 @@ different client goroutines. Implementations must be safe for concurrent use
 A panic inside any handler method is recovered and logged with a full stack
 trace; the client receives a `ServerDeviceFailure` exception response.
 
+An error returned by a handler method is sent to the client as the matching
+Modbus exception (`ErrIllegalDataAddress` → exception 2, and so on;
+`ServerDeviceFailure` when there is none). The one exception is
+`ErrNoResponse`: the server then sends **nothing** and keeps the connection, so
+the client runs into its timeout. Use it for a device that must stay silent,
+such as the units behind a gateway that received a broadcast (unit id 0) or a
+device simulated as unresponsive. Requests the client sent after the unanswered
+one are served as usual, and `ServerMetrics.OnError` is called with
+`ErrNoResponse`. This applies to every handler interface, including the
+optional ones.
+
+```go
+func (h *handler) HandleHoldingRegisters(ctx context.Context, req *modbus.HoldingRegistersRequest) ([]uint16, error) {
+    if req.UnitID == 0 { // broadcast: apply the write, answer nothing
+        h.writeAll(req)
+        return nil, modbus.ErrNoResponse
+    }
+    // ...
+}
+```
+
 The `ctx` passed to a handler is cancelled when the server stops and when the
 client disconnects, including while the handler is running: the server keeps
 reading the connection during a handler call. (A client that only shuts down
@@ -1332,6 +1353,7 @@ var (
     ErrUnexpectedParameters          // invalid arguments passed to a client method
     ErrSunSpecModelChainInvalid      // malformed or non-progressing SunSpec model chain
     ErrSunSpecModelChainLimitExceeded // SunSpec model chain exceeded MaxAddressSpan
+    ErrNoResponse                     // server handlers only: leave the request unanswered
 )
 ```
 
