@@ -165,18 +165,26 @@ func startDevice(t testing.TB, fx *fixture) *device {
 	}
 	// All interfaces: a container reaches the host through the bridge on
 	// Linux, not through loopback.
-	d.Addr = net.JoinHostPort("0.0.0.0", strconv.Itoa(freePort(t)))
-	srv, err := modbus.NewServer(&modbus.ServerConfig{
-		URL:        "tcp://" + d.Addr,
-		Timeout:    60 * time.Second,
-		MaxClients: 64,
-		Logger:     newWireLog(t, "go-modbus server"),
-	}, d)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	if err := srv.Start(); err != nil {
-		t.Fatalf("start go-modbus server on %s: %v", d.Addr, err)
+	var srv *modbus.Server
+	for attempt := 1; ; attempt++ {
+		d.Addr = net.JoinHostPort("0.0.0.0", strconv.Itoa(freePort(t, "0.0.0.0")))
+		var err error
+		srv, err = modbus.NewServer(&modbus.ServerConfig{
+			URL:        "tcp://" + d.Addr,
+			Timeout:    60 * time.Second,
+			MaxClients: 64,
+			Logger:     newWireLog(t, "go-modbus server"),
+		}, d)
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+		if err = srv.Start(); err == nil {
+			break
+		}
+		if !portTaken(err.Error()) || attempt == portAttempts {
+			t.Fatalf("start go-modbus server on %s: %v", d.Addr, err)
+		}
+		t.Logf("port of %s was taken before the go-modbus server could bind it; trying another", d.Addr)
 	}
 	t.Cleanup(func() { _ = srv.Stop() })
 	return d

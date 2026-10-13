@@ -1,5 +1,26 @@
 # go-modbus Releases
 
+## v1.4.2
+
+**Date:** 2026-10-13
+**Previous release:** v1.4.1
+
+## Summary
+
+Test-only release: the interop suite no longer fails when a port it picked is taken before it can bind it. The library is unchanged from v1.4.1.
+
+## Changes
+
+### Fixed
+
+- **Interop suite: "bind: address already in use".** The interop run on the v1.4.1 commit failed in `TestServerScenarios/nmodbus` before any Modbus traffic: the go-modbus device could not listen on the port the harness had picked for it. The harness picked a free port on loopback and then bound it on all interfaces (the reference clients run in containers and reach the device through the Docker bridge); a port can be free on loopback and in use on another interface. The port is now picked on the address that is bound, and starting the go-modbus device or publishing the port of a reference server is retried on a new port when the port turns out to be taken. No interop scenario or expectation changed.
+
+### Unchanged
+
+- Library code, wire format and API: identical to v1.4.1.
+
+---
+
 ## v1.4.1
 
 **Date:** 2026-10-13

@@ -238,11 +238,24 @@ type refServer struct {
 // their names carry the prefix go-modbus-interop- and the pid of the test.
 func startServer(t testing.TB, a adapter) *refServer {
 	t.Helper()
-	port := freePort(t)
-	name := fmt.Sprintf("go-modbus-interop-%s-%d-%d", a.name, os.Getpid(), containerSeq.Add(1))
-	if _, stderr, err := docker("run", "-d", "--name", name,
-		"-p", fmt.Sprintf("127.0.0.1:%d:%s", port, containerPort), a.image, "server"); err != nil {
-		t.Fatalf("start %s server: %v\n%s", a.name, err, stderr)
+	var (
+		port int
+		name string
+	)
+	for attempt := 1; ; attempt++ {
+		port = freePort(t, "127.0.0.1")
+		name = fmt.Sprintf("go-modbus-interop-%s-%d-%d", a.name, os.Getpid(), containerSeq.Add(1))
+		_, stderr, err := docker("run", "-d", "--name", name,
+			"-p", fmt.Sprintf("127.0.0.1:%d:%s", port, containerPort), a.image, "server")
+		if err == nil {
+			break
+		}
+		// A container that could not publish its port exists but did not start.
+		_, _, _ = docker("rm", "-f", name)
+		if !portTaken(stderr) || attempt == portAttempts {
+			t.Fatalf("start %s server: %v\n%s", a.name, err, stderr)
+		}
+		t.Logf("port %d was taken before the %s server could publish it; trying another", port, a.name)
 	}
 	s := &refServer{adapter: a, name: name, addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}
 	t.Cleanup(func() {
@@ -483,14 +496,27 @@ func execClient(t testing.TB, a adapter, dockerArgs, clientArgs []string) *resul
 	return r
 }
 
-func freePort(t testing.TB) int {
+// portAttempts is how often a listener is started on a newly picked port
+// before giving up. A port is picked by binding and releasing it, so another
+// process, or a container being started in parallel, can take it in between.
+const portAttempts = 5
+
+// freePort returns a TCP port that is free on host right now. The port must be
+// picked on the address that will be bound: a port can be free on loopback and
+// taken on another interface, which makes it unusable for 0.0.0.0.
+func freePort(t testing.TB, host string) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = ln.Close() }()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// portTaken reports whether a failure to listen says that the port is in use.
+func portTaken(msg string) bool {
+	return strings.Contains(msg, "address already in use") || strings.Contains(msg, "port is already allocated")
 }
 
 // wireLog collects the debug log of a go-modbus client or server, which
