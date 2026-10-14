@@ -37,7 +37,10 @@ The server now serves every function code the client sends. Until now it had no 
   - eight clients at once with failing requests, run under `-race`;
   - in-process validation of every malformed or out-of-range request;
   - a new fuzz target, `FuzzServerFunctions`.
-- **Interop:** the reference clients now send FC08, FC20, FC21 and FC24 to the go-modbus server as raw PDUs: 13 operations with their exceptions, checked against the specification. libmodbus skips the successful ones, because it cannot frame responses to function codes it does not know.
+- **Interop against modbus-interop v0.2.0** (contract 1.1, PyModbus 3.16.1), with the images pinned by the digests of its release:
+  - Reference clients → go-modbus server: their own `diagnostics`, `report-server-id`, `read-file-record`, `write-file-record` and `read-fifo-queue` operations where they have them (PyModbus all five, libmodbus and tokio-modbus FC17, NModbus FC21), and raw PDUs for FC08, FC20, FC21 and FC24 from every client that can receive them (`clientRawAnyResponse`; libmodbus cannot). Outcomes, values and the device state are checked, and typed results are compared with what the client gets from a reference server.
+  - go-modbus client → reference servers (`TestClientMoreFunctions`): Diagnostics against PyModbus and NModbus; Report Server ID, file records (two sub-requests, a write read back on a second connection) and FIFO queues against PyModbus; Illegal Function from the servers without them.
+  - The go-modbus interop device serves FC08, FC17, FC20, FC21 and FC24 from the fixture of the image, no longer from data of its own.
 
 ### Fixed
 

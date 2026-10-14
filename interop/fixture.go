@@ -29,6 +29,54 @@ type fixture struct {
 	DeviceID         *struct {
 		Objects []fixtureObject `json:"objects"`
 	} `json:"deviceIdentification"`
+	ServerID *struct {
+		ServerID     uint8 `json:"serverId"`
+		RunIndicator bool  `json:"runIndicator"`
+	} `json:"reportServerId"`
+	Files []fixtureFile `json:"fileRecords"`
+	FIFOs []fixtureFIFO `json:"fifoQueues"`
+}
+
+// fixtureFile is a file of FC20/FC21: record n is Records[n].
+type fixtureFile struct {
+	File    uint16   `json:"file"`
+	Records []uint16 `json:"records"`
+}
+
+// fixtureFIFO is an FC24 queue at a FIFO pointer address, oldest value first.
+type fixtureFIFO struct {
+	Address uint16   `json:"address"`
+	Values  []uint16 `json:"values"`
+}
+
+// file returns the records of file n, or nil.
+func (fx *fixture) file(n uint16) []uint16 {
+	for _, f := range fx.Files {
+		if f.File == n {
+			return f.Records
+		}
+	}
+	return nil
+}
+
+// fifo returns the queue at addr and whether there is one.
+func (fx *fixture) fifo(addr uint16) ([]uint16, bool) {
+	for _, q := range fx.FIFOs {
+		if q.Address == addr {
+			return q.Values, true
+		}
+	}
+	return nil, false
+}
+
+// serverIDData is the FC17 response data after the byte count: the server
+// ID and the run indicator.
+func (fx *fixture) serverIDData() []byte {
+	run := byte(0x00)
+	if fx.ServerID.RunIndicator {
+		run = 0xFF
+	}
+	return []byte{fx.ServerID.ServerID, run}
 }
 
 type bitBlock struct {
@@ -126,6 +174,11 @@ func baselineHoldingRegister(i int) uint16 {
 	return uint16((i*257 + 13) % 65536)
 }
 
+// baselineFileRecord is record i of file 1; baselineFIFO is value i of the
+// 31-value queue at address 100.
+func baselineFileRecord(i int) uint16 { return uint16((i*409 + 11) % 65536) }
+func baselineFIFO(i int) uint16       { return uint16((i*1031 + 5) % 65536) }
+
 func baselineInputRegister(i int) uint16 {
 	first := []uint16{65535, 0, 32768, 1}
 	if i < len(first) {
@@ -145,19 +198,9 @@ type device struct {
 	mu       sync.Mutex
 	coils    []bool
 	holding  []uint16
-	file     []uint16
+	files    map[uint16][]uint16
 	requests []deviceRequest
 }
-
-// The functions FIXTURES.md does not cover are served from go-modbus's own
-// data, checked against the specification alone: file 1 of fileRecords
-// records for FC20/FC21, the FIFO queue at address 0 for FC24, and Return
-// Query Data for FC08.
-const fileRecords = 100
-
-var fifoQueue = []uint16{0x0102, 0x0304, 0x0506}
-
-func baselineFileRecord(i int) uint16 { return uint16(i*409 + 11) }
 
 // deviceRequest is one request as the handler saw it.
 type deviceRequest struct {
@@ -173,10 +216,10 @@ func startDevice(t testing.TB, fx *fixture) *device {
 		fx:      fx,
 		coils:   append([]bool(nil), fx.Coils.Values...),
 		holding: append([]uint16(nil), fx.HoldingRegisters.Values...),
-		file:    make([]uint16, fileRecords),
+		files:   map[uint16][]uint16{},
 	}
-	for i := range d.file {
-		d.file[i] = baselineFileRecord(i)
+	for _, f := range fx.Files {
+		d.files[f.File] = append([]uint16(nil), f.Records...)
 	}
 	// All interfaces: a container reaches the host through the bridge on
 	// Linux, not through loopback.
@@ -330,7 +373,8 @@ func (d *device) HandleDeviceIdentification(_ context.Context, req *modbus.Devic
 	return res, nil
 }
 
-// HandleDiagnostics serves Return Query Data (sub-function 0x0000) only.
+// HandleDiagnostics serves Return Query Data (sub-function 0x0000) only
+// (FIXTURES.md rule 8).
 func (d *device) HandleDiagnostics(_ context.Context, req *modbus.DiagnosticsRequest) ([]byte, error) {
 	if err := d.seen(req.ClientAddr, req.FunctionCode, req.UnitID); err != nil {
 		return nil, err
@@ -341,8 +385,24 @@ func (d *device) HandleDiagnostics(_ context.Context, req *modbus.DiagnosticsReq
 	return req.Data, nil
 }
 
-// fileRange reports whether file f has records rec..rec+n-1.
-func fileRange(f, rec uint16, n int) bool { return f == 1 && int(rec)+n <= fileRecords }
+// HandleReportServerID serves the fixture's server ID and run indicator.
+func (d *device) HandleReportServerID(_ context.Context, req *modbus.ReportServerIDRequest) ([]byte, error) {
+	if err := d.seen(req.ClientAddr, req.FunctionCode, req.UnitID); err != nil {
+		return nil, err
+	}
+	if d.fx.ServerID == nil {
+		return nil, modbus.ErrIllegalFunction
+	}
+	return d.fx.serverIDData(), nil
+}
+
+// fileRange returns file f if it has records rec..rec+n-1. Called with d.mu held.
+func (d *device) fileRange(f, rec uint16, n int) []uint16 {
+	if file := d.files[f]; int(rec)+n <= len(file) {
+		return file
+	}
+	return nil
+}
 
 func (d *device) HandleReadFileRecords(_ context.Context, req *modbus.ReadFileRecordsRequest) ([][]uint16, error) {
 	if err := d.seen(req.ClientAddr, req.FunctionCode, req.UnitID); err != nil {
@@ -352,10 +412,11 @@ func (d *device) HandleReadFileRecords(_ context.Context, req *modbus.ReadFileRe
 	defer d.mu.Unlock()
 	out := make([][]uint16, len(req.Requests))
 	for i, r := range req.Requests {
-		if !fileRange(r.FileNumber, r.RecordNumber, int(r.RecordLength)) {
+		file := d.fileRange(r.FileNumber, r.RecordNumber, int(r.RecordLength))
+		if file == nil {
 			return nil, modbus.ErrIllegalDataAddress
 		}
-		out[i] = append([]uint16(nil), d.file[r.RecordNumber:int(r.RecordNumber)+int(r.RecordLength)]...)
+		out[i] = append([]uint16(nil), file[r.RecordNumber:int(r.RecordNumber)+int(r.RecordLength)]...)
 	}
 	return out, nil
 }
@@ -368,12 +429,12 @@ func (d *device) HandleWriteFileRecords(_ context.Context, req *modbus.WriteFile
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, r := range req.Records {
-		if !fileRange(r.FileNumber, r.RecordNumber, len(r.Data)) {
+		if d.fileRange(r.FileNumber, r.RecordNumber, len(r.Data)) == nil {
 			return modbus.ErrIllegalDataAddress
 		}
 	}
 	for _, r := range req.Records {
-		copy(d.file[r.RecordNumber:], r.Data)
+		copy(d.files[r.FileNumber][r.RecordNumber:], r.Data)
 	}
 	return nil
 }
@@ -382,16 +443,18 @@ func (d *device) HandleReadFIFOQueue(_ context.Context, req *modbus.FIFOQueueReq
 	if err := d.seen(req.ClientAddr, req.FunctionCode, req.UnitID); err != nil {
 		return nil, err
 	}
-	if req.Addr != 0 {
+	q, ok := d.fx.fifo(req.Addr)
+	if !ok {
 		return nil, modbus.ErrIllegalDataAddress
 	}
-	return fifoQueue, nil
+	return q, nil
 }
 
-func (d *device) fileNow() []uint16 {
+// fileNow returns the current records of file n.
+func (d *device) fileNow(n uint16) []uint16 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return append([]uint16(nil), d.file...)
+	return append([]uint16(nil), d.files[n]...)
 }
 
 // coilsNow and holdingNow return the current state of the device.

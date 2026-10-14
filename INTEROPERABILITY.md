@@ -112,12 +112,12 @@ category the device has objects for, with the bit for individual access
 Besides its own tests the library is run against five independent
 implementations, as client and as server, on every push. The reference
 builds are the images of
-[otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.1.0:
+[otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.2.0:
 
 | Reference | Version | go-modbus client → reference server | reference client → go-modbus server |
 |-----------|---------|-------------------------------------|-------------------------------------|
 | libmodbus (C) | v3.2.0 | pass ¹ | pass ¹ |
-| PyModbus (Python) | 3.15.0 | pass | pass |
+| PyModbus (Python) | 3.16.1 | pass | pass |
 | digitalpetri/modbus (Java) | 2.1.6 | pass ¹ | pass ² |
 | NModbus (C#) | 3.0.83 | pass ¹ ³ | pass ³ |
 | tokio-modbus (Rust) | 0.17.0 | pass | pass |
@@ -126,15 +126,27 @@ builds are the images of
 ² FC43 through the client's raw operation only: the stack has no call for it.
 ³ without Mask Write Register: NModbus has no FC22.
 
+FC08, FC17, FC20, FC21 and FC24 are covered where a reference has them,
+and through raw PDUs from every reference client:
+
+| Function | go-modbus client → reference server | reference client → go-modbus server |
+|----------|-------------------------------------|-------------------------------------|
+| 08 Diagnostics (Return Query Data) | PyModbus, NModbus | PyModbus (`diagnostics`); PyModbus, digitalpetri, NModbus, tokio-modbus (raw) |
+| 17 Report Server ID | PyModbus | libmodbus, PyModbus, tokio-modbus (`report-server-id`) |
+| 20, 21 Read / Write File Record | PyModbus | PyModbus (both), NModbus (FC21); PyModbus, digitalpetri, NModbus, tokio-modbus (raw) |
+| 24 Read FIFO Queue | PyModbus | PyModbus (`read-fifo-queue`); PyModbus, digitalpetri, NModbus, tokio-modbus (raw) |
+
+libmodbus frames a response by its function code, so its raw operation
+cannot receive the normal responses of FC08, FC20, FC21 and FC24; the images
+declare this (`clientRawAnyResponse`). The other servers answer these
+functions with exception 1, which the suite checks.
+
 The suite reads what each reference declares (`print-capabilities`) and
 skips what it lacks.
 
-The suite (`make interop`, package `interop`) covers FC01 to FC06, FC15,
-FC16, FC22, FC23 and FC43/14 on Modbus TCP in both directions, and FC08,
-FC20, FC21 and FC24 against the go-modbus server through the reference
-clients' raw operation (the reference stacks have no common call for them,
-and the reference servers differ on them, so those outcomes are checked
-against the specification):
+The suite (`make interop`, package `interop`) covers FC01 to FC06, FC08,
+FC15, FC16, FC17, FC20 to FC24 and FC43/14 on Modbus TCP, in both
+directions where a reference has the function:
 
 - **go-modbus client → reference servers.** Every table of the reference
   device read in full, at the boundaries of its block, across byte
@@ -147,11 +159,17 @@ against the specification):
   (nothing written). Device identification in every category, from a later
   object, and by individual access. Exceptions 1, 2 and 11. Two thousand
   requests on one connection; sixteen connections at once and a pooled
-  client shared by 32 goroutines.
-- **reference clients → go-modbus server.** 105 operations per client (fewer
-  where a client lacks an operation) against a go-modbus device that serves the same fixture by the same
-  rules: every operation the client has, `--repeat` up to 1000 requests on
-  one connection, raw PDUs (FC08 Return Query Data, FC20 with one and two
+  client shared by 32 goroutines. Return Query Data and an unknown
+  sub-function, Report Server ID, file records with two sub-requests, to
+  the last record and outside the files, a file write read back on a second
+  connection, and every FIFO queue of the fixture, against the servers that
+  have them; Illegal Function from the others.
+- **reference clients → go-modbus server.** 120 operations per client (fewer
+  where a client lacks an operation) against a go-modbus device that serves
+  the same fixture by the same rules: every operation the client has,
+  `--repeat` up to 1000 requests on one connection, the client's own
+  diagnostics, report-server-id, file record and FIFO queue operations where
+  it has them, raw PDUs (FC08 Return Query Data, FC20 with one and two
   sub-requests, FC21, FC24, and their exceptions), exceptions 1, 2, 3 and 11.
   Each operation must have the outcome the fixture rules and the
   specification prescribe, the
@@ -176,7 +194,7 @@ In go-modbus, fixed in v1.3.0:
 In the reference stacks, as packaged by modbus-interop (none of these makes
 a test fail; the suite records them where it meets them):
 
-- **PyModbus 3.15.0** accepts FC05 with a value other than `0x0000` and
+- **PyModbus 3.16.1** accepts FC05 with a value other than `0x0000` and
   `0xFF00` as ON and answers `0xFF00`. go-modbus reports the wrong echo as a
   protocol error. It answers FC43/14 stream access from an object the device
   does not have with no object at all.
@@ -187,6 +205,15 @@ a test fail; the suite records them where it meets them):
 - **libmodbus v3.2.0** frames a response by its function code, so its client
   cannot read the response to a function it does not know (FC08, FC20, FC21,
   FC24, FC43).
+- **tokio-modbus 0.17.0** frames its server's FC17 response with an MBAP
+  length one byte short; the image refuses FC17 because of it.
+- **The PyModbus 3.16.1 server** cannot decode an FC20 request for an odd
+  number of registers (it answers `80 01`) and ignores the reference type.
+  The client tests read even lengths, and `SupportsFunction(FC20)`, whose
+  probe reads one register, is not checked against it.
+
+Further findings on these stacks are in modbus-interop's
+[COMPATIBILITY.md](https://github.com/otfabric/modbus-interop/blob/v0.2.0/docs/COMPATIBILITY.md).
 
 It has **not** been run against certified test equipment. Reports from the
 field are welcome.

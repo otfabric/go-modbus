@@ -58,8 +58,28 @@ func (sc scenario) needs() []string {
 		out = append(out, featClientReadWriteMultiple)
 	case "read-device-identification":
 		out = append(out, featClientDeviceIdentification)
+	case "diagnostics":
+		out = append(out, featClientDiagnostics)
+	case "report-server-id":
+		out = append(out, featClientReportServerID)
+	case "read-file-record":
+		out = append(out, featClientReadFileRecord)
+	case "write-file-record":
+		out = append(out, featClientWriteFileRecord)
+	case "read-fifo-queue":
+		out = append(out, featClientFIFOQueue)
 	case "raw":
 		out = append(out, featClientRaw)
+		// A normal response to a function the client's library does not
+		// know can only be received by a raw operation that frames by the
+		// MBAP length.
+		if strings.HasPrefix(sc.want, "exit=0") {
+			switch sc.flag("--function", 0) {
+			case 1, 2, 3, 4, 5, 6, 15, 16, 17, 22, 23:
+			default:
+				out = append(out, featClientRawAnyResponse)
+			}
+		}
 	}
 	if strings.Contains(sc.args, "--repeat") {
 		out = append(out, featClientRepeat)
@@ -387,45 +407,81 @@ var scenarios = []scenario{
 	{args: "raw --function 3 --data 00000000 --unit-id 2", want: exception(3, illegalValue), ref: specOnly},
 }
 
-// rawFunctions sends the functions FIXTURES.md does not cover as raw PDUs:
-// Diagnostics (FC08), Read and Write File Record (FC20, FC21) and Read FIFO
-// Queue (FC24), served from the data in fixture.go. The reference servers
-// differ on these, so the outcome is checked against the specification.
-var rawFunctions = []scenario{
-	// Return Query Data echoes the request (spec 6.8.1).
-	{args: "raw --function 8 --data 00001234", want: ok(8, 0), ref: specOnly, check: rawIs("0000 1234")},
-	{args: "raw --function 8 --data 0000a5a5c3c3", want: ok(8, 0), ref: specOnly, check: rawIs("0000 a5a5 c3c3")},
-	{args: "raw --function 8 --data 00030000", want: exception(8, illegalFunc), ref: specOnly},
-	// One sub-request: response data length, file response length,
-	// reference type, the records (spec 6.14).
-	{args: "raw --function 20 --data 0706000100000002", want: ok(20, 0), ref: specOnly, check: rawIs("06 05 06 000b 01a4")},
-	{args: "raw --function 20 --data 0e0600010000000106000100020001", want: ok(20, 0), ref: specOnly,
-		check: rawIs("08 03 06 000b 03 06 033d")},
-	{args: "raw --function 20 --data 0706000200000001", want: exception(20, illegalAddr), ref: specOnly},
-	{args: "raw --function 20 --data 0706000100630002", want: exception(20, illegalAddr), ref: specOnly},
-	{args: "raw --function 20 --data 0707000100000001", want: exception(20, illegalAddr), ref: specOnly},
-	{args: "raw --function 20 --data 00", want: exception(20, illegalValue), ref: specOnly},
-	// The response is the echo of the request (spec 6.15).
-	{args: "raw --function 21 --data 0906000100050001beef", want: ok(21, 0), ref: specOnly, mutates: true,
-		check: all(rawIs("09 06 0001 0005 0001 beef"), fileIs(5, 0xBEEF))},
-	{args: "raw --function 21 --data 0906000200050001beef", want: exception(21, illegalAddr), ref: specOnly, check: fileIs(0)},
-	// Byte count, FIFO count, the values (spec 6.18).
-	{args: "raw --function 24 --data 0000", want: ok(24, 0), ref: specOnly, check: rawIs("0008 0003 0102 0304 0506")},
-	{args: "raw --function 24 --data 0001", want: exception(24, illegalAddr), ref: specOnly},
+// moreFunctions are FC08, FC17, FC20, FC21 and FC24 (FIXTURES.md rules 8 to
+// 11): through the client's own operation where it has one, and as raw PDUs
+// from every client. The device serves the fixture's server ID, files and
+// FIFO queues.
+func moreFunctions(fx *fixture) []scenario {
+	id := hex.EncodeToString(fx.serverIDData())
+	return []scenario{
+		// Return Query Data echoes the request (spec 6.8.1).
+		{args: "diagnostics --sub-function 0 --data a537", ref: featServerDiagnostics, want: ok(8, 0), check: diagnosticsIs(0, "a537")},
+		{args: "diagnostics --sub-function 257 --data 0000", ref: featServerDiagnostics, want: exception(8, illegalFunc)},
+		{args: "raw --function 8 --data 00001234", want: ok(8, 0), ref: specOnly, check: rawIs("0000 1234")},
+		{args: "raw --function 8 --data 0000a5a5c3c3", want: ok(8, 0), ref: specOnly, check: rawIs("0000 a5a5 c3c3")},
+		{args: "raw --function 8 --data 00030000", want: exception(8, illegalFunc), ref: specOnly},
+		// Byte count, server ID, run indicator (spec 6.13).
+		{args: "report-server-id", ref: featServerReportServerID, want: ok(17, 0), check: rawIs(id)},
+		// One sub-request: response data length, file response length,
+		// reference type, the records (spec 6.14).
+		{args: "read-file-record --file 1 --record 0 --length 2", ref: featServerFileRecord, want: ok(20, 2), check: registersAre(baselineFileRecord(0), baselineFileRecord(1))},
+		{args: "read-file-record --file 1 --record 80 --length 120", ref: featServerFileRecord, want: ok(20, 120)},
+		{args: "read-file-record --file 2 --record 0 --length 4", ref: featServerFileRecord, want: ok(20, 4)},
+		{args: "read-file-record --file 3 --record 0 --length 2", ref: featServerFileRecord, want: exception(20, illegalAddr)},
+		{args: "read-file-record --file 1 --record 198 --length 4", ref: featServerFileRecord, want: exception(20, illegalAddr)},
+		{args: "raw --function 20 --data 0706000100000002", want: ok(20, 0), ref: specOnly, check: rawIs("06 05 06 000b 01a4")},
+		{args: "raw --function 20 --data 0e0600010000000106000100020001", want: ok(20, 0), ref: specOnly,
+			check: rawIs("08 03 06 000b 03 06 033d")},
+		{args: "raw --function 20 --data 0706000300000001", want: exception(20, illegalAddr), ref: specOnly},
+		{args: "raw --function 20 --data 0706000100c70002", want: exception(20, illegalAddr), ref: specOnly},
+		{args: "raw --function 20 --data 0707000100000001", want: exception(20, illegalAddr), ref: specOnly},
+		{args: "raw --function 20 --data 00", want: exception(20, illegalValue), ref: specOnly},
+		// The response is the echo of the request (spec 6.15); nothing is
+		// written when a sub-request is outside the files.
+		{args: "write-file-record --file 1 --record 5 --values 1,2,65535", ref: featServerFileRecord, want: written(21), mutates: true, check: fileIs(1, 5, 1, 2, 65535)},
+		{args: "write-file-record --file 3 --record 0 --values 1", ref: featServerFileRecord, want: exception(21, illegalAddr), check: fileIs(1, 0)},
+		{args: "write-file-record --file 2 --record 3 --values 7,8", ref: featServerFileRecord, want: exception(21, illegalAddr), check: fileIs(2, 0)},
+		{args: "raw --function 21 --data 0906000100050001beef", want: ok(21, 0), ref: specOnly, mutates: true,
+			check: all(rawIs("09 06 0001 0005 0001 beef"), fileIs(1, 5, 0xBEEF))},
+		{args: "raw --function 21 --data 0906000300050001beef", want: exception(21, illegalAddr), ref: specOnly, check: fileIs(1, 0)},
+		// Byte count, FIFO count, the values (spec 6.18).
+		{args: "read-fifo-queue --address 1246", ref: featServerFIFOQueue, want: ok(24, 2), check: registersAre(440, 4740)},
+		{args: "read-fifo-queue --address 100", ref: featServerFIFOQueue, want: ok(24, 31), check: registersAre(baselineFIFOQueue()...)},
+		{args: "read-fifo-queue --address 101", ref: featServerFIFOQueue, want: ok(24, 0)},
+		{args: "read-fifo-queue --address 102", ref: featServerFIFOQueue, want: exception(24, illegalAddr)},
+		{args: "raw --function 24 --data 04de", want: ok(24, 0), ref: specOnly, check: rawIs("0006 0002 01b8 1284")},
+		{args: "raw --function 24 --data 0066", want: exception(24, illegalAddr), ref: specOnly},
+	}
 }
 
-// fileIs checks that file 1 holds the baseline with the given records
-// replaced.
-func fileIs(rec int, values ...uint16) func(*testing.T, *fixture, *result, *device) {
-	return func(t *testing.T, _ *fixture, _ *result, d *device) {
+func baselineFIFOQueue() []uint16 {
+	out := make([]uint16, 31)
+	for i := range out {
+		out[i] = baselineFIFO(i)
+	}
+	return out
+}
+
+// diagnosticsIs checks the sub-function and data of a diagnostics response.
+func diagnosticsIs(sub int, data string) func(*testing.T, *fixture, *result, *device) {
+	return func(t *testing.T, _ *fixture, r *result, _ *device) {
 		t.Helper()
-		want := make([]uint16, fileRecords)
-		for i := range want {
-			want[i] = baselineFileRecord(i)
+		if r.Response == nil || r.Response.SubFunction == nil || *r.Response.SubFunction != sub ||
+			r.Response.Data == nil || *r.Response.Data != data {
+			t.Errorf("diagnostics response: got %v, want sub-function %d, data %s", r.raw["response"], sub, data)
 		}
+	}
+}
+
+// fileIs checks that file n holds the fixture's records with the given ones
+// replaced from rec on.
+func fileIs(n uint16, rec int, values ...uint16) func(*testing.T, *fixture, *result, *device) {
+	return func(t *testing.T, fx *fixture, _ *result, d *device) {
+		t.Helper()
+		want := append([]uint16(nil), fx.file(n)...)
 		copy(want[rec:], values)
-		if got := d.fileNow(); !reflect.DeepEqual(got, want) {
-			t.Errorf("file 1 after the operation: %s", diffRegisters(got, want))
+		if got := d.fileNow(n); !reflect.DeepEqual(got, want) {
+			t.Errorf("file %d after the operation: %s", n, diffRegisters(got, want))
 		}
 	}
 }
@@ -437,7 +493,7 @@ func rawIdentification(fx *fixture) []scenario {
 	return []scenario{
 		{args: "raw --function 43 --data 0e0100", want: ok(43, 0), ref: specOnly, check: rawIs(basicIdentificationPDU(fx))},
 		// Stream access from an object the device does not have starts
-		// at object 0 (spec 6.21). PyModbus 3.15.0 answers with no object.
+		// at object 0 (spec 6.21). PyModbus 3.16.1 answers with no object.
 		{args: "raw --function 43 --data 0e0180", want: ok(43, 0), ref: specOnly, check: rawIs(basicIdentificationPDU(fx))},
 		// Individual access to object 1 (ProductCode).
 		{args: "raw --function 43 --data 0e0401", want: ok(43, 0), ref: specOnly,
@@ -465,19 +521,9 @@ func reference(t *testing.T, a adapter, sc scenario) *adapter {
 }
 
 // skipFor names the scenarios a reference client cannot run although it
-// declares the operation, and why.
-func skipFor(a adapter, sc scenario) string {
-	// libmodbus v3.2.0 frames a response by its function code, not by the
-	// MBAP length, so its raw operation cannot read the response to a
-	// function the library does not know: COMPATIBILITY.md § libmodbus.
-	if a.name == libmodbus && sc.operation() == "raw" && strings.HasPrefix(sc.want, "exit=0") {
-		switch fc := sc.flag("--function", 0); fc {
-		case 8, 20, 21, 24, 43:
-			return fmt.Sprintf("libmodbus cannot read an FC%02d response: it frames responses by function code", fc)
-		}
-	}
-	return ""
-}
+// declares what they need, and why. There are none at present: what a
+// client lacks, its capability document says.
+func skipFor(adapter, scenario) string { return "" }
 
 // TestServerScenarios drives a go-modbus device with every reference client
 // and checks, for each operation: that the outcome is what the fixture rules
@@ -488,7 +534,7 @@ func TestServerScenarios(t *testing.T) {
 	forEachAdapter(t, func(t *testing.T, a adapter) {
 		logReference(t, a)
 		fx := loadFixture(t, a)
-		list := append(append(append([]scenario(nil), scenarios...), rawFunctions...), rawIdentification(fx)...)
+		list := append(append(append([]scenario(nil), scenarios...), moreFunctions(fx)...), rawIdentification(fx)...)
 		sharedDevice := startDevice(t, fx)
 		// The reference servers that the scenarios which leave the device
 		// alone are compared with, by adapter.
@@ -556,7 +602,9 @@ func TestServerScenarios(t *testing.T) {
 		if got := sharedDevice.coilsNow(); !reflect.DeepEqual(got, fx.Coils.Values) {
 			t.Errorf("a scenario that should not write changed the coils: %s", diffBits(got, fx.Coils.Values))
 		}
-		fileIs(0)(t, fx, nil, sharedDevice)
+		for _, f := range fx.Files {
+			fileIs(f.File, 0)(t, fx, nil, sharedDevice)
+		}
 	})
 }
 
@@ -622,6 +670,22 @@ func checkReadValues(t *testing.T, fx *fixture, sc scenario, r *result) {
 		wantRegisters(t, r.Response.Registers, fx.HoldingRegisters, addr, qty)
 	case "read-input-registers":
 		wantRegisters(t, r.Response.Registers, fx.InputRegisters, addr, qty)
+	case "read-file-record":
+		file := fx.file(uint16(sc.flag("--file", 0)))
+		rec := sc.flag("--record", 0)
+		if want := file[rec : rec+sc.flag("--length", 0)]; !reflect.DeepEqual(r.Response.Registers, want) {
+			t.Errorf("file record: %s", diffRegisters(r.Response.Registers, want))
+		}
+	case "read-fifo-queue":
+		if want, _ := fx.fifo(uint16(sc.flag("--address", 0))); !reflect.DeepEqual(r.Response.Registers, want) &&
+			(len(want) != 0 || len(r.Response.Registers) != 0) {
+			t.Errorf("FIFO queue: got %v, want %v", r.Response.Registers, want)
+		}
+	case "write-file-record":
+		if r.Response.File == nil || *r.Response.File != sc.flag("--file", 0) ||
+			r.Response.Record == nil || *r.Response.Record != sc.flag("--record", 0) {
+			t.Errorf("the response echoes %v, want file %d record %d", r.raw["response"], sc.flag("--file", 0), sc.flag("--record", 0))
+		}
 	case "write-single-coil", "write-single-register", "write-multiple-coils", "write-multiple-registers", "mask-write-register":
 		if r.Response.Address == nil || *r.Response.Address != addr {
 			t.Errorf("the response echoes address %v, want %d", r.raw["response"], addr)

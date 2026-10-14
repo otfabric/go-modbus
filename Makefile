@@ -25,19 +25,19 @@ PKGS := $(shell go list -tags=$(INTEROP_TAGS) ./... | grep -v '/examples$$' | se
 # Core library + subpackages: tests and coverage (exclude cmd, examples and the interop suite)
 TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/cmd' | grep -v '/interop' | sed 's,^github.com/otfabric/go-modbus,.,')
 
-# Reference implementations for 'make interop': otfabric/modbus-interop v0.1.0
-# (libmodbus v3.2.0, PyModbus 3.15.0, digitalpetri/modbus 2.1.6, NModbus 3.0.83,
+# Reference implementations for 'make interop': otfabric/modbus-interop v0.2.0
+# (libmodbus v3.2.0, PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83,
 # tokio-modbus 0.17.0).
 # The images are pinned by the multi-arch index digests of its release manifest.
 # Keep in step with interop/harness.go and .github/workflows/interop.yml.
 # Override to test other builds, e.g.
 #   make interop MODBUS_INTEROP_PYMODBUS_IMAGE=ghcr.io/otfabric/modbus-interop-pymodbus:dev
 # MODBUS_INTEROP_ADAPTERS=libmodbus,pymodbus restricts the run to a subset.
-MODBUS_INTEROP_LIBMODBUS_IMAGE    ?= ghcr.io/otfabric/modbus-interop-libmodbus@sha256:d51da912841f7afc78095fb043193601e13c463b847384d5316d1ed37d7d0b6d
-MODBUS_INTEROP_PYMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-pymodbus@sha256:bae6b6cffd82108ac017e157d8a21d36ef2cbec960d938990eb07a52e765a738
-MODBUS_INTEROP_DIGITALPETRI_IMAGE ?= ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:7d78a87dc88cdca4b09b639aa4ed25c604620984233b157df8ab57fc98c79da6
-MODBUS_INTEROP_NMODBUS_IMAGE      ?= ghcr.io/otfabric/modbus-interop-nmodbus@sha256:6da5066a5274ece1788d545ee7ca9153e8366767a5d6599f916ca69b16e408fb
-MODBUS_INTEROP_TOKIOMODBUS_IMAGE  ?= ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:23f93e71653ef8fdc62de05826a4f015de5141770402b3c398fabd129b7122e7
+MODBUS_INTEROP_LIBMODBUS_IMAGE    ?= ghcr.io/otfabric/modbus-interop-libmodbus@sha256:b8b2d7e71908c225995037596e2d55b4700194b63a533ff57b8af074fb2dbf62
+MODBUS_INTEROP_PYMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-pymodbus@sha256:33b703491abc2f15c229ff433ffbb79eb00e86a8c56c30fb7799c8ed13832f5a
+MODBUS_INTEROP_DIGITALPETRI_IMAGE ?= ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:c9746131c1ed55c3beb8e507925aa01e466278fd2074a69926e6f4797959bf59
+MODBUS_INTEROP_NMODBUS_IMAGE      ?= ghcr.io/otfabric/modbus-interop-nmodbus@sha256:761f5ce9f0175125ad4262d98e42460fd5235717f44bd8ab7973239f9ed86f80
+MODBUS_INTEROP_TOKIOMODBUS_IMAGE  ?= ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:b317fc4c8e3c834a40fb1316582d5663885e4688aa17ba7eb69dd8a61495a2c8
 
 
 all: build ## Default target: build cmd + examples apps
