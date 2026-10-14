@@ -33,21 +33,25 @@ repository's own tests.
 | 05 | Write Single Coil | yes | yes |
 | 06 | Write Single Register | yes | yes |
 | 07 | Read Exception Status | yes | opt |
-| 08 | Diagnostics | yes | no |
+| 08 | Diagnostics | yes | opt, every sub-function passed to the handler; Force Listen Only Mode may go unanswered |
 | 11 | Get Comm Event Counter | yes | opt |
 | 12 | Get Comm Event Log | yes | opt |
 | 15 | Write Multiple Coils | yes, 1..1968 | yes |
 | 16 | Write Multiple Registers | yes, 1..123 | yes |
-| 17 | Report Server ID | yes | no |
-| 20, 21 | Read / Write File Record | yes | no |
+| 17 | Report Server ID | yes | opt |
+| 20, 21 | Read / Write File Record | yes | opt, several sub-requests, reference type 6, records 0..9999 |
 | 22 | Mask Write Register | yes | opt |
 | 23 | Read/Write Multiple Registers | yes, read 1..125, write 1..121 | opt |
-| 24 | Read FIFO Queue | yes | no |
+| 24 | Read FIFO Queue | yes | opt, up to 31 values |
 | 43/14 | Read Device Identification | yes, all categories, follows "more follows" | opt, stream and individual access, pagination |
 
-A function code the server does not implement, an optional one whose handler
-the application does not provide, and an MEI type other than 14 are answered
-with exception 1 (illegal function).
+Every function code the client sends is served by the server, and the
+repository's end-to-end suite fails if one is not. Any other function code
+(vendor and user-defined ones included), an optional one whose handler the
+application does not provide, and an MEI type other than 14 go to the
+application's `RawRequestHandler` when it provides one, which answers with the
+raw response PDU; without it they are answered with exception 1 (illegal
+function).
 
 ## How the client treats a response
 
@@ -72,15 +76,19 @@ answer:
 | Request | Answer |
 |---------|--------|
 | MBAP header invalid (protocol identifier, length) | connection closed |
-| Function code not implemented, or its handler not provided | exception 1 |
-| PDU too short to hold the fields of its function, or FC01..06 and FC22 with a length other than the one the function has | connection closed |
+| Function code not implemented, or its handler not provided | the `RawRequestHandler` if provided, else exception 1 |
+| PDU too short to hold the fields of its function, FC01..06, FC22 and FC24 with a length other than the one the function has, FC17 with data, FC20 and FC21 with a byte count that is not the length of the rest | connection closed |
 | Quantity 0 or above the maximum of the function (FC01, 02, 03, 04, 15, 16, 23) | exception 3 |
 | FC15, FC16, FC23: byte count that is not the one the quantity asks for | exception 3 |
 | FC05: value other than `0x0000` and `0xFF00` | exception 3 |
 | FC43/14: read device ID code outside 1..4 | exception 3 |
+| FC20: byte count outside 7..245 or not a multiple of 7, or a response that would not fit in one PDU; FC21: byte count outside 9..251 | exception 3 |
+| FC20, FC21: reference type other than 6, file 0, record above 9999, record length 0 | exception 2 |
 | Address range that runs beyond 65535 | exception 2 |
 | FC15, FC16, FC23: byte count right, but the data has another length | connection closed |
 | Anything else | the `RequestHandler` decides: values, or an error that maps to an exception |
+| FC24: the handler returns more than 31 values | exception 3 |
+| A handler returns a response that does not fit in one PDU, or FC20 records of another length than requested | exception 4 |
 
 Two consequences for an application that models a device:
 
@@ -122,7 +130,11 @@ The suite reads what each reference declares (`print-capabilities`) and
 skips what it lacks.
 
 The suite (`make interop`, package `interop`) covers FC01 to FC06, FC15,
-FC16, FC22, FC23 and FC43/14 on Modbus TCP:
+FC16, FC22, FC23 and FC43/14 on Modbus TCP in both directions, and FC08,
+FC20, FC21 and FC24 against the go-modbus server through the reference
+clients' raw operation (the reference stacks have no common call for them,
+and the reference servers differ on them, so those outcomes are checked
+against the specification):
 
 - **go-modbus client → reference servers.** Every table of the reference
   device read in full, at the boundaries of its block, across byte
@@ -136,11 +148,13 @@ FC16, FC22, FC23 and FC43/14 on Modbus TCP:
   object, and by individual access. Exceptions 1, 2 and 11. Two thousand
   requests on one connection; sixteen connections at once and a pooled
   client shared by 32 goroutines.
-- **reference clients → go-modbus server.** 92 operations per client (fewer
+- **reference clients → go-modbus server.** 105 operations per client (fewer
   where a client lacks an operation) against a go-modbus device that serves the same fixture by the same
   rules: every operation the client has, `--repeat` up to 1000 requests on
-  one connection, raw PDUs, exceptions 1, 2, 3 and 11. Each operation must
-  have the outcome the fixture rules and the specification prescribe, the
+  one connection, raw PDUs (FC08 Return Query Data, FC20 with one and two
+  sub-requests, FC21, FC24, and their exceptions), exceptions 1, 2, 3 and 11.
+  Each operation must have the outcome the fixture rules and the
+  specification prescribe, the
   values must be those of the fixture, a write must leave the device in
   exactly the expected state, and the client's result document must equal,
   field by field, the one it gets from a reference server.
@@ -171,7 +185,8 @@ a test fail; the suite records them where it meets them):
   v3.2.0** and tokio-modbus serve an FC15 request with one data byte too
   many.
 - **libmodbus v3.2.0** frames a response by its function code, so its client
-  cannot read the response to a function it does not know (FC43).
+  cannot read the response to a function it does not know (FC08, FC20, FC21,
+  FC24, FC43).
 
 It has **not** been run against certified test equipment. Reports from the
 field are welcome.

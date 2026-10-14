@@ -115,7 +115,7 @@ func TestE2E_Server_UnitIDFiltering(t *testing.T) {
 		dev := e2eNewDevice()
 		p2 := e2eStart(t, kind, dev, e2eOpts{})
 		for _, op := range e2eAllOps() {
-			if !op.served || op.probe {
+			if op.probe {
 				continue
 			}
 			dev.setUnit(9)
@@ -175,7 +175,7 @@ func TestE2E_Server_ExceptionMatrix(t *testing.T) {
 
 		requests := 0
 		for _, op := range e2eAllOps() {
-			if !op.served || op.probe {
+			if op.probe {
 				continue
 			}
 			for _, he := range e2eHandlerErrors() {
@@ -199,9 +199,6 @@ func TestE2E_Server_ExceptionMatrix(t *testing.T) {
 		}
 		setFail(nil)
 		for _, op := range e2eAllOps() {
-			if !op.served {
-				continue
-			}
 			if err := op.call(ctx, p.client); err != nil {
 				t.Errorf("%s after the exception matrix: %v", op.name, err)
 			}
@@ -228,7 +225,7 @@ func TestE2E_Server_HandlerPanic(t *testing.T) {
 
 		requests := 0
 		for _, op := range e2eAllOps() {
-			if !op.served || op.probe {
+			if op.probe {
 				continue
 			}
 			boom.Store(true)
@@ -319,9 +316,6 @@ func TestE2E_Server_ClientAddr(t *testing.T) {
 		e2eEventually(t, "the server to accept the connection", func() bool { return p.conns() == 1 })
 		first := remote()
 		for _, op := range e2eAllOps() {
-			if !op.served {
-				continue
-			}
 			if err := op.call(ctx, p.client); err != nil {
 				t.Fatalf("%s: %v", op.name, err)
 			}

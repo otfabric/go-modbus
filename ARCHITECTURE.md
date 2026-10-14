@@ -70,6 +70,19 @@ Each subsystem has a **single owner** package.
 | `client_diagnostics.go` | Diagnostics (FC08) |
 | `client_file.go` | File records (FC20/FC21) |
 
+The server is split the same way:
+
+| File | Concern |
+|---|---|
+| `server.go` | Struct, config, lifecycle, the handler interfaces for the data model and FC07/0B/0C |
+| `server_transport.go` | Per-connection loop, dispatch by function code, exceptions, metrics |
+| `server_bits.go`, `server_registers.go` | FC01–06, FC15/16, FC22/23 |
+| `server_device_id.go` | Device identification (FC43) |
+| `server_functions.go` | FC08, FC17, FC20/21, FC24 and the raw request handler |
+
+Every function code the client implements has a server handler; the e2e suite
+enforces it (`TestE2E_EveryClientFunctionIsServed`).
+
 ### Locking model
 
 The client mutex guards **only mutable state** (`isOpen`, `engine`, `lastResponseTransactionID`),

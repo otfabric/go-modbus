@@ -319,10 +319,21 @@ func (ms *Server) dispatchRequest(ctx context.Context, req *adu.Request, txnID u
 		return ms.handleCommEventLog(ctx, req, txnID, clientAddr, clientRole)
 	case FCEncapsulatedInterface:
 		return ms.handleReadDeviceIdentification(ctx, req, txnID, clientAddr, clientRole)
+	case FCDiagnostics:
+		return ms.handleDiagnostics(ctx, req, txnID, clientAddr, clientRole)
+	case FCReportServerID:
+		return ms.handleReportServerID(ctx, req, txnID, clientAddr, clientRole)
+	case FCReadFileRecord:
+		return ms.handleReadFileRecords(ctx, req, txnID, clientAddr, clientRole)
+	case FCWriteFileRecord:
+		return ms.handleWriteFileRecords(ctx, req, txnID, clientAddr, clientRole)
+	case FCReadFIFOQueue:
+		return ms.handleReadFIFOQueue(ctx, req, txnID, clientAddr, clientRole)
 	default:
-		// Reported like an optional handler that is not implemented: the client gets
+		// Any other function code goes to the RawRequestHandler; without one it is
+		// reported like an optional handler that is not implemented: the client gets
 		// an Illegal Function exception, ServerMetrics an OnError.
-		return nil, ErrIllegalFunction
+		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
 	}
 }
 
@@ -427,7 +438,7 @@ func newEchoAddrQuantityResponse(req *adu.Request, txnID uint16, addr, quantity 
 func (ms *Server) handleExceptionStatus(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(ExceptionStatusHandler)
 	if !ok {
-		return nil, ErrIllegalFunction
+		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
 	}
 	status, err := h.HandleExceptionStatus(ctx, &ExceptionStatusRequest{
 		ClientAddr:   clientAddr,
@@ -445,7 +456,7 @@ func (ms *Server) handleExceptionStatus(ctx context.Context, req *adu.Request, t
 func (ms *Server) handleCommEventCounter(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(CommEventCounterHandler)
 	if !ok {
-		return nil, ErrIllegalFunction
+		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
 	}
 	cr, err := h.HandleCommEventCounter(ctx, &CommEventCounterRequest{
 		ClientAddr:   clientAddr,
@@ -465,7 +476,7 @@ func (ms *Server) handleCommEventCounter(ctx context.Context, req *adu.Request, 
 func (ms *Server) handleCommEventLog(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(CommEventLogHandler)
 	if !ok {
-		return nil, ErrIllegalFunction
+		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
 	}
 	cl, err := h.HandleCommEventLog(ctx, &CommEventLogRequest{
 		ClientAddr:   clientAddr,

@@ -65,11 +65,14 @@ func TestDetectionProbeValidators_NormalResponses(t *testing.T) {
 			{name: "wrong fc", fc: FCReadCoils, payload: []byte{0x00, 0x02, 0x00, 0x00}, want: false},
 		},
 		FCReadFileRecord: {
-			{name: "one record", payload: []byte{3, 0x02, 0x06, 0x00}, want: true},
-			{name: "byte count not three", payload: []byte{4, 0x03, 0x06, 0x00, 0x00}, want: false},
-			{name: "byte count mismatch", payload: []byte{3, 0x02, 0x06, 0x00, 0x00}, want: false},
+			{name: "one register", payload: []byte{4, 0x03, 0x06, 0x12, 0x34}, want: true},
+			{name: "sub-response length missing", payload: []byte{3, 0x06, 0x12, 0x34}, want: false},
+			{name: "data length not four", payload: []byte{5, 0x03, 0x06, 0x12, 0x34}, want: false},
+			{name: "file response length not three", payload: []byte{4, 0x02, 0x06, 0x12, 0x34}, want: false},
+			{name: "wrong reference type", payload: []byte{4, 0x03, 0x07, 0x12, 0x34}, want: false},
+			{name: "two registers", payload: []byte{6, 0x05, 0x06, 0x00, 0x01, 0x00, 0x02}, want: false},
 			{name: "too short", payload: []byte{2, 0x01, 0x06}, want: false},
-			{name: "wrong fc", fc: FCWriteFileRecord, payload: []byte{3, 0x02, 0x06, 0x00}, want: false},
+			{name: "wrong fc", fc: FCWriteFileRecord, payload: []byte{4, 0x03, 0x06, 0x12, 0x34}, want: false},
 		},
 	}
 
