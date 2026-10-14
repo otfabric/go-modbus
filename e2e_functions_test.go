@@ -446,24 +446,30 @@ func TestE2E_SerialLineFunctions_NotImplemented(t *testing.T) {
 	})
 }
 
-// Every client method for a function code our server does not serve reports
-// Illegal Function, and the connection stays usable.
+// Against a device that implements only the four mandatory handlers, every
+// client method needing an optional handler reports Illegal Function without
+// reaching the device, and the connection stays usable.
 func TestE2E_UnservedFunctionCodes(t *testing.T) {
+	mandatory := map[FunctionCode]bool{
+		FCReadCoils: true, FCReadDiscreteInputs: true, FCReadHoldingRegisters: true, FCReadInputRegisters: true,
+		FCWriteSingleCoil: true, FCWriteSingleRegister: true, FCWriteMultipleCoils: true, FCWriteMultipleRegisters: true,
+	}
 	forEachTransport(t, func(t *testing.T, kind string) {
 		dev := e2eNewDevice()
-		p := e2eStart(t, kind, dev, e2eOpts{})
+		p := e2eStart(t, kind, e2eBasicOnly{dev}, e2eOpts{})
 		ctx := context.Background()
 
-		n := 0
+		n, txn := 0, 0
 		for _, op := range e2eAllOps() {
-			if op.served {
+			if mandatory[op.fc] || op.probe {
 				continue
 			}
 			n++
 			err := op.call(ctx, p.client)
 			e2eWantException(t, op.name, err, op.fc, exIllegalFunction)
-			if got := p.client.LastObservedTransactionID(); int(got) != 2*n-1 {
-				t.Errorf("%s: transaction ID %d, want %d (same connection)", op.name, got, 2*n-1)
+			txn += 2
+			if got := p.client.LastObservedTransactionID(); int(got) != txn-1 {
+				t.Errorf("%s: transaction ID %d, want %d (same connection)", op.name, got, txn-1)
 			}
 			// The same connection serves a normal request right after.
 			if err := p.client.WriteRegister(ctx, e2eUnit, 9, uint16(n)); err != nil {
@@ -473,8 +479,8 @@ func TestE2E_UnservedFunctionCodes(t *testing.T) {
 				t.Errorf("%s reached a handler: %+v", op.name, call)
 			}
 		}
-		if n < 18 {
-			t.Errorf("only %d unserved methods exercised", n)
+		if n < 25 {
+			t.Errorf("only %d methods needing an optional handler exercised", n)
 		}
 		if p.conns() != 1 {
 			t.Errorf("server connections = %d, want 1", p.conns())
@@ -495,7 +501,7 @@ func TestE2E_Probes(t *testing.T) {
 		supported := map[FunctionCode]bool{
 			FCReadCoils: true, FCReadDiscreteInputs: true, FCReadHoldingRegisters: true,
 			FCReadInputRegisters: true, FCEncapsulatedInterface: true,
-			FCDiagnostics: false, FCReportServerID: false, FCReadFIFOQueue: false, FCReadFileRecord: false,
+			FCDiagnostics: true, FCReportServerID: true, FCReadFIFOQueue: true, FCReadFileRecord: true,
 		}
 		for fc, want := range supported {
 			got, err := c.SupportsFunction(ctx, e2eUnit, fc)
@@ -522,11 +528,15 @@ func TestE2E_Probes(t *testing.T) {
 		kinds := map[string]int{}
 		for _, call := range dev.takeCalls() {
 			kinds[call.Kind]++
-			if call.Kind != "devid" && (call.Addr != 0 || call.Quantity != 1) {
+			if (call.Kind == "coils" || call.Kind == "discrete" || call.Kind == "holding" || call.Kind == "input") &&
+				(call.Addr != 0 || call.Quantity != 1) {
 				t.Errorf("probe reached the handler as %+v", call)
 			}
 		}
-		if want := map[string]int{"coils": 2, "discrete": 2, "holding": 2, "input": 2, "devid": 3}; !reflect.DeepEqual(kinds, want) {
+		if want := map[string]int{
+			"coils": 2, "discrete": 2, "holding": 2, "input": 2, "devid": 3,
+			"diag": 2, "serverid": 2, "fifo": 2, "fileread": 2,
+		}; !reflect.DeepEqual(kinds, want) {
 			t.Errorf("handler calls by kind = %v, want %v", kinds, want)
 		}
 

@@ -23,7 +23,7 @@ func TestE2E_TLS_MutualAuthAndRoles(t *testing.T) {
 	dev := e2eNewDevice()
 	// Only operators may write.
 	dev.setHook(func(_ context.Context, c e2eCall) error {
-		write := c.IsWrite || c.Kind == "mask" || c.Kind == "rw"
+		write := c.IsWrite || c.Kind == "mask" || c.Kind == "rw" || c.Kind == "filewrite"
 		if write && c.ClientRole != "operator" {
 			return ErrIllegalFunction
 		}
@@ -35,9 +35,6 @@ func TestE2E_TLS_MutualAuthAndRoles(t *testing.T) {
 	// The default client certificate carries the role "operator": every
 	// handler type sees it.
 	for _, op := range e2eAllOps() {
-		if !op.served {
-			continue
-		}
 		if err := op.call(ctx, p.client); err != nil {
 			t.Fatalf("%s as operator: %v", op.name, err)
 		}
@@ -79,7 +76,9 @@ func TestE2E_TLS_MutualAuthAndRoles(t *testing.T) {
 		e2eWantException(t, r.name+" MaskWriteRegister", c.MaskWriteRegister(ctx, e2eUnit, 40, 0, 0), FCMaskWriteRegister, exIllegalFunction)
 		_, err := c.ReadWriteMultipleRegisters(ctx, e2eUnit, 40, 1, 40, []uint16{1})
 		e2eWantException(t, r.name+" ReadWriteMultipleRegisters", err, FCReadWriteMultipleRegs, exIllegalFunction)
-		if got := dev.holdingAt(40, 1)[0]; got != 0x0BEE || dev.coilsAt(40, 1)[0] {
+		err = c.WriteFileRecords(ctx, e2eUnit, []FileRecord{{FileNumber: 4, RecordNumber: 7, Data: []uint16{0xBAD}}})
+		e2eWantException(t, r.name+" WriteFileRecords", err, FCWriteFileRecord, exIllegalFunction)
+		if got := dev.holdingAt(40, 1)[0]; got != 0x0BEE || dev.coilsAt(40, 1)[0] || dev.fileRegs(4, 7, 1)[0] == 0xBAD {
 			t.Errorf("%s: a refused write changed the device", r.name)
 		}
 		for _, call := range dev.takeCalls() {
@@ -102,9 +101,6 @@ func TestE2E_TLS_NoRoleOnPlainTCP(t *testing.T) {
 	dev := e2eNewDevice()
 	p := e2eStart(t, "tcp", dev, e2eOpts{})
 	for _, op := range e2eAllOps() {
-		if !op.served {
-			continue
-		}
 		if err := op.call(context.Background(), p.client); err != nil {
 			t.Fatalf("%s: %v", op.name, err)
 		}

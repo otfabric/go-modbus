@@ -335,7 +335,8 @@ Byte and word order for multi-register values are defined by the **codec**, not 
 ### Server supported function codes
 
 The server dispatches decoded requests to a user-provided `RequestHandler`
-implementation. All four handler methods cover the full set of supported function codes:
+implementation. Its four methods serve the data-model function codes; optional
+interfaces serve the rest:
 
 | FC(s) | Hex | Name | Handler method / interface | `IsWrite` |
 |---|---|---|---|---|
@@ -348,27 +349,43 @@ implementation. All four handler methods cover the full set of supported functio
 | 15 | 0x0F | Write Multiple Coils | `HandleCoils` | `true` |
 | 16 | 0x10 | Write Multiple Registers | `HandleHoldingRegisters` | `true` |
 | 07 | 0x07 | Read Exception Status | `ExceptionStatusHandler` (optional) | — |
+| 08 | 0x08 | Diagnostics | `DiagnosticsHandler` (optional) | — |
 | 11 | 0x0B | Get Comm Event Counter | `CommEventCounterHandler` (optional) | — |
 | 12 | 0x0C | Get Comm Event Log | `CommEventLogHandler` (optional) | — |
+| 17 | 0x11 | Report Server ID | `ReportServerIDHandler` (optional) | — |
+| 20 | 0x14 | Read File Record | `ReadFileRecordHandler` (optional) | — |
+| 21 | 0x15 | Write File Record | `WriteFileRecordHandler` (optional) | — |
 | 22 | 0x16 | Mask Write Register | `MaskWriteHandler` (optional) | — |
 | 23 | 0x17 | Read/Write Multiple Registers | `ReadWriteHandler` (optional) | — |
+| 24 | 0x18 | Read FIFO Queue | `FIFOQueueHandler` (optional) | — |
 | 43/14 | 0x2B/0x0E | Read Device Identification | `DeviceIdentificationHandler` (optional) | — |
+| any other | — | vendor, user-defined, or a missing optional handler | `RawRequestHandler` (optional) | — |
 
-FC07, FC11, FC12, FC22, FC23 and FC43 use optional handler interfaces. If the `RequestHandler`
-also implements the corresponding interface (e.g. `ExceptionStatusHandler`,
-`CommEventCounterHandler`, `CommEventLogHandler`, `MaskWriteHandler`, `ReadWriteHandler`,
-`DeviceIdentificationHandler`), those FCs are dispatched accordingly; otherwise they return
-`Illegal Function`.
+Every function code the client sends is served: the end-to-end suite runs every
+client method against the server and fails if one is not answered
+(`TestE2E_EveryClientFunctionIsServed`).
+
+FC07, FC08, FC11, FC12, FC17, FC20 to FC24 and FC43 use optional handler interfaces. If
+the `RequestHandler` also implements the corresponding interface (e.g.
+`ExceptionStatusHandler`, `DiagnosticsHandler`, `ReadFileRecordHandler`,
+`FIFOQueueHandler`), those FCs are dispatched accordingly. The server parses and
+validates the request, the handler supplies the data, and the server encodes the
+response. Otherwise the request goes to the `RawRequestHandler`, which receives the
+request PDU and returns the response PDU; with neither, the answer is `Illegal Function`.
+The raw handler also serves vendor and user-defined function codes, and lets a device
+answer from a recording. FC01 to FC04 always go to `RequestHandler`.
 
 For FC43 (Read Device Identification), the handler returns the full set of
 `DeviceIdentificationObject` values it implements plus a conformity level; the server owns
 all MEI framing, category filtering (basic/regular/extended/individual), and
 MoreFollows/NextObjectID pagination automatically. Only MEI type 14 (0x0E) is supported;
-other MEI types (e.g. CANopen 0x0D) return `Illegal Function`.
+other MEI types (e.g. CANopen 0x0D) go to the `RawRequestHandler`, or return `Illegal Function`.
 
 Returning a Modbus sentinel error (e.g. `ErrIllegalDataAddress`) causes the server to
 send the corresponding exception code back to the client. Any other non-nil error maps
-to `ServerDeviceFailure`. Unsupported FCs receive an `Illegal Function` exception.
+to `ServerDeviceFailure`. `ErrNoResponse` sends no response at all (for example for
+Diagnostics Force Listen Only Mode). Function codes no handler serves receive an
+`Illegal Function` exception.
 Handler panics are recovered and logged (with full stack trace); the client receives a
 `ServerDeviceFailure` exception.
 
@@ -680,15 +697,15 @@ make interop    # needs Docker; about five minutes
 
 | Direction | What is checked |
 |-----------|-----------------|
-| go-modbus client → reference servers | FC01 to FC04 over every table of the reference device, at the block boundaries and with the largest request of each function, value by value; FC05, FC06, FC15, FC16, FC22 and FC23 read back on a second connection, together with everything that must not have changed; FC43/14 in every category; exceptions 1, 2 and 11; two thousand requests on one connection; sixteen connections at once and a pooled client |
-| reference clients → go-modbus server | 92 operations per client against a go-modbus device that serves the same fixture: every operation the client has, up to 1000 requests on one connection, raw PDUs, exceptions 1, 2, 3 and 11. Each must have the outcome the specification prescribes, a write must leave the device in exactly the expected state, and the client's result document must equal, field by field, what it gets from a reference server |
+| go-modbus client → reference servers | FC01 to FC04 over every table of the reference device, at the block boundaries and with the largest request of each function, value by value; FC05, FC06, FC15, FC16, FC22 and FC23 read back on a second connection, together with everything that must not have changed; FC43/14 in every category; FC08, FC17, FC20, FC21 and FC24 against the references that serve them; exceptions 1, 2 and 11; two thousand requests on one connection; sixteen connections at once and a pooled client |
+| reference clients → go-modbus server | 120 operations per client against a go-modbus device that serves the same fixture: every operation the client has (FC08, FC17, FC20, FC21 and FC24 included where it has them), up to 1000 requests on one connection, raw PDUs, exceptions 1, 2, 3 and 11. Each must have the outcome the specification prescribes, a write must leave the device in exactly the expected state, and the client's result document must equal, field by field, what it gets from a reference server |
 
 The images are the only thing shared with modbus-interop; nothing of it is
 cloned or built here. Scenarios, expected values and assertions live in this
 repository.
 
-This version is qualified against modbus-interop v0.1.0 (libmodbus v3.2.0,
-PyModbus 3.15.0, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
+This version is qualified against modbus-interop v0.2.0 (libmodbus v3.2.0,
+PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
 0.17.0). The five images are named in `interop/harness.go`, the Makefile and
 the Interop workflow, which runs on every push and pull request. To test
 against another build, set `MODBUS_INTEROP_<ADAPTER>_IMAGE` (`LIBMODBUS`,

@@ -51,7 +51,7 @@ func TestE2E_Metrics_OneOutcomePerRequest(t *testing.T) {
 
 		for _, op := range e2eAllOps() {
 			err := op.call(ctx, p.client)
-			if op.served && err != nil {
+			if err != nil {
 				t.Fatalf("%s: %v", op.name, err)
 			}
 			cevents := cm.take()
@@ -66,23 +66,12 @@ func TestE2E_Metrics_OneOutcomePerRequest(t *testing.T) {
 			if cevents[0].FC != op.fc || cevents[0].Unit != e2eUnit || sevents[0].FC != op.fc || sevents[0].Unit != e2eUnit {
 				t.Errorf("%s: first request reported as %v (client) / %v (server)", op.name, cevents[0], sevents[0])
 			}
-			wantOutcome := "response"
-			if !op.served {
-				wantOutcome = "error"
-			}
 			for i := 1; i < len(cevents); i += 2 {
-				if cevents[i].Kind != wantOutcome {
-					t.Errorf("%s: client outcome %v, want %s", op.name, cevents[i], wantOutcome)
+				if cevents[i].Kind != "response" {
+					t.Errorf("%s: client outcome %v, want response", op.name, cevents[i])
 				}
-				if !op.served && !op.probe && !errors.Is(cevents[i].Err, ErrIllegalFunction) {
-					t.Errorf("%s: client error metric carries %v", op.name, cevents[i].Err)
-				}
-			}
-			if op.served {
-				for i := 1; i < len(sevents); i += 2 {
-					if sevents[i].Kind != "response" {
-						t.Errorf("%s: server outcome %v, want response", op.name, sevents[i])
-					}
+				if sevents[i].Kind != "response" {
+					t.Errorf("%s: server outcome %v, want response", op.name, sevents[i])
 				}
 			}
 		}
@@ -248,7 +237,7 @@ func TestE2E_Metrics_ServerReportsUnservedFunctionAsError(t *testing.T) {
 		if got := e2eKinds(sm.take()); !reflect.DeepEqual(got, []string{"request:16", "error:16"}) {
 			t.Errorf("unimplemented handler, server metrics = %v", got)
 		}
-		// A function code the server does not know: the same exception ...
+		// A function code whose optional handler is missing: the same exception ...
 		_, err = p.client.ReportServerID(ctx, e2eUnit)
 		e2eWantException(t, "ReportServerID", err, FCReportServerID, exIllegalFunction)
 		// ... must be reported the same way.

@@ -82,11 +82,33 @@ import (
 //   handler without them                         -> TestE2E_SerialLineFunctions_NotImplemented
 //   existing: TestServerFC07_*, TestServerFC0B_*, TestServerFC0C_* (tcp only)
 //
-// Function codes the server does not serve
-//   Diagnostics and its 13 wrappers (FC08), ReportServerID (FC11),
-//     ReadFileRecords (FC14), WriteFileRecords (FC15), ReadFIFOQueue (FC18):
-//     Illegal Function, connection stays usable  -> TestE2E_UnservedFunctionCodes
-//   existing: TestB2B_UnsupportedFunctionCodes (raw frames)
+// Diagnostics, Report Server ID, file records, FIFO queue
+//   Diagnostics and its 13 wrappers (FC08): every sub-function, counters,
+//     clearing, 250-byte echo, unknown and vendor sub-functions -> TestE2E_Diagnostics
+//   Force Listen Only Mode answered with silence (ErrNoResponse)
+//                                                -> TestE2E_Diagnostics_ListenOnlyIsSilent
+//   ReportServerID (FC17), run indicator, 251/252-byte payloads -> TestE2E_ReportServerID
+//   ReadFileRecords, WriteFileRecords (FC20/FC21): several sub-requests, write
+//     then read back, missing files and records, all-or-nothing writes
+//                                                -> TestE2E_FileRecords
+//   ReadFIFOQueue (FC24): empty, 31 and 32 values, unknown queue -> TestE2E_ReadFIFOQueue
+//   request validation, limits, handler contract (in-process) -> TestServerFunctions_*,
+//                                                   FuzzServerFunctions
+//   all of them from many clients at once, with failing requests (-race)
+//                                                -> TestE2E_ServerFunctions_Parallel
+//
+// Raw request handler
+//   vendor function codes, fallback for every missing optional handler,
+//     oversized response, FC01-04 never reach it -> TestE2E_RawRequestHandler,
+//                                                   TestServerFunctions_RawFallback
+//
+// Completeness guard
+//   every exported Client request method is listed in e2eAllOps and served by
+//     our server, every public function code is served end to end
+//                                                -> TestE2E_EveryClientFunctionIsServed
+//   a device with only the mandatory handlers: Illegal Function for every
+//     optional function, connection stays usable -> TestE2E_UnservedFunctionCodes
+//   existing: TestB2B_UnsupportedFunctionCodes (raw frames, reference device)
 //
 // Probes
 //   SupportsFunction, SupportsDeviceIdentification, ProbeFunction: supported,
@@ -172,11 +194,9 @@ import (
 //      (MaxConns is forced to 1), which TestE2E_Client_SingleConnectionSerialises asserts.
 //   3. rtu://, ascii://, rtuovertcp://, rtuoverudp://, asciiovertcp:// and udp://:
 //      the server only listens on tcp:// and tcp+tls://.
-//   4. Successful FC08, FC11, FC14, FC15 and FC18 exchanges: the server has no
-//      handler interface for them (covered against scripted peers elsewhere).
-//   5. Two Modbus Role extensions in one client certificate: crypto/x509 rejects
+//   4. Two Modbus Role extensions in one client certificate: crypto/x509 rejects
 //      such a certificate during the handshake, before the server sees it.
-//   6. MBAP transaction ID wrap-around: it takes 65536 requests on one connection.
+//   5. MBAP transaction ID wrap-around: it takes 65536 requests on one connection.
 
 const (
 	// e2eUnit is the unit ID the e2e device serves.
@@ -205,6 +225,10 @@ type e2eCall struct {
 	MEIType    MEIType
 	Category   DeviceIDCategory
 	ObjectID   DeviceIDObjectID
+	SubFunc    DiagnosticSubFunction
+	Data       []byte
+	FileReqs   []FileRecordRequest
+	FileRecs   []FileRecord
 	ClientAddr string
 	ClientRole string
 }
@@ -229,6 +253,18 @@ type e2eDevice struct {
 	messageCount uint16
 	events       []byte
 
+	// FC08 diagnostics: the diagnostic register and the counters, by sub-function.
+	diagRegister uint16
+	diagCounters map[DiagnosticSubFunction]uint16
+	// listenOnly makes Force Listen Only Mode silent, as on a serial line.
+	listenOnly bool
+	// FC17 Report Server ID payload.
+	serverID []byte
+	// FC20/FC21 files: file number -> registers by record number.
+	files map[uint16]map[uint16]uint16
+	// FC24 FIFO queues by pointer address.
+	fifos map[uint16][]uint16
+
 	calls []e2eCall
 	hook  func(ctx context.Context, c e2eCall) error
 }
@@ -247,6 +283,22 @@ func e2eNewDevice() *e2eDevice {
 		eventCount:   0x0102,
 		messageCount: 0x0304,
 		events:       []byte{0x20, 0x00, 0x40},
+		diagRegister: 0xA55A,
+		diagCounters: map[DiagnosticSubFunction]uint16{
+			DiagReturnBusMessageCount: 11, DiagReturnBusCommunicationErrorCount: 12,
+			DiagReturnBusExceptionErrorCount: 13, DiagReturnServerMessageCount: 14,
+			DiagReturnServerNoResponseCount: 15, DiagReturnServerNAKCount: 16,
+			DiagReturnServerBusyCount: 17, DiagReturnBusCharacterOverrunCount: 18,
+		},
+		serverID: []byte{'G', 'O', 'M', 'B', 0xFF},
+		files: map[uint16]map[uint16]uint16{
+			4: {1: 0x0DFE, 2: 0x0020, 3: 0x33CD, 7: 0x0000, 8: 0x0000},
+			9: {0: 1, 1: 2, 2: 3, 3: 4},
+			// The client's FC20 probe reads file 1, record 0.
+			1: {0: 0x1111},
+		},
+		// The client's FC24 probe reads the queue at address 0.
+		fifos: map[uint16][]uint16{0x04DE: {0x01B8, 0x1284}, 0x0100: {}, 0x0000: {0x0007}},
 	}
 }
 
@@ -482,6 +534,162 @@ func (d *e2eDevice) HandleCommEventLog(ctx context.Context, req *CommEventLogReq
 		MessageCount: d.messageCount,
 		Events:       append([]byte(nil), d.events...),
 	}, nil
+}
+
+func (d *e2eDevice) HandleDiagnostics(ctx context.Context, req *DiagnosticsRequest) ([]byte, error) {
+	err := d.enter(ctx, e2eCall{
+		Kind: "diag", FC: req.FunctionCode, UnitID: req.UnitID,
+		SubFunc: req.SubFunction, Data: append([]byte(nil), req.Data...),
+		ClientAddr: req.ClientAddr, ClientRole: req.ClientRole,
+	})
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	word := func(v uint16) []byte { return []byte{byte(v >> 8), byte(v)} }
+	switch sf := req.SubFunction; sf {
+	case DiagReturnQueryData, DiagRestartCommunications:
+		return append([]byte(nil), req.Data...), nil
+	case DiagReturnDiagnosticRegister:
+		return word(d.diagRegister), nil
+	case DiagForceListenOnlyMode:
+		if d.listenOnly {
+			return nil, ErrNoResponse
+		}
+		return append([]byte(nil), req.Data...), nil
+	case DiagClearCountersAndDiagnosticReg:
+		for k := range d.diagCounters {
+			d.diagCounters[k] = 0
+		}
+		d.diagRegister = 0
+		return append([]byte(nil), req.Data...), nil
+	case DiagClearOverrunCounterAndFlag:
+		d.diagCounters[DiagReturnBusCharacterOverrunCount] = 0
+		return append([]byte(nil), req.Data...), nil
+	default:
+		if v, ok := d.diagCounters[sf]; ok {
+			return word(v), nil
+		}
+		return nil, ErrIllegalFunction
+	}
+}
+
+func (d *e2eDevice) HandleReportServerID(ctx context.Context, req *ReportServerIDRequest) ([]byte, error) {
+	err := d.enter(ctx, e2eCall{
+		Kind: "serverid", FC: req.FunctionCode, UnitID: req.UnitID,
+		ClientAddr: req.ClientAddr, ClientRole: req.ClientRole,
+	})
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]byte(nil), d.serverID...), nil
+}
+
+func (d *e2eDevice) HandleReadFileRecords(ctx context.Context, req *ReadFileRecordsRequest) ([][]uint16, error) {
+	err := d.enter(ctx, e2eCall{
+		Kind: "fileread", FC: req.FunctionCode, UnitID: req.UnitID,
+		FileReqs:   append([]FileRecordRequest(nil), req.Requests...),
+		ClientAddr: req.ClientAddr, ClientRole: req.ClientRole,
+	})
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([][]uint16, 0, len(req.Requests))
+	for _, r := range req.Requests {
+		file, ok := d.files[r.FileNumber]
+		if !ok {
+			return nil, ErrIllegalDataAddress
+		}
+		regs := make([]uint16, r.RecordLength)
+		for i := range regs {
+			v, ok := file[r.RecordNumber+uint16(i)]
+			if !ok {
+				return nil, ErrIllegalDataAddress
+			}
+			regs[i] = v
+		}
+		out = append(out, regs)
+	}
+	return out, nil
+}
+
+func (d *e2eDevice) HandleWriteFileRecords(ctx context.Context, req *WriteFileRecordsRequest) error {
+	recs := make([]FileRecord, len(req.Records))
+	for i, r := range req.Records {
+		recs[i] = FileRecord{FileNumber: r.FileNumber, RecordNumber: r.RecordNumber, Data: append([]uint16(nil), r.Data...)}
+	}
+	err := d.enter(ctx, e2eCall{
+		Kind: "filewrite", FC: req.FunctionCode, UnitID: req.UnitID, FileRecs: recs,
+		ClientAddr: req.ClientAddr, ClientRole: req.ClientRole,
+	})
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// Check every sub-request before applying any, so a failed write changes nothing.
+	for _, r := range req.Records {
+		file, ok := d.files[r.FileNumber]
+		if !ok {
+			return ErrIllegalDataAddress
+		}
+		for i := range r.Data {
+			if _, ok := file[r.RecordNumber+uint16(i)]; !ok {
+				return ErrIllegalDataAddress
+			}
+		}
+	}
+	for _, r := range req.Records {
+		for i, v := range r.Data {
+			d.files[r.FileNumber][r.RecordNumber+uint16(i)] = v
+		}
+	}
+	return nil
+}
+
+func (d *e2eDevice) HandleReadFIFOQueue(ctx context.Context, req *FIFOQueueRequest) ([]uint16, error) {
+	err := d.enter(ctx, e2eCall{
+		Kind: "fifo", FC: req.FunctionCode, UnitID: req.UnitID, Addr: req.Addr,
+		ClientAddr: req.ClientAddr, ClientRole: req.ClientRole,
+	})
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	q, ok := d.fifos[req.Addr]
+	if !ok {
+		return nil, ErrIllegalDataAddress
+	}
+	return append([]uint16(nil), q...), nil
+}
+
+// fileRegs returns registers [rec, rec+n) of file f.
+func (d *e2eDevice) fileRegs(f, rec uint16, n int) []uint16 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]uint16, n)
+	for i := range out {
+		out[i] = d.files[f][rec+uint16(i)]
+	}
+	return out
+}
+
+func (d *e2eDevice) setFIFO(addr uint16, vals ...uint16) {
+	d.mu.Lock()
+	d.fifos[addr] = vals
+	d.mu.Unlock()
+}
+
+func (d *e2eDevice) setListenOnly(on bool) {
+	d.mu.Lock()
+	d.listenOnly = on
+	d.mu.Unlock()
 }
 
 // e2eBasicOnly exposes only the four mandatory handler methods of an e2eDevice,
