@@ -91,6 +91,11 @@ type Config struct {
 	// A nil Metrics (the default) disables metric collection.
 	Metrics ClientMetrics
 
+	// PDUTap receives the raw request and response PDUs of every answered
+	// request, with the time the response was received (see PDUTap).
+	// A nil PDUTap (the default) disables it; nothing is copied then.
+	PDUTap PDUTap
+
 	// AllowedFunctionCodes restricts the function codes the client sends.
 	// Nil or empty (the default) means no restriction. When set, a request with
 	// any other function code fails with an error that wraps
@@ -152,6 +157,7 @@ type ExecutionConfig struct {
 type ObservabilityConfig struct {
 	Logger  Logger
 	Metrics ClientMetrics
+	PDUTap  PDUTap
 }
 
 // NewConfig builds a Config from grouped sub-configurations. This is a
@@ -172,6 +178,7 @@ func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) C
 		MaxConns:             ec.MaxConns,
 		Logger:               oc.Logger,
 		Metrics:              oc.Metrics,
+		PDUTap:               oc.PDUTap,
 		AllowedFunctionCodes: ec.AllowedFunctionCodes,
 	}
 }
@@ -194,6 +201,9 @@ type Client struct {
 	// Config.AllowedFunctionCodes. Nil means no restriction. It is never
 	// modified after New, so it is read without the lock.
 	allowedFCs *[256]bool
+	// tap is Config.PDUTap. It is never modified after New, so it is read
+	// without the lock.
+	tap PDUTap
 }
 
 // New creates, configures and returns a modbus client object.
@@ -203,6 +213,7 @@ func New(conf Config) (mc *Client, err error) {
 
 	mc = &Client{
 		conf: conf,
+		tap:  conf.PDUTap,
 	}
 
 	splitURL = strings.SplitN(mc.conf.URL, "://", 2)

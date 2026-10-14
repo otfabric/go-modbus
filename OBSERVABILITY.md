@@ -59,6 +59,11 @@ request cancelled through its context is an `OnError` with `context.Canceled`; a
 expired deadline is an `OnTimeout`. On the server, a request for a function code
 it does not serve is an `OnError` with `ErrIllegalFunction`.
 
+`Config.PDUTap` is not a metric: it receives the raw request and response PDUs of
+every answered request (exception responses included, before the calling method
+validates them) with the time the response was received, for recording what a
+device answered. Details: [API.md § 6](API.md#6-metrics).
+
 Callbacks run on the request path and must not block. Absence of a metrics
 implementation is intentional for simple apps — attach one only when you have a
 concrete consumer (Prometheus, statsd, …).

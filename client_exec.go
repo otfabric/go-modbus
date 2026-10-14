@@ -23,6 +23,9 @@ import (
 // ErrFunctionCodeNotAllowed. Callers have already called OnRequest and report
 // the refusal as OnError, like any other failure.
 //
+// It is also where Config.PDUTap sees the exchange: once per request whose
+// response carries the request's unit id, before any protocol validation.
+//
 // This method does NOT report to ClientMetrics. Outcome metrics are reported
 // by the calling public/internal method after all protocol-level validation
 // (checkResponseFC, payload checks, echo mismatches) completes, so that
@@ -44,6 +47,10 @@ func (mc *Client) executeRequest(ctx context.Context, req *adu.Request) (res *ad
 	if err != nil {
 		return nil, err
 	}
+	var received time.Time
+	if mc.tap != nil {
+		received = time.Now()
+	}
 
 	mc.lock.Lock()
 	mc.state.lastResponseTransactionID = res.TransactionID
@@ -52,6 +59,7 @@ func (mc *Client) executeRequest(ctx context.Context, req *adu.Request) (res *ad
 	if res.UnitID != req.UnitID {
 		return nil, ErrBadUnitID
 	}
+	tapExchange(ctx, mc.tap, req, res, received)
 
 	return res, nil
 }
