@@ -39,7 +39,7 @@ const (
 	// chaosSoakShare and stressSoakShare are the number of soak-capable tests per suite:
 	// each gets an equal share of the soak duration.
 	chaosSoakShare  = 7
-	stressSoakShare = 14
+	stressSoakShare = 20
 )
 
 func chaosEnvDur(tb testing.TB, name string) time.Duration {

@@ -113,6 +113,11 @@ type Config struct {
     // Nil (default) disables collection.
     Metrics ClientMetrics
 
+    // PDUTap receives the raw request and response PDUs of every answered
+    // request, with the receive time. Nil (default) disables it.
+    // See § 6 "PDUTap".
+    PDUTap PDUTap
+
     // AllowedFunctionCodes restricts the function codes the client sends.
     // Nil or empty (default) means no restriction. A request with any other
     // function code fails with ErrFunctionCodeNotAllowed and is not sent.
@@ -142,7 +147,7 @@ type ExecutionConfig struct {
 }
 
 type ObservabilityConfig struct {
-    Logger, Metrics
+    Logger, Metrics, PDUTap
 }
 
 func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) Config
@@ -1694,6 +1699,49 @@ A request the server answers with an exception of its own is an `OnError` too:
 a function code it does not serve (`ErrIllegalFunction`, whether the code is
 unknown or its optional handler is not implemented) and a response too large
 for one frame (`ErrServerDeviceFailure`).
+
+### `PDUTap` (client)
+
+`Config.PDUTap` sees the raw PDUs (function code + data, no MBAP/CRC/LRC
+framing) of every request the client sent and the response it received for it.
+It is for recording what a device answered, so that a virtual device can serve
+it again later; `ClientMetrics` stays the place for counting outcomes.
+
+```go
+type PDUExchange struct {
+    UnitID   uint8
+    Request  []byte    // request PDU as sent (copy, owned by the tap)
+    Response []byte    // response PDU as received (copy); exception: FC | 0x80
+    Received time.Time // time.Now() when the response left the transport (monotonic)
+}
+
+type PDUTap interface {
+    OnPDU(ctx context.Context, ex PDUExchange)
+}
+
+// PDUTapFunc adapts a plain function.
+type PDUTapFunc func(ctx context.Context, ex PDUExchange)
+```
+
+- Called synchronously, once per answered request, in the goroutine of the
+  calling method, with that method's `ctx`. Must not block.
+- Every request on the wire is reported: reads, writes and probes alike.
+  `ReadAllDeviceIdentification` reports each FC43 page; `WriteRegisterBit` and
+  `UpdateRegisterMask` report the read and the write. Filtering is up to the tap.
+- Retries: only the attempt that returned the response is reported.
+- Reported **before** the method validates the response: exception responses and
+  responses the method then rejects (wrong byte count, wrong echo) are reported
+  too. The method's returned error says whether the response was usable.
+- Not reported: a request refused by `AllowedFunctionCodes`, a transport error
+  or timeout, a response with another unit id or with a function code that is
+  neither the request's nor its exception code.
+- With no tap set, nothing is copied and no time is read.
+
+```go
+conf.PDUTap = modbus.PDUTapFunc(func(ctx context.Context, ex modbus.PDUExchange) {
+    log.Printf("unit %d: % X -> % X", ex.UnitID, ex.Request, ex.Response)
+})
+```
 
 ### Example — Prometheus-style counters
 

@@ -1,5 +1,28 @@
 # go-modbus Releases
 
+## v1.6.0 (unreleased)
+
+**Previous release:** v1.5.0
+
+## Summary
+
+One addition to the client: a PDU tap. A client can hand the raw request and response PDUs of every answered request, with the time the response arrived, to a callback. It is what a recorder needs to capture a device and replay it later (`otfabric/go-modbus-capture`); until now only unit id, function code, duration and error were observable. Nothing else changes.
+
+## Changes
+
+### Added
+
+- **`Config.PDUTap`** (also `ObservabilityConfig.PDUTap` for `NewConfig`), of the new interface type **`PDUTap`** with one method, `OnPDU(ctx, PDUExchange)`, and the adapter **`PDUTapFunc`**. **`PDUExchange`** holds the unit id, the request PDU as sent, the response PDU as received (function code + data, no transport framing; both are copies the tap owns) and `Received`, read with `time.Now` when the response left the transport, so it carries a monotonic reading.
+- The tap is called synchronously, once per answered request, from the one place every request passes (`executeRequest`), so it covers every client method on every transport, the probe helpers and the `sunspec` and `codec` helpers. Methods that send several requests report each: `ReadAllDeviceIdentification` reports every FC43 page as received, `WriteRegisterBit` and `UpdateRegisterMask` the read and the write. Under a `RetryPolicy` only the attempt that returned the response is reported.
+- It is called before the method validates the response. Exception responses are reported, and so is a response the method then rejects (a wrong byte count, a wrong echo); the method's error tells the caller whether the response was usable. The `ctx` passed to `OnPDU` is the caller's, so a recorder can tie an exchange to the call that caused it.
+- It is not called for a request refused by `AllowedFunctionCodes`, a transport error or timeout, or a response with another unit id or with a function code that is neither the request's nor its exception code.
+
+### Unchanged
+
+- Wire format, server, codecs and metrics. A client without `PDUTap` behaves as in v1.5.0: nothing is copied and no time is read.
+
+---
+
 ## v1.5.0
 
 **Date:** 2026-10-14
