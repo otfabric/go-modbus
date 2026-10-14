@@ -114,6 +114,23 @@ func TestFixtureRules(t *testing.T) {
 		if fx.DeviceID == nil || !reflect.DeepEqual(fx.DeviceID.Objects, want) {
 			t.Fatalf("device identification objects: got %v, want %v", fx.DeviceID, want)
 		}
+		if fx.ServerID == nil || fx.ServerID.ServerID != 42 || !fx.ServerID.RunIndicator {
+			t.Fatalf("report server ID: got %+v, want server ID 42, running", fx.ServerID)
+		}
+		if len(fx.file(1)) != 200 || !reflect.DeepEqual(fx.file(2), []uint16{1, 2, 3, 65535}) || fx.file(3) != nil {
+			t.Fatalf("files: got %d records in file 1 and %v in file 2", len(fx.file(1)), fx.file(2))
+		}
+		for i, v := range fx.file(1) {
+			if v != baselineFileRecord(i) {
+				t.Fatalf("file 1 record %d is %d, the rule says %d", i, v, baselineFileRecord(i))
+			}
+		}
+		q1, ok1 := fx.fifo(1246)
+		q2, ok2 := fx.fifo(100)
+		q3, ok3 := fx.fifo(101)
+		if !ok1 || !reflect.DeepEqual(q1, []uint16{440, 4740}) || !ok2 || !reflect.DeepEqual(q2, baselineFIFOQueue()) || !ok3 || len(q3) != 0 {
+			t.Fatalf("FIFO queues: got %v", fx.FIFOs)
+		}
 	})
 }
 
@@ -359,11 +376,21 @@ func TestClientExceptions(t *testing.T) {
 		})
 
 		t.Run("illegal-function", func(t *testing.T) {
-			// A function no reference server has, with data bytes: FC24.
-			_, err := c.ReadFIFOQueue(ctx, u, 0)
-			wantException(t, "ReadFIFOQueue", err, modbus.FCReadFIFOQueue, excIllegalFunction)
-			if !errors.Is(err, modbus.ErrIllegalFunction) {
-				t.Errorf("%v is not ErrIllegalFunction", err)
+			// Functions with data bytes that the server does not serve.
+			if !a.has(t, featServerFIFOQueue) {
+				_, err := c.ReadFIFOQueue(ctx, u, 0)
+				wantException(t, "ReadFIFOQueue", err, modbus.FCReadFIFOQueue, excIllegalFunction)
+				if !errors.Is(err, modbus.ErrIllegalFunction) {
+					t.Errorf("%v is not ErrIllegalFunction", err)
+				}
+			}
+			if !a.has(t, featServerFileRecord) {
+				_, err := c.ReadFileRecords(ctx, u, []modbus.FileRecordRequest{{FileNumber: 1, RecordNumber: 0, RecordLength: 2}})
+				wantException(t, "ReadFileRecords", err, modbus.FCReadFileRecord, excIllegalFunction)
+			}
+			if !a.has(t, featServerDiagnostics) {
+				_, err := c.DiagnosticLoopback(ctx, u, 0x1234)
+				wantException(t, "DiagnosticLoopback", err, modbus.FCDiagnostics, excIllegalFunction)
 			}
 			// The functions a server declares it does not have.
 			if !a.serves(t, 22) {
@@ -387,6 +414,101 @@ func TestClientExceptions(t *testing.T) {
 				t.Errorf("the server saw %d connections, want 1", len(opened))
 			}
 		}
+	})
+}
+
+// TestClientMoreFunctions runs Diagnostics (FC08), Report Server ID (FC17),
+// Read/Write File Record (FC20/FC21) and Read FIFO Queue (FC24) against the
+// reference servers that serve them (FIXTURES.md rules 8 to 11), with the
+// values compared with the fixture. File record reads use even lengths: the
+// PyModbus server cannot decode a request for an odd number of registers
+// (COMPATIBILITY.md in modbus-interop), which is also why SupportsFunction is
+// not checked for FC20, whose probe reads one register.
+func TestClientMoreFunctions(t *testing.T) {
+	forEachAdapter(t, func(t *testing.T, a adapter) {
+		fx := loadFixture(t, a)
+		ctx := context.Background()
+		u := fx.unit()
+
+		t.Run("diagnostics", func(t *testing.T) {
+			a.need(t, featServerDiagnostics)
+			c := newClient(t, startServer(t, a), nil)
+			if v, err := c.DiagnosticLoopback(ctx, u, 0xA537); err != nil || v != 0xA537 {
+				t.Errorf("DiagnosticLoopback = 0x%04X, %v", v, err)
+			}
+			dr, err := c.Diagnostics(ctx, u, modbus.DiagReturnQueryData, []byte{0xC0, 0xDE})
+			if err != nil || dr.SubFunction != modbus.DiagReturnQueryData || !reflect.DeepEqual(dr.Data, []byte{0xC0, 0xDE}) {
+				t.Errorf("Return Query Data = %+v, %v", dr, err)
+			}
+			_, err = c.Diagnostics(ctx, u, 0x0101, []byte{0, 0})
+			wantException(t, "sub-function 0x0101", err, modbus.FCDiagnostics, excIllegalFunction)
+			if ok, err := c.SupportsFunction(ctx, u, modbus.FCDiagnostics); !ok || err != nil {
+				t.Errorf("SupportsFunction(FC08) = %v, %v", ok, err)
+			}
+		})
+
+		t.Run("report-server-id", func(t *testing.T) {
+			a.need(t, featServerReportServerID)
+			c := newClient(t, startServer(t, a), nil)
+			rs, err := c.ReportServerID(ctx, u)
+			if err != nil || !reflect.DeepEqual(rs.Data, fx.serverIDData()) ||
+				rs.RunIndicatorStatus == nil || *rs.RunIndicatorStatus != fx.ServerID.RunIndicator {
+				t.Errorf("ReportServerID = %+v, %v; want data % x", rs, err, fx.serverIDData())
+			}
+			if ok, err := c.SupportsFunction(ctx, u, modbus.FCReportServerID); !ok || err != nil {
+				t.Errorf("SupportsFunction(FC17) = %v, %v", ok, err)
+			}
+		})
+
+		t.Run("file-records", func(t *testing.T) {
+			a.need(t, featServerFileRecord)
+			srv := startServer(t, a)
+			c := newClient(t, srv, nil)
+			reqs := []modbus.FileRecordRequest{
+				// 1 + (2 + 200) + (2 + 8) bytes: within the 245 a response may carry.
+				{FileNumber: 1, RecordNumber: 0, RecordLength: 100},
+				{FileNumber: 2, RecordNumber: 0, RecordLength: 4},
+			}
+			got, err := c.ReadFileRecords(ctx, u, reqs)
+			if want := [][]uint16{fx.file(1)[:100], fx.file(2)}; err != nil || !reflect.DeepEqual(got, want) {
+				t.Errorf("ReadFileRecords with two sub-requests = %v, %v", got, err)
+			}
+			got, err = c.ReadFileRecords(ctx, u, []modbus.FileRecordRequest{{FileNumber: 1, RecordNumber: 100, RecordLength: 100}})
+			if err != nil || len(got) != 1 || !reflect.DeepEqual(got[0], fx.file(1)[100:]) {
+				t.Errorf("ReadFileRecords to the last record: %v", err)
+			}
+			_, err = c.ReadFileRecords(ctx, u, []modbus.FileRecordRequest{{FileNumber: 3, RecordNumber: 0, RecordLength: 2}})
+			wantException(t, "ReadFileRecords of a missing file", err, modbus.FCReadFileRecord, excIllegalDataAddress)
+			_, err = c.ReadFileRecords(ctx, u, []modbus.FileRecordRequest{{FileNumber: 1, RecordNumber: 198, RecordLength: 4}})
+			wantException(t, "ReadFileRecords past the last record", err, modbus.FCReadFileRecord, excIllegalDataAddress)
+
+			if err := c.WriteFileRecords(ctx, u, []modbus.FileRecord{{FileNumber: 1, RecordNumber: 10, Data: []uint16{7, 8, 9, 10}}}); err != nil {
+				t.Fatalf("WriteFileRecords: %v", err)
+			}
+			err = c.WriteFileRecords(ctx, u, []modbus.FileRecord{{FileNumber: 3, RecordNumber: 0, Data: []uint16{1, 2}}})
+			wantException(t, "WriteFileRecords to a missing file", err, modbus.FCWriteFileRecord, excIllegalDataAddress)
+			// Read back on a second connection.
+			c2 := newClient(t, srv, nil)
+			got, err = c2.ReadFileRecords(ctx, u, []modbus.FileRecordRequest{{FileNumber: 1, RecordNumber: 8, RecordLength: 8}})
+			want := append([]uint16(nil), fx.file(1)[8:16]...)
+			copy(want[2:], []uint16{7, 8, 9, 10})
+			if err != nil || len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+				t.Errorf("read back after WriteFileRecords = %v, %v; want %v", got, err, want)
+			}
+		})
+
+		t.Run("fifo-queue", func(t *testing.T) {
+			a.need(t, featServerFIFOQueue)
+			c := newClient(t, startServer(t, a), nil)
+			for _, q := range fx.FIFOs {
+				got, err := c.ReadFIFOQueue(ctx, u, q.Address)
+				if err != nil || len(got) != len(q.Values) || len(got) > 0 && !reflect.DeepEqual(got, q.Values) {
+					t.Errorf("ReadFIFOQueue(%d) = %v, %v; want %v", q.Address, got, err, q.Values)
+				}
+			}
+			_, err := c.ReadFIFOQueue(ctx, u, 102)
+			wantException(t, "ReadFIFOQueue of an unknown queue", err, modbus.FCReadFIFOQueue, excIllegalDataAddress)
+		})
 	})
 }
 
@@ -470,7 +592,7 @@ func TestClientInvalidCoilValue(t *testing.T) {
 			}
 		}
 		if a.name == pymodbus {
-			// PyModbus 3.15.0 takes any value but 0x0000 for ON and
+			// PyModbus 3.16.1 takes any value but 0x0000 for ON and
 			// answers with 0xFF00. That is not the echo of the request,
 			// which go-modbus reports instead of a success.
 			if !errors.Is(err, modbus.ErrProtocolError) {

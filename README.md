@@ -697,15 +697,15 @@ make interop    # needs Docker; about five minutes
 
 | Direction | What is checked |
 |-----------|-----------------|
-| go-modbus client → reference servers | FC01 to FC04 over every table of the reference device, at the block boundaries and with the largest request of each function, value by value; FC05, FC06, FC15, FC16, FC22 and FC23 read back on a second connection, together with everything that must not have changed; FC43/14 in every category; exceptions 1, 2 and 11; two thousand requests on one connection; sixteen connections at once and a pooled client |
-| reference clients → go-modbus server | 92 operations per client against a go-modbus device that serves the same fixture: every operation the client has, up to 1000 requests on one connection, raw PDUs, exceptions 1, 2, 3 and 11. Each must have the outcome the specification prescribes, a write must leave the device in exactly the expected state, and the client's result document must equal, field by field, what it gets from a reference server |
+| go-modbus client → reference servers | FC01 to FC04 over every table of the reference device, at the block boundaries and with the largest request of each function, value by value; FC05, FC06, FC15, FC16, FC22 and FC23 read back on a second connection, together with everything that must not have changed; FC43/14 in every category; FC08, FC17, FC20, FC21 and FC24 against the references that serve them; exceptions 1, 2 and 11; two thousand requests on one connection; sixteen connections at once and a pooled client |
+| reference clients → go-modbus server | 120 operations per client against a go-modbus device that serves the same fixture: every operation the client has (FC08, FC17, FC20, FC21 and FC24 included where it has them), up to 1000 requests on one connection, raw PDUs, exceptions 1, 2, 3 and 11. Each must have the outcome the specification prescribes, a write must leave the device in exactly the expected state, and the client's result document must equal, field by field, what it gets from a reference server |
 
 The images are the only thing shared with modbus-interop; nothing of it is
 cloned or built here. Scenarios, expected values and assertions live in this
 repository.
 
-This version is qualified against modbus-interop v0.1.0 (libmodbus v3.2.0,
-PyModbus 3.15.0, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
+This version is qualified against modbus-interop v0.2.0 (libmodbus v3.2.0,
+PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
 0.17.0). The five images are named in `interop/harness.go`, the Makefile and
 the Interop workflow, which runs on every push and pull request. To test
 against another build, set `MODBUS_INTEROP_<ADAPTER>_IMAGE` (`LIBMODBUS`,
