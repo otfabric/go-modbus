@@ -1,5 +1,26 @@
 # go-modbus Releases
 
+## v1.6.1
+
+**Date:** 2026-10-14
+**Previous release:** v1.6.0
+
+## Summary
+
+Test-only release: the interop suite no longer fails at random in `TestClientWrites`. The library is unchanged from v1.6.0.
+
+## Changes
+
+### Fixed
+
+- **Interop suite: "the server reports the last write as …".** An interop run on main failed in `TestClientWrites` (FC15 against tokio-modbus and NModbus, FC05 against digitalpetri), and the next run passed with no change. Every write had succeeded and read back correctly; the check that failed compares the last write with the reference server's request events. The servers report those events through the container log, which reaches the harness asynchronously. The check waited for one event of the function and took the newest one present, so it could see an older write (write 3 of 6 for FC15, write 2 of 5 for FC05). It now waits until the server has reported every request the test sent with that function. The `as-the-server-saw-it` read check had the same race through its count of earlier requests; it now waits for the rejected read itself, which is logged after every earlier request. No interop scenario or expectation changed.
+
+### Unchanged
+
+- Library code, wire format and API: identical to v1.6.0.
+
+---
+
 ## v1.6.0
 
 **Date:** 2026-10-14
