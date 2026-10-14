@@ -51,8 +51,11 @@ func TestStressSharedPooledClient(t *testing.T) {
 		defer sampler.stop()
 
 		metrics := &chaosClientMetrics{}
+		tap := chaosNewTap(refUnitID, true)
 		mode := chaosMode{name: "pool", maxConns: maxConns}
-		client, err := New(chaosClientConfig(t, "tcp", srv.port(), mode, 5*time.Second, metrics))
+		conf := chaosClientConfig(t, "tcp", srv.port(), mode, 5*time.Second, metrics)
+		conf.PDUTap = tap
+		client, err := New(conf)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
@@ -86,6 +89,14 @@ func TestStressSharedPooledClient(t *testing.T) {
 		srv.metrics.check(t, "server")
 		if got, want := srv.metrics.total(), metrics.attempts.Load(); got != want {
 			t.Errorf("server saw %d requests, the client made %d attempts", got, want)
+		}
+		// On a healthy link every request is answered and reported exactly once.
+		tap.check(t, metrics, srv.metrics.total())
+		if got, want := tap.count.Load(), srv.metrics.total(); got != want {
+			t.Errorf("PDUTap reported %d exchanges, the server answered %d requests", got, want)
+		}
+		if n := tap.malformed.Load(); n != 0 {
+			t.Errorf("PDUTap reported %d malformed responses on a healthy link", n)
 		}
 		chaosLeakCheck(t, baseline)
 		if testing.Verbose() {
