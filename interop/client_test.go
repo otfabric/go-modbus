@@ -268,13 +268,19 @@ func TestClientReads(t *testing.T) {
 		// as a number on the wire and the quantity.
 		t.Run("as-the-server-saw-it", func(t *testing.T) {
 			a.need(t, featRequestEvents)
-			before := len(srv.requestEvents(t, 1))
 			if _, err := c.ReadInputRegisters(ctx, u, 65411, 125); err != nil {
 				t.Fatal(err)
 			}
 			_, err := c.ReadDiscreteInputs(ctx, u, 999, 2)
 			wantException(t, "ReadDiscreteInputs(999, 2)", err, modbus.FCReadDiscreteInputs, excIllegalDataAddress)
-			evs := srv.requestEvents(t, before+2)[before:]
+			// The rejected read is the last request; the read is the one before.
+			reqs := srv.requestsThrough(t, "rejected FC02 read", func(e event) bool {
+				return e.num("function") == 2 && e.num("address") == 999
+			})
+			if len(reqs) < 2 {
+				t.Fatalf("the server reports %d request(s) up to the rejected read: %v", len(reqs), reqs)
+			}
+			evs := reqs[len(reqs)-2:]
 			if e := evs[0]; e.num("unitId") != 1 || e.num("function") != 4 || e.num("address") != 65411 ||
 				e.num("quantity") != 125 || e["exception"] != nil {
 				t.Errorf("the server reports the read as %v", e)
@@ -513,10 +519,12 @@ func TestClientWrites(t *testing.T) {
 				})
 			})
 		}
-		// lastWrite returns the newest request event with the function.
-		lastWrite := func(t *testing.T, srv *refServer, function int) event {
+		// lastWrite returns the newest request event with the function, once
+		// the server has reported all sent requests with it. The events come
+		// in asynchronously: the newest one seen earlier may be an older write.
+		lastWrite := func(t *testing.T, srv *refServer, function, sent int) event {
 			t.Helper()
-			evs := srv.waitEvents(t, "request", 1, func(e event) bool { return e.name() == "request" && e.num("function") == function })
+			evs := srv.waitEvents(t, "request", sent, func(e event) bool { return e.name() == "request" && e.num("function") == function })
 			return evs[len(evs)-1]
 		}
 
@@ -535,7 +543,7 @@ func TestClientWrites(t *testing.T) {
 				verify(fmt.Sprintf("after WriteCoil(%d, %v)", w.addr, w.value))
 			}
 			if a.has(t, featRequestEvents) {
-				if e := lastWrite(t, srv, 5); e.num("address") != 1000 || !reflect.DeepEqual(e["bits"], []any{true}) || e["exception"] != nil {
+				if e := lastWrite(t, srv, 5, 5); e.num("address") != 1000 || !reflect.DeepEqual(e["bits"], []any{true}) || e["exception"] != nil {
 					t.Errorf("the server reports the last write as %v", e)
 				}
 			}
@@ -550,7 +558,7 @@ func TestClientWrites(t *testing.T) {
 				verify(fmt.Sprintf("after WriteRegister(%d, %d)", w[0], w[1]))
 			}
 			if a.has(t, featRequestEvents) {
-				if e := lastWrite(t, srv, 6); e.num("address") != 128 || !reflect.DeepEqual(e["registers"], []any{float64(0x8000)}) {
+				if e := lastWrite(t, srv, 6, 5); e.num("address") != 128 || !reflect.DeepEqual(e["registers"], []any{float64(0x8000)}) {
 					t.Errorf("the server reports the last write as %v", e)
 				}
 			}
@@ -584,7 +592,7 @@ func TestClientWrites(t *testing.T) {
 				verify(fmt.Sprintf("after WriteCoils(%d, %d values)", w.addr, len(w.values)))
 			}
 			if a.has(t, featRequestEvents) {
-				if e := lastWrite(t, srv, 15); e.num("address") != 1968 || e.num("quantity") != 32 {
+				if e := lastWrite(t, srv, 15, 6); e.num("address") != 1968 || e.num("quantity") != 32 {
 					t.Errorf("the server reports the last write as %v", e)
 				}
 			}
@@ -618,7 +626,7 @@ func TestClientWrites(t *testing.T) {
 			holding[200], holding[201] = 0xCAFE, 0xBABE
 			verify("after WriteRegisterBytes(200)")
 			if a.has(t, featRequestEvents) {
-				if e := lastWrite(t, srv, 16); e.num("address") != 200 || e.num("quantity") != 2 ||
+				if e := lastWrite(t, srv, 16, 6); e.num("address") != 200 || e.num("quantity") != 2 ||
 					!reflect.DeepEqual(e["registers"], []any{float64(0xCAFE), float64(0xBABE)}) {
 					t.Errorf("the server reports the last write as %v", e)
 				}
@@ -644,7 +652,7 @@ func TestClientWrites(t *testing.T) {
 				t.Fatalf("the test computes register 5 as 0x%04X, the specification's example gives 0x0035 for 0x1234", holding[5])
 			}
 			if a.has(t, featRequestEvents) {
-				if e := lastWrite(t, srv, 22); e.num("address") != 255 || e.num("andMask") != 0x0F0F || e.num("orMask") != 0x1234 {
+				if e := lastWrite(t, srv, 22, 6); e.num("address") != 255 || e.num("andMask") != 0x0F0F || e.num("orMask") != 0x1234 {
 					t.Errorf("the server reports the last write as %v", e)
 				}
 			}
@@ -682,7 +690,7 @@ func TestClientWrites(t *testing.T) {
 			wantException(t, "ReadWriteMultipleRegisters with the read range outside", err, modbus.FCReadWriteMultipleRegs, excIllegalDataAddress)
 			verify("after the rejected ReadWriteMultipleRegisters")
 			if a.has(t, featRequestEvents) {
-				e := lastWrite(t, srv, 23)
+				e := lastWrite(t, srv, 23, 6)
 				if e.num("address") != 250 || e.num("quantity") != 10 || e.num("writeAddress") != 40 || e.num("exception") != 2 ||
 					!reflect.DeepEqual(e["writeRegisters"], []any{float64(0xDEAD), float64(0xDEAD)}) {
 					t.Errorf("the server reports the rejected request as %v", e)

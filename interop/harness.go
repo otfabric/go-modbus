@@ -355,6 +355,32 @@ func (s *refServer) waitEvents(t testing.TB, what string, n int, match func(even
 	}
 }
 
+// requestsThrough returns the request events of the server, in order, up to
+// and including the newest one that satisfies last, once it has been
+// reported. A container's log lines arrive in order, so every request the
+// server handled before that one is included, however late the log is.
+func (s *refServer) requestsThrough(t testing.TB, what string, last func(event) bool) []event {
+	t.Helper()
+	deadline := time.Now().Add(eventTimeout)
+	for {
+		var reqs []event
+		for _, e := range s.events(t) {
+			if e.name() == "request" {
+				reqs = append(reqs, e)
+			}
+		}
+		for i := len(reqs) - 1; i >= 0; i-- {
+			if last(reqs[i]) {
+				return reqs[:i+1]
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s server did not report the %s; request events: %v", s.adapter.name, what, reqs)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // requestEvents returns the request events of the server, in order.
 func (s *refServer) requestEvents(t testing.TB, atLeast int) []event {
 	t.Helper()
