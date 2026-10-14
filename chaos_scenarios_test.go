@@ -133,6 +133,9 @@ func TestChaosMonkey(t *testing.T) {
 //     RetryPolicy, and every confirmed write at least once;
 //   - the pool never holds more than MaxConns connections;
 //   - ClientMetrics and ServerMetrics pair every OnRequest with one outcome;
+//   - the PDUTap pairs every request only with its own response, never reports
+//     more exchanges than transport attempts or fewer than successful calls, and
+//     overwriting the PDUs it is given does not affect any caller (chaosTap);
 //   - after Close/Stop the server holds no connection and no goroutine is left.
 func chaosRunScenario(t *testing.T, sc chaosScenario, seed int64) {
 	t.Helper()
@@ -152,7 +155,10 @@ func chaosRunScenario(t *testing.T, sc chaosScenario, seed int64) {
 	}()
 
 	metrics := &chaosClientMetrics{}
-	client, err := New(chaosClientConfig(t, sc.kind, proxy.port(), sc.mode, sc.timeout, metrics))
+	tap := chaosNewTap(refUnitID, !sc.corruptData)
+	conf := chaosClientConfig(t, sc.kind, proxy.port(), sc.mode, sc.timeout, metrics)
+	conf.PDUTap = tap
+	client, err := New(conf)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -264,6 +270,7 @@ func chaosRunScenario(t *testing.T, sc chaosScenario, seed int64) {
 	wl.audit(sc.mode.retry == nil)
 	metrics.check(t, "client")
 	srv.metrics.check(t, "server")
+	tap.check(t, metrics, -1)
 	if sampler.sustained.Load() {
 		t.Errorf("client held more than %d connection(s) (peak seen at the proxy: %d)", limit, sampler.peak.Load())
 	}
@@ -276,7 +283,7 @@ func chaosRunScenario(t *testing.T, sc chaosScenario, seed int64) {
 	chaosLeakCheck(t, baseline)
 	mark("done")
 	if testing.Verbose() {
-		t.Logf("seed=%d %v %s; %s; handler faults=%d", seed, marks, wl.stats.String(), proxy.summary(), dev.handlerFaults.Load())
+		t.Logf("seed=%d %v %s; %s; handler faults=%d; %s", seed, marks, wl.stats.String(), proxy.summary(), dev.handlerFaults.Load(), tap)
 	}
 }
 
