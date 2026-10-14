@@ -26,7 +26,8 @@ defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
    - [Lifecycle](#32-lifecycle)
    - [RequestHandler interface](#33-requesthandler-interface)
    - [Request types](#34-request-types)
-   - [Optional handler interfaces (FC07, FC0B, FC0C, FC22, FC23)](#35-optional-handler-interfaces-fc07-fc0b-fc0c-fc22-fc23)
+   - [Optional handler interfaces (FC07, FC08, FC0B, FC0C, FC17, FC20–FC24, FC43)](#35-optional-handler-interfaces)
+   - [Raw request handler](#36-raw-request-handler)
 4. [Errors](#4-errors) — also [ERRORS.md](ERRORS.md)
 5. [Logging](#5-logging) — also [OBSERVABILITY.md](OBSERVABILITY.md)
 6. [Metrics](#6-metrics) — also [OBSERVABILITY.md](OBSERVABILITY.md)
@@ -1250,13 +1251,22 @@ type InputRegistersRequest struct {
 }
 ```
 
-### 3.5 Optional handler interfaces (FC07, FC0B, FC0C, FC22, FC23, FC43)
+### 3.5 Optional handler interfaces
 
-FC07 (Read Exception Status), FC0B (Get Comm Event Counter), FC0C (Get Comm Event Log),
-FC22 (Mask Write Register), FC23 (Read/Write Multiple Registers) and FC43 (Read Device
-Identification) use optional handler interfaces. If the `RequestHandler` also implements
-the corresponding interface, the server dispatches the FC to it; otherwise the server
-returns `Illegal Function`.
+Every function code beyond the four data-model handlers uses an optional handler
+interface: FC07 (Read Exception Status), FC08 (Diagnostics), FC0B (Get Comm Event
+Counter), FC0C (Get Comm Event Log), FC17 (0x11, Report Server ID), FC20/FC21 (0x14/0x15,
+Read/Write File Record), FC22 (0x16, Mask Write Register), FC23 (0x17, Read/Write Multiple
+Registers), FC24 (0x18, Read FIFO Queue) and FC43 (0x2B, Read Device Identification). If the `RequestHandler` also
+implements the corresponding interface, the server dispatches the FC to it; otherwise
+the request goes to the [raw request handler](#36-raw-request-handler), or, without one,
+is answered with `Illegal Function`. Every function code the client sends is served
+this way.
+
+In each case the server parses and validates the request before the handler sees it,
+and encodes the response; a handler only supplies data. A malformed request closes the
+connection; one that is well formed but out of range gets the exception the
+specification prescribes (see [INTEROPERABILITY.md](INTEROPERABILITY.md#how-the-server-treats-a-request)).
 
 #### Serial-line function codes (FC07, FC0B, FC0C)
 
@@ -1266,34 +1276,120 @@ type ExceptionStatusHandler interface {
 }
 
 type ExceptionStatusRequest struct {
-    ClientAddr string
-    ClientRole string
-    UnitID     uint8
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC07
 }
 
 type CommEventCounterHandler interface {
-    HandleCommEventCounter(ctx context.Context, req *CommEventCounterRequest) (status uint16, eventCount uint16, err error)
+    HandleCommEventCounter(ctx context.Context, req *CommEventCounterRequest) (*CommEventCounterResponse, error)
 }
 
 type CommEventCounterRequest struct {
-    ClientAddr string
-    ClientRole string
-    UnitID     uint8
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC0B
 }
 
 type CommEventLogHandler interface {
-    HandleCommEventLog(ctx context.Context, req *CommEventLogRequest) (status uint16, eventCount uint16, messageCount uint16, events []byte, err error)
+    HandleCommEventLog(ctx context.Context, req *CommEventLogRequest) (*CommEventLogResponse, error)
 }
 
 type CommEventLogRequest struct {
-    ClientAddr string
-    ClientRole string
-    UnitID     uint8
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC0C
 }
 ```
 
 These handlers follow the same transport-neutral policy as the client: they are dispatched
 regardless of transport type, since gateways commonly forward these PDUs over TCP/UDP.
+
+#### Diagnostics (FC08)
+
+```go
+type DiagnosticsHandler interface {
+    HandleDiagnostics(ctx context.Context, req *DiagnosticsRequest) (data []byte, err error)
+}
+
+type DiagnosticsRequest struct {
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode          // FC08
+    SubFunction  DiagnosticSubFunction // standard or vendor sub-function, as sent
+    Data         []byte                // request data after the sub-function
+}
+```
+
+The handler returns the response data; the server echoes the sub-function in front of it.
+For Return Query Data (0x0000) echo `req.Data`; for the counters return the counter as two
+big-endian bytes. Return `ErrIllegalFunction` for a sub-function the device does not have.
+A serial-line device does not answer Force Listen Only Mode (0x0004): return
+`ErrNoResponse` to behave like one. At most 250 data bytes fit in a response.
+
+#### Report Server ID (FC17, 0x11)
+
+```go
+type ReportServerIDHandler interface {
+    HandleReportServerID(ctx context.Context, req *ReportServerIDRequest) (data []byte, err error)
+}
+```
+
+`ReportServerIDRequest` carries `ClientAddr`, `ClientRole`, `UnitID` and `FunctionCode`.
+The handler returns the device-specific payload, by convention the server ID, a run
+indicator byte (0xFF on, 0x00 off) and optional additional data; the server adds the byte
+count. At most 251 bytes fit.
+
+#### File records (FC20, FC21)
+
+```go
+type ReadFileRecordHandler interface {
+    HandleReadFileRecords(ctx context.Context, req *ReadFileRecordsRequest) (records [][]uint16, err error)
+}
+
+type ReadFileRecordsRequest struct {
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode        // FC20
+    Requests     []FileRecordRequest // in request order
+}
+
+type WriteFileRecordHandler interface {
+    HandleWriteFileRecords(ctx context.Context, req *WriteFileRecordsRequest) error
+}
+
+type WriteFileRecordsRequest struct {
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode // FC21
+    Records      []FileRecord // in request order
+}
+```
+
+The server checks the byte count, the reference type (6), the file number (not 0), the
+record number (0..9999), the record length and that the response fits in one PDU before
+the handler is called. A read handler returns one slice per sub-request, each exactly
+`RecordLength` registers long; anything else is answered with Server Device Failure.
+Return `ErrIllegalDataAddress` for a file or record the device does not have. A
+successful write is answered with the echo of the request.
+
+#### Read FIFO Queue (FC24, 0x18)
+
+```go
+type FIFOQueueHandler interface {
+    HandleReadFIFOQueue(ctx context.Context, req *FIFOQueueRequest) (values []uint16, err error)
+}
+```
+
+`FIFOQueueRequest` carries `ClientAddr`, `ClientRole`, `UnitID`, `FunctionCode` and `Addr`,
+the FIFO pointer address. The handler returns the queued values, oldest first. A queue of
+more than 31 values is answered with Illegal Data Value, as the specification requires.
 
 #### Register manipulation (FC22, FC23)
 
@@ -1357,9 +1453,35 @@ requested category (basic = 0x00-0x02, regular = 0x00-0x7F, extended = 0x00-0xFF
 individual-access requests, and paginates large object sets across multiple responses using
 MoreFollows/NextObjectID — all transparently to the handler. When `ConformityLevel` is 0, the
 server derives a sensible level from the objects provided. Only MEI type 14 (0x0E) is
-supported; other MEI types return `Illegal Function`, an out-of-range Read Device ID code
-returns `Illegal Data Value`, and individual access to an unknown object returns
-`Illegal Data Address`.
+supported; other MEI types go to the raw request handler or return `Illegal Function`, an
+out-of-range Read Device ID code returns `Illegal Data Value`, and individual access to an
+unknown object returns `Illegal Data Address`.
+
+### 3.6 Raw request handler
+
+```go
+type RawRequestHandler interface {
+    HandleRawRequest(ctx context.Context, req *RawRequest) (payload []byte, err error)
+}
+
+type RawRequest struct {
+    ClientAddr   string
+    ClientRole   string
+    UnitID       uint8
+    FunctionCode FunctionCode
+    Payload      []byte // request PDU after the function code
+}
+```
+
+A `RequestHandler` that also implements `RawRequestHandler` serves every function code
+the server does not handle itself: vendor and user-defined function codes, FC43 with an
+MEI type other than 14, and every standard function whose optional handler the
+`RequestHandler` does not implement. The handler receives the request PDU as it came and
+returns the response PDU after the function code; the server prepends the function code.
+It does not validate either: the raw handler is responsible for both. Use it to serve
+vendor functions or to answer from a recording. A response longer than 252 bytes is
+answered with Server Device Failure, and errors map to exceptions as for every handler.
+FC01 to FC06, FC15 and FC16 never reach it.
 
 ---
 

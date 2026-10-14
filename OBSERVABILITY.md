@@ -57,7 +57,10 @@ attempts and, with attempt 0, when a request starts without a usable connection
 (the previous one was lost, or dropped after a timeout on `tcp`/`tcp+tls`). A
 request cancelled through its context is an `OnError` with `context.Canceled`; an
 expired deadline is an `OnTimeout`. On the server, a request for a function code
-it does not serve is an `OnError` with `ErrIllegalFunction`.
+no handler serves is an `OnError` with `ErrIllegalFunction`, and a request a
+handler leaves unanswered (`ErrNoResponse`, for example Force Listen Only Mode)
+is an `OnError` with `ErrNoResponse`. A request served by the raw request
+handler is reported like any other.
 
 `Config.PDUTap` is not a metric: it receives the raw request and response PDUs of
 every answered request (exception responses included, before the calling method

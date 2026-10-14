@@ -68,27 +68,22 @@ const maxDeviceIDObjectsBytes = 253 - 7
 // Identification). Requires the RequestHandler to also implement
 // DeviceIdentificationHandler.
 func (ms *Server) handleReadDeviceIdentification(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
+	// Without a DeviceIdentificationHandler, and for MEI types other than Read
+	// Device Identification (0x0E), such as CANopen General Reference (0x0D), the
+	// request goes to the RawRequestHandler as it is (Illegal Function without one).
+	h, ok := ms.handler.(DeviceIdentificationHandler)
+	if !ok || len(req.Payload) >= 1 && MEIType(req.Payload[0]) != MEIReadDeviceIdentification {
+		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+	}
 	if len(req.Payload) < 3 {
 		return nil, ErrProtocolError
 	}
 
-	meiType := MEIType(req.Payload[0])
 	category := DeviceIDCategory(req.Payload[1])
 	objectID := DeviceIDObjectID(req.Payload[2])
 
-	// Only Read Device Identification (0x0E) is supported. Other MEI types
-	// (e.g. CANopen General Reference 0x0D) are not implemented.
-	if meiType != MEIReadDeviceIdentification {
-		return nil, ErrIllegalFunction
-	}
-
 	if category < DeviceIDBasic || category > DeviceIDIndividual {
 		return nil, ErrIllegalDataValue
-	}
-
-	h, ok := ms.handler.(DeviceIdentificationHandler)
-	if !ok {
-		return nil, ErrIllegalFunction
 	}
 
 	resp, err := h.HandleDeviceIdentification(ctx, &DeviceIdentificationRequest{
@@ -96,7 +91,7 @@ func (ms *Server) handleReadDeviceIdentification(ctx context.Context, req *adu.R
 		ClientRole:   clientRole,
 		UnitID:       req.UnitID,
 		FunctionCode: FunctionCode(req.FunctionCode),
-		MEIType:      meiType,
+		MEIType:      MEIReadDeviceIdentification,
 		Category:     category,
 		ObjectID:     objectID,
 	})

@@ -1,5 +1,68 @@
 # go-modbus Releases
 
+## v1.7.0
+
+**Date:** 2026-10-15
+**Previous release:** v1.6.1
+
+## Summary
+
+The server now serves every function code the client sends. Until now it had no handlers for Diagnostics (FC08), Report Server ID (FC17), Read/Write File Record (FC20/FC21) and Read FIFO Queue (FC24), and answered them with Illegal Function. The client implemented all five. A new raw request handler serves vendor function codes and any function whose optional handler a device does not implement. The e2e suite now fails if a client function is not served by the server. Writing that check found a client bug: `SupportsFunction(FC20)` could never succeed.
+
+## Changes
+
+### Added
+
+- **Server handlers for FC08, FC17, FC20, FC21 and FC24**, as optional interfaces like FC07 or FC22:
+  - `DiagnosticsHandler` gets every sub-function, standard or vendor, with its data. The server echoes the sub-function.
+  - `ReportServerIDHandler`: the server adds the byte count.
+  - `ReadFileRecordHandler` and `WriteFileRecordHandler` get every sub-request in order.
+  - `FIFOQueueHandler`: the server encodes the byte count and the FIFO count.
+
+  The new request types are `DiagnosticsRequest`, `ReportServerIDRequest`, `ReadFileRecordsRequest`, `WriteFileRecordsRequest` and `FIFOQueueRequest`. The server parses and validates each request before the handler sees it:
+  - FC20 and FC21: byte count, reference type 6, file number, record number 0..9999 and record length.
+  - FC20: a response that would not fit in one PDU gets exception 3.
+  - FC24: more than 31 values gets exception 3.
+
+  Malformed requests close the connection. A response that does not fit, or FC20 records of the wrong length, get Server Device Failure. A Diagnostics handler can return `ErrNoResponse` to leave Force Listen Only Mode unanswered, as a serial-line device does.
+- **`RawRequestHandler`** (`HandleRawRequest(ctx, *RawRequest) ([]byte, error)`). The handler gets the request PDU after the function code and returns the response PDU after the function code. It serves:
+  - vendor and user-defined function codes;
+  - FC43 with an MEI type other than 14;
+  - every standard function whose optional handler the `RequestHandler` does not implement, FC07, FC0B, FC0C, FC22, FC23 and FC43 included.
+
+  This lets a device answer from a recording. FC01 to FC06, FC15 and FC16 never reach it, and a response over 252 bytes gets Server Device Failure.
+- **Completeness guard.** `TestE2E_EveryClientFunctionIsServed` checks by reflection that every exported `Client` request method is in the e2e operation list. It then runs every one of them against the server over `tcp://` and `tcp+tls://` and requires success. The list has no "not served" marker any more, so a new client function without server support fails the suite.
+- Tests for the new functions:
+  - end to end: every sub-function and counter; listen-only silence; 250-, 251- and 252-byte limits; several file sub-requests; all-or-nothing writes; 31 and 32 FIFO values; the raw handler as vendor handler and as fallback;
+  - eight clients at once with failing requests, run under `-race`;
+  - in-process validation of every malformed or out-of-range request;
+  - a new fuzz target, `FuzzServerFunctions`.
+- **Interop against modbus-interop v0.2.0** (contract 1.1, PyModbus 3.16.1), with the images pinned by the digests of its release:
+  - Reference clients → go-modbus server: their own `diagnostics`, `report-server-id`, `read-file-record`, `write-file-record` and `read-fifo-queue` operations where they have them (PyModbus all five, libmodbus and tokio-modbus FC17, NModbus FC21), and raw PDUs for FC08, FC20, FC21 and FC24 from every client that can receive them (`clientRawAnyResponse`; libmodbus cannot). Outcomes, values and the device state are checked, and typed results are compared with what the client gets from a reference server.
+  - go-modbus client → reference servers (`TestClientMoreFunctions`): Diagnostics against PyModbus and NModbus; Report Server ID, file records (two sub-requests, a write read back on a second connection) and FIFO queues against PyModbus; Illegal Function from the servers without them.
+  - The go-modbus interop device serves FC08, FC17, FC20, FC21 and FC24 from the fixture of the image, no longer from data of its own.
+
+### Fixed
+
+- **`SupportsFunction` / `ProbeFunction` for FC20 never reported support.** The probe's validator expected `[3, 0x06, hi, lo]`. The specification's response is `[4, 3, 0x06, hi, lo]`: response data length, file response length, reference type, then the register. Any compliant device was therefore reported as `ProbeValidationFailed`. The validator now checks the correct layout, and its unit tests, which encoded the same mistake, were corrected.
+- FC22, FC23, FC07, FC0B and FC0C without their optional handler now reach the raw request handler when there is one. Without one they still get Illegal Function, as before.
+
+### Changed
+
+- With no `RawRequestHandler`, FC43 checks first whether a `DeviceIdentificationHandler` exists and only then whether the request is long enough. A short FC43 request to a device without one now gets Illegal Function instead of closing the connection, like every other function without a handler.
+
+### Docs
+
+- INTEROPERABILITY.md: server column for FC08, FC17, FC20/21 and FC24; the server's validation rules for them; the interop coverage.
+- README and API.md: the new handler interfaces and the raw request handler. API.md also corrects the FC0B/FC0C handler signatures, which return `*CommEventCounterResponse` and `*CommEventLogResponse`.
+- ARCHITECTURE.md: server file layout. OBSERVABILITY.md: metrics for `ErrNoResponse` and raw-handled requests.
+
+### Unchanged
+
+- Client API and wire format, apart from the FC20 probe fix. A server whose handler implements none of the new interfaces answers as in v1.6.1, apart from the short FC43 request above.
+
+---
+
 ## v1.6.1
 
 **Date:** 2026-10-14

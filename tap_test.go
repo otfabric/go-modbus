@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -301,11 +300,11 @@ func TestE2E_PDUTap(t *testing.T) {
 
 		for _, op := range e2eAllOps() {
 			err := op.call(ctx, p.client)
-			if op.served && err != nil {
+			if err != nil {
 				t.Fatalf("%s: %v", op.name, err)
 			}
 			got := rec.take()
-			if op.served && len(got) != op.requests {
+			if len(got) != op.requests {
 				t.Errorf("%s: %d exchanges reported, want %d", op.name, len(got), op.requests)
 				continue
 			}
@@ -317,8 +316,8 @@ func TestE2E_PDUTap(t *testing.T) {
 				if fc := ex.Response[0] &^ 0x80; fc != ex.Request[0] {
 					t.Errorf("%s: exchange %d answers 0x%02X with 0x%02X", op.name, i, ex.Request[0], ex.Response[0])
 				}
-				if !op.served && !reflect.DeepEqual(ex.Response, []byte{ex.Request[0] | 0x80, 0x01}) {
-					t.Errorf("%s: exchange %d: response % X, want Illegal Function", op.name, i, ex.Response)
+				if ex.Response[0]&0x80 != 0 {
+					t.Errorf("%s: exchange %d: exception response % X", op.name, i, ex.Response)
 				}
 			}
 		}
