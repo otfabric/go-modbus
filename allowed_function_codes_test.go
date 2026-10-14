@@ -342,7 +342,7 @@ func TestAllowedFunctionCodes_NilAndEmptyAreUnrestricted(t *testing.T) {
 				if errors.Is(err, ErrFunctionCodeNotAllowed) {
 					t.Errorf("%s: %v", op.name, err)
 				}
-				if op.served && err != nil {
+				if err != nil {
 					t.Errorf("%s: %v", op.name, err)
 				}
 			}

@@ -144,11 +144,11 @@ func init() {
 				if isSupportingException(reqFC, res) {
 					return true
 				}
-				if res.FunctionCode != reqFC || len(res.Payload) < 4 {
-					return false
-				}
-				byteCount := res.Payload[0]
-				return int(byteCount) == len(res.Payload)-1 && byteCount == 3
+				// One record of one register: response data length 4, then the
+				// sub-response: file response length 3, reference type 6, the
+				// register.
+				p := res.Payload
+				return res.FunctionCode == reqFC && len(p) == 5 && p[0] == 4 && p[1] == 3 && p[2] == 0x06
 			},
 		},
 	}

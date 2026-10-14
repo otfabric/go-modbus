@@ -145,8 +145,19 @@ type device struct {
 	mu       sync.Mutex
 	coils    []bool
 	holding  []uint16
+	file     []uint16
 	requests []deviceRequest
 }
+
+// The functions FIXTURES.md does not cover are served from go-modbus's own
+// data, checked against the specification alone: file 1 of fileRecords
+// records for FC20/FC21, the FIFO queue at address 0 for FC24, and Return
+// Query Data for FC08.
+const fileRecords = 100
+
+var fifoQueue = []uint16{0x0102, 0x0304, 0x0506}
+
+func baselineFileRecord(i int) uint16 { return uint16(i*409 + 11) }
 
 // deviceRequest is one request as the handler saw it.
 type deviceRequest struct {
@@ -162,6 +173,10 @@ func startDevice(t testing.TB, fx *fixture) *device {
 		fx:      fx,
 		coils:   append([]bool(nil), fx.Coils.Values...),
 		holding: append([]uint16(nil), fx.HoldingRegisters.Values...),
+		file:    make([]uint16, fileRecords),
+	}
+	for i := range d.file {
+		d.file[i] = baselineFileRecord(i)
 	}
 	// All interfaces: a container reaches the host through the bridge on
 	// Linux, not through loopback.
@@ -313,6 +328,70 @@ func (d *device) HandleDeviceIdentification(_ context.Context, req *modbus.Devic
 		}
 	}
 	return res, nil
+}
+
+// HandleDiagnostics serves Return Query Data (sub-function 0x0000) only.
+func (d *device) HandleDiagnostics(_ context.Context, req *modbus.DiagnosticsRequest) ([]byte, error) {
+	if err := d.seen(req.ClientAddr, req.FunctionCode, req.UnitID); err != nil {
+		return nil, err
+	}
+	if req.SubFunction != modbus.DiagReturnQueryData {
+		return nil, modbus.ErrIllegalFunction
+	}
+	return req.Data, nil
+}
+
+// fileRange reports whether file f has records rec..rec+n-1.
+func fileRange(f, rec uint16, n int) bool { return f == 1 && int(rec)+n <= fileRecords }
+
+func (d *device) HandleReadFileRecords(_ context.Context, req *modbus.ReadFileRecordsRequest) ([][]uint16, error) {
+	if err := d.seen(req.ClientAddr, req.FunctionCode, req.UnitID); err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([][]uint16, len(req.Requests))
+	for i, r := range req.Requests {
+		if !fileRange(r.FileNumber, r.RecordNumber, int(r.RecordLength)) {
+			return nil, modbus.ErrIllegalDataAddress
+		}
+		out[i] = append([]uint16(nil), d.file[r.RecordNumber:int(r.RecordNumber)+int(r.RecordLength)]...)
+	}
+	return out, nil
+}
+
+// HandleWriteFileRecords checks every sub-request before it writes any.
+func (d *device) HandleWriteFileRecords(_ context.Context, req *modbus.WriteFileRecordsRequest) error {
+	if err := d.seen(req.ClientAddr, req.FunctionCode, req.UnitID); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, r := range req.Records {
+		if !fileRange(r.FileNumber, r.RecordNumber, len(r.Data)) {
+			return modbus.ErrIllegalDataAddress
+		}
+	}
+	for _, r := range req.Records {
+		copy(d.file[r.RecordNumber:], r.Data)
+	}
+	return nil
+}
+
+func (d *device) HandleReadFIFOQueue(_ context.Context, req *modbus.FIFOQueueRequest) ([]uint16, error) {
+	if err := d.seen(req.ClientAddr, req.FunctionCode, req.UnitID); err != nil {
+		return nil, err
+	}
+	if req.Addr != 0 {
+		return nil, modbus.ErrIllegalDataAddress
+	}
+	return fifoQueue, nil
+}
+
+func (d *device) fileNow() []uint16 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]uint16(nil), d.file...)
 }
 
 // coilsNow and holdingNow return the current state of the device.

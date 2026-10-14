@@ -387,6 +387,49 @@ var scenarios = []scenario{
 	{args: "raw --function 3 --data 00000000 --unit-id 2", want: exception(3, illegalValue), ref: specOnly},
 }
 
+// rawFunctions sends the functions FIXTURES.md does not cover as raw PDUs:
+// Diagnostics (FC08), Read and Write File Record (FC20, FC21) and Read FIFO
+// Queue (FC24), served from the data in fixture.go. The reference servers
+// differ on these, so the outcome is checked against the specification.
+var rawFunctions = []scenario{
+	// Return Query Data echoes the request (spec 6.8.1).
+	{args: "raw --function 8 --data 00001234", want: ok(8, 0), ref: specOnly, check: rawIs("0000 1234")},
+	{args: "raw --function 8 --data 0000a5a5c3c3", want: ok(8, 0), ref: specOnly, check: rawIs("0000 a5a5 c3c3")},
+	{args: "raw --function 8 --data 00030000", want: exception(8, illegalFunc), ref: specOnly},
+	// One sub-request: response data length, file response length,
+	// reference type, the records (spec 6.14).
+	{args: "raw --function 20 --data 0706000100000002", want: ok(20, 0), ref: specOnly, check: rawIs("06 05 06 000b 01a4")},
+	{args: "raw --function 20 --data 0e0600010000000106000100020001", want: ok(20, 0), ref: specOnly,
+		check: rawIs("08 03 06 000b 03 06 033d")},
+	{args: "raw --function 20 --data 0706000200000001", want: exception(20, illegalAddr), ref: specOnly},
+	{args: "raw --function 20 --data 0706000100630002", want: exception(20, illegalAddr), ref: specOnly},
+	{args: "raw --function 20 --data 0707000100000001", want: exception(20, illegalAddr), ref: specOnly},
+	{args: "raw --function 20 --data 00", want: exception(20, illegalValue), ref: specOnly},
+	// The response is the echo of the request (spec 6.15).
+	{args: "raw --function 21 --data 0906000100050001beef", want: ok(21, 0), ref: specOnly, mutates: true,
+		check: all(rawIs("09 06 0001 0005 0001 beef"), fileIs(5, 0xBEEF))},
+	{args: "raw --function 21 --data 0906000200050001beef", want: exception(21, illegalAddr), ref: specOnly, check: fileIs(0)},
+	// Byte count, FIFO count, the values (spec 6.18).
+	{args: "raw --function 24 --data 0000", want: ok(24, 0), ref: specOnly, check: rawIs("0008 0003 0102 0304 0506")},
+	{args: "raw --function 24 --data 0001", want: exception(24, illegalAddr), ref: specOnly},
+}
+
+// fileIs checks that file 1 holds the baseline with the given records
+// replaced.
+func fileIs(rec int, values ...uint16) func(*testing.T, *fixture, *result, *device) {
+	return func(t *testing.T, _ *fixture, _ *result, d *device) {
+		t.Helper()
+		want := make([]uint16, fileRecords)
+		for i := range want {
+			want[i] = baselineFileRecord(i)
+		}
+		copy(want[rec:], values)
+		if got := d.fileNow(); !reflect.DeepEqual(got, want) {
+			t.Errorf("file 1 after the operation: %s", diffRegisters(got, want))
+		}
+	}
+}
+
 // rawIdentification are scenarios that need the fixture to state what they
 // expect: FC43/14 as a raw PDU, which also exercises the go-modbus server
 // with the clients that have no operation for it.
@@ -427,9 +470,11 @@ func skipFor(a adapter, sc scenario) string {
 	// libmodbus v3.2.0 frames a response by its function code, not by the
 	// MBAP length, so its raw operation cannot read the response to a
 	// function the library does not know: COMPATIBILITY.md § libmodbus.
-	if a.name == libmodbus && sc.operation() == "raw" && sc.flag("--function", 0) == 43 &&
-		strings.HasPrefix(sc.want, "exit=0") {
-		return "libmodbus cannot read an FC43 response: it frames responses by function code"
+	if a.name == libmodbus && sc.operation() == "raw" && strings.HasPrefix(sc.want, "exit=0") {
+		switch fc := sc.flag("--function", 0); fc {
+		case 8, 20, 21, 24, 43:
+			return fmt.Sprintf("libmodbus cannot read an FC%02d response: it frames responses by function code", fc)
+		}
 	}
 	return ""
 }
@@ -443,7 +488,7 @@ func TestServerScenarios(t *testing.T) {
 	forEachAdapter(t, func(t *testing.T, a adapter) {
 		logReference(t, a)
 		fx := loadFixture(t, a)
-		list := append(append([]scenario(nil), scenarios...), rawIdentification(fx)...)
+		list := append(append(append([]scenario(nil), scenarios...), rawFunctions...), rawIdentification(fx)...)
 		sharedDevice := startDevice(t, fx)
 		// The reference servers that the scenarios which leave the device
 		// alone are compared with, by adapter.
@@ -511,6 +556,7 @@ func TestServerScenarios(t *testing.T) {
 		if got := sharedDevice.coilsNow(); !reflect.DeepEqual(got, fx.Coils.Values) {
 			t.Errorf("a scenario that should not write changed the coils: %s", diffBits(got, fx.Coils.Values))
 		}
+		fileIs(0)(t, fx, nil, sharedDevice)
 	})
 }
 

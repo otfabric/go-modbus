@@ -335,7 +335,8 @@ Byte and word order for multi-register values are defined by the **codec**, not 
 ### Server supported function codes
 
 The server dispatches decoded requests to a user-provided `RequestHandler`
-implementation. All four handler methods cover the full set of supported function codes:
+implementation. Its four methods serve the data-model function codes; optional
+interfaces serve the rest:
 
 | FC(s) | Hex | Name | Handler method / interface | `IsWrite` |
 |---|---|---|---|---|
@@ -348,27 +349,43 @@ implementation. All four handler methods cover the full set of supported functio
 | 15 | 0x0F | Write Multiple Coils | `HandleCoils` | `true` |
 | 16 | 0x10 | Write Multiple Registers | `HandleHoldingRegisters` | `true` |
 | 07 | 0x07 | Read Exception Status | `ExceptionStatusHandler` (optional) | — |
+| 08 | 0x08 | Diagnostics | `DiagnosticsHandler` (optional) | — |
 | 11 | 0x0B | Get Comm Event Counter | `CommEventCounterHandler` (optional) | — |
 | 12 | 0x0C | Get Comm Event Log | `CommEventLogHandler` (optional) | — |
+| 17 | 0x11 | Report Server ID | `ReportServerIDHandler` (optional) | — |
+| 20 | 0x14 | Read File Record | `ReadFileRecordHandler` (optional) | — |
+| 21 | 0x15 | Write File Record | `WriteFileRecordHandler` (optional) | — |
 | 22 | 0x16 | Mask Write Register | `MaskWriteHandler` (optional) | — |
 | 23 | 0x17 | Read/Write Multiple Registers | `ReadWriteHandler` (optional) | — |
+| 24 | 0x18 | Read FIFO Queue | `FIFOQueueHandler` (optional) | — |
 | 43/14 | 0x2B/0x0E | Read Device Identification | `DeviceIdentificationHandler` (optional) | — |
+| any other | — | vendor, user-defined, or a missing optional handler | `RawRequestHandler` (optional) | — |
 
-FC07, FC11, FC12, FC22, FC23 and FC43 use optional handler interfaces. If the `RequestHandler`
-also implements the corresponding interface (e.g. `ExceptionStatusHandler`,
-`CommEventCounterHandler`, `CommEventLogHandler`, `MaskWriteHandler`, `ReadWriteHandler`,
-`DeviceIdentificationHandler`), those FCs are dispatched accordingly; otherwise they return
-`Illegal Function`.
+Every function code the client sends is served: the end-to-end suite runs every
+client method against the server and fails if one is not answered
+(`TestE2E_EveryClientFunctionIsServed`).
+
+FC07, FC08, FC11, FC12, FC17, FC20 to FC24 and FC43 use optional handler interfaces. If
+the `RequestHandler` also implements the corresponding interface (e.g.
+`ExceptionStatusHandler`, `DiagnosticsHandler`, `ReadFileRecordHandler`,
+`FIFOQueueHandler`), those FCs are dispatched accordingly. The server parses and
+validates the request, the handler supplies the data, and the server encodes the
+response. Otherwise the request goes to the `RawRequestHandler`, which receives the
+request PDU and returns the response PDU; with neither, the answer is `Illegal Function`.
+The raw handler also serves vendor and user-defined function codes, and lets a device
+answer from a recording. FC01 to FC04 always go to `RequestHandler`.
 
 For FC43 (Read Device Identification), the handler returns the full set of
 `DeviceIdentificationObject` values it implements plus a conformity level; the server owns
 all MEI framing, category filtering (basic/regular/extended/individual), and
 MoreFollows/NextObjectID pagination automatically. Only MEI type 14 (0x0E) is supported;
-other MEI types (e.g. CANopen 0x0D) return `Illegal Function`.
+other MEI types (e.g. CANopen 0x0D) go to the `RawRequestHandler`, or return `Illegal Function`.
 
 Returning a Modbus sentinel error (e.g. `ErrIllegalDataAddress`) causes the server to
 send the corresponding exception code back to the client. Any other non-nil error maps
-to `ServerDeviceFailure`. Unsupported FCs receive an `Illegal Function` exception.
+to `ServerDeviceFailure`. `ErrNoResponse` sends no response at all (for example for
+Diagnostics Force Listen Only Mode). Function codes no handler serves receive an
+`Illegal Function` exception.
 Handler panics are recovered and logged (with full stack trace); the client receives a
 `ServerDeviceFailure` exception.
 
