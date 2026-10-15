@@ -10,12 +10,11 @@ import (
 
 // This file holds the optional handlers for the function codes beyond the
 // basic data model: Diagnostics (FC08), Report Server ID (FC17), Read and
-// Write File Record (FC20, FC21) and Read FIFO Queue (FC24), plus a raw
-// handler for function codes the server does not decode itself.
+// Write File Record (FC20, FC21) and Read FIFO Queue (FC24).
 //
 // Like the other optional handlers, each is used when the RequestHandler
-// passed to NewServer also implements it; otherwise the request goes to the
-// RawRequestHandler, and without one it is answered with Illegal Function. The server parses and validates the request, calls
+// passed to NewServer also implements it; otherwise the request is answered
+// with Illegal Function. The server parses and validates the request, calls
 // the handler, and encodes the response; an error returned by a handler is
 // sent as the matching exception, and ErrNoResponse sends nothing.
 
@@ -119,27 +118,6 @@ type FIFOQueueHandler interface {
 	HandleReadFIFOQueue(ctx context.Context, req *FIFOQueueRequest) (values []uint16, err error)
 }
 
-// RawRequest is passed to RawRequestHandler.HandleRawRequest.
-type RawRequest struct {
-	ClientAddr   string
-	ClientRole   string
-	UnitID       uint8
-	FunctionCode FunctionCode
-	// Payload is the request PDU after the function code.
-	Payload []byte
-}
-
-// RawRequestHandler is an optional interface for serving function codes the
-// server does not handle itself: vendor and user-defined function codes, and
-// standard ones whose optional handler the RequestHandler does not implement
-// (for example a device that answers FC07 from a recording rather than through
-// ExceptionStatusHandler). The handler returns the response PDU after the
-// function code; the server prepends the function code. Function codes 0x01
-// to 0x06, 0x0F and 0x10, which RequestHandler serves, never reach it.
-type RawRequestHandler interface {
-	HandleRawRequest(ctx context.Context, req *RawRequest) (payload []byte, err error)
-}
-
 // Response size limits, in bytes of response PDU after the function code.
 const (
 	maxDiagnosticsData   = maxPDUPayload - 2
@@ -147,34 +125,11 @@ const (
 	maxPDUPayload        = 252
 )
 
-// handleRaw answers req with the RawRequestHandler, if there is one, and with
-// Illegal Function otherwise.
-func (ms *Server) handleRaw(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
-	h, ok := ms.handler.(RawRequestHandler)
-	if !ok {
-		return nil, ErrIllegalFunction
-	}
-	payload, err := h.HandleRawRequest(ctx, &RawRequest{
-		ClientAddr:   clientAddr,
-		ClientRole:   clientRole,
-		UnitID:       req.UnitID,
-		FunctionCode: FunctionCode(req.FunctionCode),
-		Payload:      append([]byte(nil), req.Payload...),
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(payload) > maxPDUPayload {
-		return nil, ErrServerDeviceFailure
-	}
-	return newSuccessResponse(req, txnID, payload), nil
-}
-
 // handleDiagnostics serves FC08.
 func (ms *Server) handleDiagnostics(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(DiagnosticsHandler)
 	if !ok {
-		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+		return nil, ErrIllegalFunction
 	}
 	if len(req.Payload) < 2 {
 		return nil, ErrProtocolError
@@ -201,7 +156,7 @@ func (ms *Server) handleDiagnostics(ctx context.Context, req *adu.Request, txnID
 func (ms *Server) handleReportServerID(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(ReportServerIDHandler)
 	if !ok {
-		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+		return nil, ErrIllegalFunction
 	}
 	if len(req.Payload) != 0 {
 		return nil, ErrProtocolError
@@ -225,7 +180,7 @@ func (ms *Server) handleReportServerID(ctx context.Context, req *adu.Request, tx
 func (ms *Server) handleReadFileRecords(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(ReadFileRecordHandler)
 	if !ok {
-		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+		return nil, ErrIllegalFunction
 	}
 	p := req.Payload
 	if len(p) < 1 || int(p[0]) != len(p)-1 {
@@ -284,7 +239,7 @@ func (ms *Server) handleReadFileRecords(ctx context.Context, req *adu.Request, t
 func (ms *Server) handleWriteFileRecords(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(WriteFileRecordHandler)
 	if !ok {
-		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+		return nil, ErrIllegalFunction
 	}
 	p := req.Payload
 	if len(p) < 1 || int(p[0]) != len(p)-1 {
@@ -333,7 +288,7 @@ func (ms *Server) handleWriteFileRecords(ctx context.Context, req *adu.Request, 
 func (ms *Server) handleReadFIFOQueue(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	h, ok := ms.handler.(FIFOQueueHandler)
 	if !ok {
-		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+		return nil, ErrIllegalFunction
 	}
 	if len(req.Payload) != 2 {
 		return nil, ErrProtocolError

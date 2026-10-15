@@ -41,16 +41,6 @@ func (h *fnFunctions) HandleReadFIFOQueue(_ context.Context, req *FIFOQueueReque
 	return h.fifo(req)
 }
 
-// fnRaw adds a raw handler to the mandatory ones.
-type fnRaw struct {
-	noSerialFCHandler
-	raw func(*RawRequest) ([]byte, error)
-}
-
-func (h *fnRaw) HandleRawRequest(_ context.Context, req *RawRequest) ([]byte, error) {
-	return h.raw(req)
-}
-
 // fileReadReq builds an FC20 request payload from (file, record, length) triples.
 func fileReadReq(subs ...[3]uint16) []byte {
 	p := []byte{byte(7 * len(subs))}
@@ -189,11 +179,7 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 		{"FC24 more than 31 values", dev, FCReadFIFOQueue, u16(0x0032), exIllegalDataValue, ErrIllegalDataValue},
 		{"FC24 unknown queue", dev, FCReadFIFOQueue, u16(0x0999), exIllegalDataAddress, ErrIllegalDataAddress},
 
-		{
-			"raw response too large", &fnRaw{raw: func(*RawRequest) ([]byte, error) { return make([]byte, 253), nil }},
-			0x41, nil, exServerDeviceFailure, ErrServerDeviceFailure,
-		},
-		{"no raw handler", &noSerialFCHandler{}, 0x41, nil, exIllegalFunction, ErrIllegalFunction},
+		{"vendor function code", dev, 0x41, []byte{1, 2, 3}, exIllegalFunction, ErrIllegalFunction},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,10 +219,11 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 	}
 }
 
-// Without its optional handler, each function code goes to the raw handler,
-// which gets the request exactly as it came; without either it is Illegal
-// Function. The functions RequestHandler serves never reach the raw handler.
-func TestServerFunctions_RawFallback(t *testing.T) {
+// Without its optional handler, each function code is answered with Illegal
+// Function and reported to the metrics as an error; so is every vendor,
+// user-defined or unknown function code, and FC43 with an MEI type other than
+// 14. The link stays up.
+func TestServerFunctions_UnsupportedFunctionCodes(t *testing.T) {
 	requests := []struct {
 		fc      FunctionCode
 		payload []byte
@@ -252,49 +239,36 @@ func TestServerFunctions_RawFallback(t *testing.T) {
 		{FCReadWriteMultipleRegs, append(append(u16(0, 1, 0, 1), 0x02), u16(7)...)},
 		{FCReadFIFOQueue, u16(0x04DE)},
 		{FCEncapsulatedInterface, []byte{byte(MEIReadDeviceIdentification), byte(DeviceIDBasic), 0x00}},
-		// Another MEI type, and vendor function codes.
 		{FCEncapsulatedInterface, []byte{0x0D, 0x01}},
 		{0x41, []byte{1, 2, 3}},
-		{0x7F, nil},
+		{0x64, nil},
+		{0x7F, []byte{0}},
 	}
 	for _, r := range requests {
-		fc, payload := r.fc, r.payload
-		var got *RawRequest
-		h := &fnRaw{raw: func(req *RawRequest) ([]byte, error) {
-			got = req
-			return append([]byte{0xEE}, req.Payload...), nil
-		}}
-		tr, m := serveOne(t, h, fc, payload...)
-		if got == nil || got.FunctionCode != fc || got.UnitID != 0x2A || !reflect.DeepEqual(got.Payload, append([]byte(nil), payload...)) ||
-			got.ClientAddr != "192.0.2.7:4242" || got.ClientRole != "operator" {
-			t.Errorf("fc 0x%02X: raw handler got %+v", uint8(fc), got)
-		}
-		want := &adu.Response{UnitID: 0x2A, FunctionCode: byte(fc), Payload: append([]byte{0xEE}, payload...), TransactionID: 0x0101}
+		tr, m := serveOne(t, &noSerialFCHandler{}, r.fc, r.payload...)
+		want := &adu.Response{UnitID: 0x2A, FunctionCode: byte(r.fc) | 0x80, Payload: []byte{byte(exIllegalFunction)}, TransactionID: 0x0101}
 		if len(tr.responses) != 1 || !reflect.DeepEqual(tr.responses[0], want) {
-			t.Errorf("fc 0x%02X: responses = %+v, want %+v", uint8(fc), tr.responses, want)
+			t.Errorf("fc 0x%02X: responses = %+v, want %+v", uint8(r.fc), tr.responses, want)
+		}
+		if tr.closed {
+			t.Errorf("fc 0x%02X: link closed", uint8(r.fc))
 		}
 		checkEvents(t, m, []metricEvent{
-			{kind: "request", unit: 0x2A, fc: fc},
-			{kind: "response", unit: 0x2A, fc: fc},
-		}, nil)
+			{kind: "request", unit: 0x2A, fc: r.fc},
+			{kind: "error", unit: 0x2A, fc: r.fc},
+		}, ErrIllegalFunction)
 	}
-	// Without a raw handler, MEI 0x0D is Illegal Function.
-	tr, _ := serveOne(t, &noSerialFCHandler{}, FCEncapsulatedInterface, 0x0D, 0x01)
-	if len(tr.responses) != 1 || tr.responses[0].FunctionCode != byte(FCEncapsulatedInterface)|0x80 {
-		t.Errorf("MEI 0x0D without a raw handler = %+v, want Illegal Function", tr.responses)
+	// A device with every handler still has no vendor functions.
+	dev := e2eNewDevice()
+	dev.setUnit(0x2A)
+	for _, fc := range []FunctionCode{0x41, 0x64, 0x7F} {
+		tr, _ := serveOne(t, dev, fc, 0x00)
+		if len(tr.responses) != 1 || tr.responses[0].FunctionCode != byte(fc)|0x80 {
+			t.Errorf("fc 0x%02X with every handler: %+v, want Illegal Function", uint8(fc), tr.responses)
+		}
 	}
-
-	called := false
-	h := &fnRaw{raw: func(*RawRequest) ([]byte, error) { called = true; return nil, nil }}
-	for fc, payload := range map[FunctionCode][]byte{
-		FCReadCoils: u16(0, 1), FCReadDiscreteInputs: u16(0, 1), FCReadHoldingRegisters: u16(0, 1),
-		FCReadInputRegisters: u16(0, 1), FCWriteSingleCoil: u16(0, 0xFF00), FCWriteSingleRegister: u16(0, 1),
-		FCWriteMultipleCoils: append(u16(0, 1), 1, 1), FCWriteMultipleRegisters: append(u16(0, 1), 2, 0, 1),
-	} {
-		serveOne(t, h, fc, payload...)
-	}
-	if called {
-		t.Error("a mandatory function code reached the raw handler")
+	if n := dev.callCount(); n != 0 {
+		t.Errorf("vendor function codes reached the device %d times", n)
 	}
 }
 

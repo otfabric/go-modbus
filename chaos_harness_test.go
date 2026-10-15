@@ -3,6 +3,7 @@
 package modbus
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -12,6 +13,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -618,6 +620,67 @@ func (d *chaosDevice) HandleDeviceIdentification(ctx context.Context, req *Devic
 	return d.refDevice.HandleDeviceIdentification(ctx, req)
 }
 
+// The functions beyond the data model answer from fixed rules, so a worker
+// can check every response exactly: an answer to another request shows.
+func chaosFileValue(file, rec int) uint16 { return uint16(file*7919 + rec*31 + 1) }
+
+// chaosFIFO is the queue at addr: addr%32 values, at most 31.
+func chaosFIFO(addr uint16) []uint16 {
+	out := make([]uint16, addr%32)
+	for i := range out {
+		out[i] = addr ^ uint16(i*257)
+	}
+	return out
+}
+
+const (
+	chaosFiles       = 8
+	chaosFileRecords = 1000
+)
+
+var chaosServerID = []byte{0x2A, 0xFF, 'c', 'h', 'a', 'o', 's'}
+
+func (d *chaosDevice) HandleDiagnostics(ctx context.Context, req *DiagnosticsRequest) ([]byte, error) {
+	if err := d.fault(ctx); err != nil {
+		return nil, err
+	}
+	if req.SubFunction != DiagReturnQueryData {
+		return nil, ErrIllegalFunction
+	}
+	return req.Data, nil
+}
+
+func (d *chaosDevice) HandleReportServerID(ctx context.Context, _ *ReportServerIDRequest) ([]byte, error) {
+	if err := d.fault(ctx); err != nil {
+		return nil, err
+	}
+	return chaosServerID, nil
+}
+
+func (d *chaosDevice) HandleReadFileRecords(ctx context.Context, req *ReadFileRecordsRequest) ([][]uint16, error) {
+	if err := d.fault(ctx); err != nil {
+		return nil, err
+	}
+	out := make([][]uint16, len(req.Requests))
+	for i, r := range req.Requests {
+		if int(r.FileNumber) > chaosFiles || int(r.RecordNumber)+int(r.RecordLength) > chaosFileRecords {
+			return nil, ErrIllegalDataAddress
+		}
+		out[i] = make([]uint16, r.RecordLength)
+		for j := range out[i] {
+			out[i][j] = chaosFileValue(int(r.FileNumber), int(r.RecordNumber)+j)
+		}
+	}
+	return out, nil
+}
+
+func (d *chaosDevice) HandleReadFIFOQueue(ctx context.Context, req *FIFOQueueRequest) ([]uint16, error) {
+	if err := d.fault(ctx); err != nil {
+		return nil, err
+	}
+	return chaosFIFO(req.Addr), nil
+}
+
 // setHook installs (or, with nil, removes) the handler hook.
 func (d *chaosDevice) setHook(h func(ctx context.Context) error) {
 	if h == nil {
@@ -1059,7 +1122,7 @@ func (w *chaosWorker) step(c *Client) {
 	w.seq++
 	wl := w.wl
 	unit := wl.unit
-	switch op := w.rng.Intn(14); op {
+	switch op := w.rng.Intn(18); op {
 	case 0:
 		off := w.rng.Intn(chaosRegsPer)
 		v := chaosValue(w.id, off, w.seq)
@@ -1192,6 +1255,63 @@ func (w *chaosWorker) step(c *Client) {
 			return c.WriteCoil(ctx, unit, w.coilAddr(3), v)
 		})
 		w.coilSingle.wrote(word, err, wl.sticky)
+	case 14:
+		// FC08 Return Query Data with a value of this worker and step: an echo
+		// of another request shows.
+		v := chaosValue(w.id, 0, w.seq)
+		var got uint16
+		err := w.call("DiagnosticLoopback", func(ctx context.Context) (err error) {
+			got, err = c.DiagnosticLoopback(ctx, unit, v)
+			return err
+		})
+		if err == nil && wl.checkData && got != v {
+			wl.failf("worker %d FC08: echo 0x%04x, want 0x%04x: response of another request", w.id, got, v)
+		}
+	case 15:
+		var rs *ReportServerIDResponse
+		err := w.call("ReportServerID", func(ctx context.Context) (err error) {
+			rs, err = c.ReportServerID(ctx, unit)
+			return err
+		})
+		if err == nil && wl.checkData && (rs == nil || !bytes.Equal(rs.Data, chaosServerID)) {
+			wl.failf("worker %d FC17: %+v, want % x", w.id, rs, chaosServerID)
+		}
+	case 16:
+		// Two sub-requests at random places: each record must be the rule's.
+		reqs := []FileRecordRequest{
+			{FileNumber: uint16(1 + w.rng.Intn(chaosFiles)), RecordNumber: uint16(w.rng.Intn(chaosFileRecords - 40)), RecordLength: uint16(1 + w.rng.Intn(40))},
+			{FileNumber: uint16(1 + w.rng.Intn(chaosFiles)), RecordNumber: uint16(w.rng.Intn(chaosFileRecords - 40)), RecordLength: uint16(1 + w.rng.Intn(40))},
+		}
+		var got [][]uint16
+		err := w.call("ReadFileRecords", func(ctx context.Context) (err error) {
+			got, err = c.ReadFileRecords(ctx, unit, reqs)
+			return err
+		})
+		if err == nil && wl.checkData {
+			ok := len(got) == len(reqs)
+			for i := 0; ok && i < len(reqs); i++ {
+				ok = len(got[i]) == int(reqs[i].RecordLength)
+				for j := 0; ok && j < len(got[i]); j++ {
+					ok = got[i][j] == chaosFileValue(int(reqs[i].FileNumber), int(reqs[i].RecordNumber)+j)
+				}
+			}
+			if !ok {
+				wl.failf("worker %d FC20 %+v: got %v: response of another request", w.id, reqs, got)
+			}
+		}
+	case 17:
+		addr := uint16(w.rng.Intn(1 << 16))
+		var got []uint16
+		err := w.call("ReadFIFOQueue", func(ctx context.Context) (err error) {
+			got, err = c.ReadFIFOQueue(ctx, unit, addr)
+			return err
+		})
+		if err == nil && wl.checkData {
+			want := chaosFIFO(addr)
+			if len(got) != len(want) || len(want) > 0 && !reflect.DeepEqual(got, want) {
+				wl.failf("worker %d FC24 at %d: got %v, want %v: response of another request", w.id, addr, got, want)
+			}
+		}
 	default:
 		var di *DeviceIdentification
 		err := w.call("ReadDeviceIdentification", func(ctx context.Context) (err error) {
