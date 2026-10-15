@@ -1,5 +1,49 @@
 # go-modbus Releases
 
+## v1.8.0
+
+**Date:** 2026-10-15
+**Previous release:** v1.7.0
+
+## Summary
+
+The client can now send any request PDU and get the response PDU back: `SendRawRequest`. Recorders such as modbusctl can capture vendor and unknown function codes, which until now only the unexported request path could send. On RTU the client reads a response to a function code it does not implement until inter-frame silence, so raw requests work on every transport.
+
+## Changes
+
+### Added
+
+- **`Client.SendRawRequest(ctx, unitID, fc, payload) (*RawResponse, error)`**. It sends the function code and the bytes after it, and returns the response function code and payload as received. `RawResponse` has `FunctionCode` and `Payload`.
+  - Arguments: `fc` must be 0x01..0x7F and `payload` at most 252 bytes. Anything else is a `*ParameterError` (`ErrUnexpectedParameters`); nothing is sent or reported.
+  - Same path as every method: `AllowedFunctionCodes` (`ErrFunctionCodeNotAllowed`, nothing sent), `ClientMetrics` and `AttemptMetrics` under `fc`, the `RetryPolicy`, the `PDUTap`, the unit and transaction id checks, timeouts and the context.
+  - An exception to `fc` is an `*ExceptionError`, matched with `errors.Is` against the usual sentinels. A response with another function code, or an exception that is not one byte, is a `*ProtocolError`. The payload is not validated, even for a standard function code.
+- **RTU framing for function codes the library does not implement.** When the response answers the request's function code, the RTU transport (`rtu://`, `rtuovertcp://`, `rtuoverudp://`) reads it until 3.5 characters of silence, as it does for FC08 and FC43. An exception to that function code is read as one byte. Responses to the function codes the library implements are framed as before. A device or adapter that pauses longer than 3.5 characters inside a frame cuts such a response short (`ErrBadCRC` or `ErrShortFrame`). ASCII, TCP, TLS and UDP frames carry their own end, and needed no change.
+- Tests:
+  - `SendRawRequest` in the scripted table of every client call (metrics, failures, the PDU tap) and in `e2eAllOps`, so `TestE2E_EveryClientFunctionIsServed` and the other e2e loops cover it. The e2e device serves two vendor function codes through `RawRequestHandler`.
+  - End to end against the server over `tcp://` and `tcp+tls://`: vendor and standard function codes, byte for byte what the typed methods decode, empty and 252-byte payloads both ways, exceptions, unhandled codes, `AllowedFunctionCodes`, metrics and the PDU tap.
+  - 16 workers on eight clients and one shared pooled client at once, with failing requests, under `-race`.
+  - Serial framing against scripted devices over `rtuovertcp://`, `rtuoverudp://` and `asciiovertcp://`, and over a pseudo-terminal on `rtu://` and `ascii://`. Each raw exchange is followed by a typed read to show the line stayed in step.
+  - The chaos fault catalogue (`TestChaosSendRawRequest`) on a single connection, with retries, and pooled.
+  - RTU reader unit tests, and two fuzz targets: `FuzzSendRawRequest` and `FuzzRTUReadFrame` (both in `make fuzz`).
+
+### Changed
+
+- On Modbus TCP, a response with an empty payload to a function code the library does not implement no longer closes the connection. Before, every empty payload did. Only `SendRawRequest` can send such a function code.
+
+### Known limitations
+
+- Modbus TCP frames a PDU only by the MBAP length. For a function code the library does not implement, that length cannot be checked against the PDU. If a peer or middlebox sends a length one byte short, the call gets the shortened payload. The next exchange on that connection then fails (timeout or closed connection), and the connection is replaced. The chaos test pins this behaviour. The same applies in the other direction: our server cannot tell a shortened vendor request from a short one.
+
+### Docs
+
+- API.md § 2.10 Raw requests, with the framing per transport. README function table and notes, INTEROPERABILITY.md, OBSERVABILITY.md and ARCHITECTURE.md updated.
+
+### Unchanged
+
+- Every existing method, the wire format and the server. A request whose response the RTU transport reads with the function code table is framed as in v1.7.0.
+
+---
+
 ## v1.7.0
 
 **Date:** 2026-10-15

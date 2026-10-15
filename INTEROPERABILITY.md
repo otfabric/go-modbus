@@ -44,6 +44,7 @@ repository's own tests.
 | 23 | Read/Write Multiple Registers | yes, read 1..125, write 1..121 | opt |
 | 24 | Read FIFO Queue | yes | opt, up to 31 values |
 | 43/14 | Read Device Identification | yes, all categories, follows "more follows" | opt, stream and individual access, pagination |
+| any | Any other, vendor and user-defined included | raw (`SendRawRequest`) | raw handler |
 
 Every function code the client sends is served by the server, and the
 repository's end-to-end suite fails if one is not. Any other function code
@@ -66,7 +67,13 @@ function).
   the exception code, and leaves the connection in use. Every other failure
   on Modbus TCP closes the connection; the next request opens a new one.
 - A quantity the protocol does not allow is refused before anything is sent
-  (`*ParameterError`). The library has no call that sends an arbitrary PDU.
+  (`*ParameterError`).
+- `SendRawRequest` sends an arbitrary PDU (function code 0x01..0x7F, up to 252
+  data bytes). Its response gets the transaction, protocol, unit and function
+  code checks and the exception handling above, but its payload is returned as
+  received, unvalidated. On Modbus TCP the MBAP length of a response to a
+  function code the library does not implement cannot be cross-checked. On RTU
+  such a response is framed by 3.5 characters of silence.
 
 ## How the server treats a request
 

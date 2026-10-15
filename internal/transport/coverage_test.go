@@ -82,7 +82,7 @@ func TestRTUReadVariableLengthDiagnostics(t *testing.T) {
 	}()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(0)
 	if err != nil {
 		t.Fatalf("readRTUFrame (diagnostics): %v", err)
 	}
@@ -116,7 +116,7 @@ func TestRTUReadVariableLengthEncapsulated(t *testing.T) {
 	}()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(0)
 	if err != nil {
 		t.Fatalf("readRTUFrame (encapsulated): %v", err)
 	}
@@ -144,7 +144,7 @@ func TestRTUReadVariableLengthDiagnostics_ShortFrame(t *testing.T) {
 	}()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	_, err := rt.readRTUFrame()
+	_, err := rt.readRTUFrame(0)
 	if err == nil {
 		t.Error("expected error for short diagnostics frame")
 	}
@@ -169,7 +169,7 @@ func TestRTUReadVariableLengthEncapsulated_BadCRC(t *testing.T) {
 	}()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	_, err := rt.readRTUFrame()
+	_, err := rt.readRTUFrame(0)
 	if !errors.Is(err, protocol.ErrBadCRC) {
 		t.Errorf("expected ErrBadCRC, got %v", err)
 	}
@@ -197,7 +197,7 @@ func TestRTUReadRTUFrame_FIFO(t *testing.T) {
 	frame := adu.AssembleRTUFrame(0x01, byte(protocol.FCReadFIFOQueue), payload)
 	txchan <- frame
 
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(0)
 	if err != nil {
 		t.Fatalf("readRTUFrame (FIFO): %v", err)
 	}
@@ -226,7 +226,7 @@ func TestRTUReadRTUFrame_FIFO_BadCRC(t *testing.T) {
 	frame[len(frame)-1] ^= 0xFF // corrupt CRC
 	txchan <- frame
 
-	_, err := rt.readRTUFrame()
+	_, err := rt.readRTUFrame(0)
 	if !errors.Is(err, protocol.ErrBadCRC) {
 		t.Errorf("expected ErrBadCRC, got %v", err)
 	}
@@ -381,7 +381,7 @@ func TestRTUReadRTUFrame_ShortPayload(t *testing.T) {
 		_ = p1.Close()
 	}()
 
-	_, err := rt.readRTUFrame()
+	_, err := rt.readRTUFrame(0)
 	if err == nil {
 		t.Error("expected error for short payload")
 	}

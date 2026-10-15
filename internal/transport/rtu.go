@@ -126,7 +126,7 @@ func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 			return nil, err
 		}
 	}
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(req.FunctionCode)
 	if err == nil {
 		rt.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", res.UnitID, res.FunctionCode, res.Payload)
 	}
@@ -156,7 +156,13 @@ func (rt *RTU) WriteResponse(res *adu.Response) error {
 	return nil
 }
 
-func (rt *RTU) readRTUFrame() (*adu.Response, error) {
+// readRTUFrame reads the response to a request with function code reqFC (0
+// when there is no request to go by). The length of the response comes from
+// its function code. For a function code the library does not implement, which
+// only SendRawRequest sends, the response is read until inter-frame silence
+// when it answers reqFC, and an exception to reqFC is one byte long like any
+// other.
+func (rt *RTU) readRTUFrame(reqFC byte) (*adu.Response, error) {
 	rxbuf := make([]byte, adu.MaxRTUFrameLength)
 	byteCount, err := io.ReadFull(rt.Link, rxbuf[0:3])
 	if (byteCount > 0 || err == nil) && byteCount != 3 {
@@ -167,12 +173,23 @@ func (rt *RTU) readRTUFrame() (*adu.Response, error) {
 	}
 	bytesNeeded, err := protocol.ExpectedRTUResponseLength(protocol.FunctionCode(rxbuf[1]), rxbuf[2])
 	if err != nil {
-		return nil, err
+		switch {
+		case reqFC == 0:
+			return nil, err
+		case rxbuf[1] == reqFC:
+			// Unit id, function code and CRC: the payload may be empty.
+			return rt.readVariableLengthResponse(rxbuf[:3], 4)
+		case rxbuf[1] == reqFC|0x80:
+			bytesNeeded = 0
+		default:
+			return nil, err
+		}
 	}
 	if bytesNeeded == protocol.RTUResponseLengthVariable {
 		switch protocol.FunctionCode(rxbuf[1]) {
 		case protocol.FCDiagnostics, protocol.FCEncapsulatedInterface:
-			return rt.readVariableLengthResponse(rxbuf[:3])
+			// Unit id, function code, two data bytes at least, and CRC.
+			return rt.readVariableLengthResponse(rxbuf[:3], 6)
 		default:
 			return nil, protocol.ErrProtocolError
 		}
@@ -224,11 +241,12 @@ func midFrameErr(err error) error {
 }
 
 // readVariableLengthResponse reads an RTU response whose length is not known
-// from the header alone (FC08 diagnostics, FC2B encapsulated interface).
+// from the header alone (FC08 diagnostics, FC2B encapsulated interface, and
+// function codes the library does not implement).
 // It reads byte-by-byte until an inter-frame silence (t3.5) is detected, then
 // validates CRC and parses the frame.
-func (rt *RTU) readVariableLengthResponse(header []byte) (*adu.Response, error) {
-	const minFrameBytes = 6
+// A frame shorter than minFrameBytes is ErrShortFrame.
+func (rt *RTU) readVariableLengthResponse(header []byte, minFrameBytes int) (*adu.Response, error) {
 	buf := make([]byte, adu.MaxRTUFrameLength)
 	copy(buf, header)
 	offset := len(header)

@@ -21,6 +21,7 @@ defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
    - [Modbus device detection](#27-modbus-device-detection)
    - [SunSpec discovery](#28-sunspec-discovery)
    - [Serial-line FCs and Diagnostics (FC07/FC08/FC0B/FC0C/FC11)](#29-serial-line-function-codes-and-diagnostics-fc07fc08fc0bfc0cfc11)
+   - [Raw requests](#210-raw-requests)
 3. [Server](#3-server)
    - [Configuration](#31-serverconfig)
    - [Lifecycle](#32-lifecycle)
@@ -170,7 +171,7 @@ client, err := modbus.New(modbus.Config{
 - The check is made at the one place every request passes on its way to the
   transport, on every transport. It covers every client method, the probe
   helpers (`SupportsFunction`, `SupportsDeviceIdentification`, `ProbeFunction`),
-  and the `sunspec` and `codec` helpers, which read and write through the client.
+  `SendRawRequest`, and the `sunspec` and `codec` helpers, which read and write through the client.
 - A refused request fails with an error that wraps `ErrFunctionCodeNotAllowed`
   and names the function code. Nothing is sent, no connection is dialled, the
   `RetryPolicy` is not consulted, and the client and its connections are left as
@@ -999,6 +1000,69 @@ func (mc *Client) DiagnosticBusCharacterOverrunCount(ctx context.Context, unitID
 
 All counter wrappers validate that the response contains exactly 2 data bytes and return a
 `*ProtocolError` if the payload is malformed.
+
+---
+
+### 2.10 Raw requests
+
+**SendRawRequest** sends a request PDU made of a function code and the bytes after
+it, and returns the response PDU without parsing it. Use it for vendor and
+user-defined function codes, standard ones the client has no method for (FC09,
+FC0A, FC0D, FC0E…), and to record or forward standard requests without decoding
+them, for example from a capture.
+
+```go
+func (mc *Client) SendRawRequest(ctx context.Context, unitID uint8, fc FunctionCode, payload []byte) (*RawResponse, error)
+
+type RawResponse struct {
+    FunctionCode FunctionCode // always the request's: an exception is an error
+    Payload      []byte       // response PDU after the function code, as received
+}
+```
+
+```go
+// Vendor function 0x41 with two data bytes.
+res, err := client.SendRawRequest(ctx, 1, 0x41, []byte{0x00, 0x10})
+var exc *modbus.ExceptionError
+switch {
+case errors.As(err, &exc):
+    log.Printf("device answered exception 0x%02X", exc.ExceptionCode)
+case err != nil:
+    return err
+default:
+    log.Printf("response % X", res.Payload)
+}
+```
+
+- `fc` must be 0x01..0x7F and `payload` at most 252 bytes (a PDU is at most 253
+  bytes). Anything else is a `*ParameterError` (`ErrUnexpectedParameters`) and
+  nothing is sent or reported to metrics.
+- The request takes the same path as every other method: `AllowedFunctionCodes`
+  (`ErrFunctionCodeNotAllowed`, nothing sent), `ClientMetrics` and `AttemptMetrics`
+  with `fc` as the function code, the `RetryPolicy`, the `PDUTap`, the unit and
+  transaction id checks, `Timeout` and the context.
+- The response is checked as far as the library can without knowing the function:
+  the unit id, the transaction id (Modbus TCP), the CRC or LRC (serial), and the
+  function code. A response with the exception code of `fc` is an `*ExceptionError`
+  (`errors.Is` with `ErrIllegalFunction` and the other sentinels), with a payload
+  other than one byte a `*ProtocolError`; a response with another function code is
+  a `*ProtocolError`. The payload is not validated, even for a standard function
+  code: an empty payload is a valid answer.
+- **Modbus TCP, TLS and UDP:** the MBAP length frames the response. For the
+  function codes it implements, the library compares that length with the PDU
+  and drops a connection that disagrees; for any other function code the MBAP
+  length is all there is, so a peer that sends a wrong one is not noticed until
+  the next exchange on that connection fails (see `TestChaosSendRawRequest`).
+- **RTU (`rtu://`, `rtuovertcp://`, `rtuoverudp://`):** an RTU frame has no length
+  field. For the function codes the library implements, the length comes from the
+  response as for the typed methods. For any other function code, the response is
+  read until the line has been silent for 3.5 character times, as for FC08 and
+  FC43, and an exception to `fc` is one byte like any other. A device or adapter
+  that pauses for longer than that inside a frame cuts the response short
+  (`ErrBadCRC` or `ErrShortFrame`); a USB adapter with a large latency timer can
+  do that. A response with another unknown function code is a `*ProtocolError`.
+- **ASCII (`ascii://`, `asciiovertcp://`):** frames end with CR LF; every function
+  code works the same way.
 
 ---
 
@@ -1847,7 +1911,8 @@ type PDUTapFunc func(ctx context.Context, ex PDUExchange)
 
 - Called synchronously, once per answered request, in the goroutine of the
   calling method, with that method's `ctx`. Must not block.
-- Every request on the wire is reported: reads, writes and probes alike.
+- Every request on the wire is reported: reads, writes, probes and raw requests
+  (`SendRawRequest`) alike.
   `ReadAllDeviceIdentification` reports each FC43 page; `WriteRegisterBit` and
   `UpdateRegisterMask` report the read and the write. Filtering is up to the tap.
 - Retries: only the attempt that returned the response is reported.

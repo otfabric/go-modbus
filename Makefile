@@ -108,6 +108,8 @@ fuzz: ## Run back-to-back fuzz targets for FUZZTIME each (default 30s)
 	@echo "Fuzzing (FUZZTIME=$(FUZZTIME))"
 	@go test -run='^$$' -fuzz='^FuzzServerRequest$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzClientResponseParse$$' -fuzztime=$(FUZZTIME) .
+	@go test -run='^$$' -fuzz='^FuzzSendRawRequest$$' -fuzztime=$(FUZZTIME) .
+	@go test -run='^$$' -fuzz='^FuzzRTUReadFrame$$' -fuzztime=$(FUZZTIME) ./internal/transport
 
 # Duration the chaos and the stress tests each keep looping in soak mode. Override with
 # SOAKTIME=... (e.g. SOAKTIME=30m). A failing chaos run logs its seed; replay it with

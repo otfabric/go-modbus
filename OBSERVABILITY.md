@@ -62,8 +62,11 @@ handler leaves unanswered (`ErrNoResponse`, for example Force Listen Only Mode)
 is an `OnError` with `ErrNoResponse`. A request served by the raw request
 handler is reported like any other.
 
+`SendRawRequest` reports to `ClientMetrics` like every method, labelled with the
+function code it sends (a vendor code included).
+
 `Config.PDUTap` is not a metric: it receives the raw request and response PDUs of
-every answered request (exception responses included, before the calling method
+every answered request (raw requests and exception responses included, before the calling method
 validates them) with the time the response was received, for recording what a
 device answered. Details: [API.md § 6](API.md#6-metrics).
 

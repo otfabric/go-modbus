@@ -102,6 +102,17 @@ import (
 //     oversized response, FC01-04 never reach it -> TestE2E_RawRequestHandler,
 //                                                   TestServerFunctions_RawFallback
 //
+// Raw client requests (SendRawRequest)
+//   vendor and standard function codes, byte-for-byte against the typed
+//     methods, empty and 252-byte payloads, exceptions, unhandled codes
+//                                                -> TestE2E_SendRawRequest
+//   AllowedFunctionCodes, metrics, PDU tap       -> TestE2E_SendRawRequest_Observed
+//   many clients at once with failing requests (-race)
+//                                                -> TestE2E_SendRawRequest_Parallel
+//   rtuovertcp, rtuoverudp, asciiovertcp, rtu and ascii over a pseudo-terminal
+//     against scripted devices                   -> TestSendRawRequest_SerialFraming,
+//                                                   TestSendRawRequest_OverPTY
+//
 // Completeness guard
 //   every exported Client request method is listed in e2eAllOps and served by
 //     our server, every public function code is served end to end
@@ -667,6 +678,38 @@ func (d *e2eDevice) HandleReadFIFOQueue(ctx context.Context, req *FIFOQueueReque
 		return nil, ErrIllegalDataAddress
 	}
 	return append([]uint16(nil), q...), nil
+}
+
+// Vendor function codes the e2e device serves through its raw request handler.
+const (
+	// e2eVendorFC is answered with the request payload reversed.
+	e2eVendorFC FunctionCode = 0x41
+	// e2eVendorFailFC is answered with Illegal Data Value.
+	e2eVendorFailFC FunctionCode = 0x42
+)
+
+// HandleRawRequest serves the vendor function codes. Every other request that
+// reaches it (FC43 with an MEI type other than 14) gets Illegal Function and is
+// not recorded, as without a raw handler.
+func (d *e2eDevice) HandleRawRequest(ctx context.Context, req *RawRequest) ([]byte, error) {
+	if req.FunctionCode != e2eVendorFC && req.FunctionCode != e2eVendorFailFC {
+		return nil, ErrIllegalFunction
+	}
+	err := d.enter(ctx, e2eCall{
+		Kind: "raw", FC: req.FunctionCode, UnitID: req.UnitID, Data: append([]byte(nil), req.Payload...),
+		ClientAddr: req.ClientAddr, ClientRole: req.ClientRole,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if req.FunctionCode == e2eVendorFC {
+		out := make([]byte, len(req.Payload))
+		for i, b := range req.Payload {
+			out[len(out)-1-i] = b
+		}
+		return out, nil
+	}
+	return nil, ErrIllegalDataValue
 }
 
 // fileRegs returns registers [rec, rec+n) of file f.

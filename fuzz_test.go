@@ -3,7 +3,9 @@
 package modbus
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -162,5 +164,36 @@ func FuzzClientResponseParse(f *testing.F) {
 		cancel()
 		_ = clientSide.Close()
 		<-done
+	})
+}
+
+// FuzzSendRawRequest sends arbitrary function codes and payloads through
+// SendRawRequest to a device that echoes the payload. Invalid arguments must
+// be refused with nothing on the wire; everything else must go out and come
+// back unchanged.
+func FuzzSendRawRequest(f *testing.F) {
+	f.Add(byte(0x41), []byte{0x01, 0x02})
+	f.Add(byte(0x03), []byte{0x00, 0x00, 0x00, 0x01})
+	f.Add(byte(0x00), []byte{})
+	f.Add(byte(0x80), []byte{0x01})
+	f.Add(byte(0x7F), make([]byte, 252))
+	f.Add(byte(0x7F), make([]byte, 253))
+	f.Fuzz(func(t *testing.T, fc byte, payload []byte) {
+		c, tr, _ := newScriptedClient(t, func(req *adu.Request) (*adu.Response, error) {
+			return &adu.Response{UnitID: req.UnitID, FunctionCode: req.FunctionCode, Payload: append([]byte(nil), req.Payload...)}, nil
+		})
+		res, err := c.SendRawRequest(context.Background(), 1, FunctionCode(fc), payload)
+		if fc == 0 || fc >= 0x80 || len(payload) > 252 {
+			if !errors.Is(err, ErrUnexpectedParameters) || len(tr.requests()) != 0 {
+				t.Fatalf("fc 0x%02X, %d bytes: got %v with %d requests sent", fc, len(payload), err, len(tr.requests()))
+			}
+			return
+		}
+		if err != nil || res.FunctionCode != FunctionCode(fc) || !bytes.Equal(res.Payload, payload) {
+			t.Fatalf("fc 0x%02X: got %+v, %v", fc, res, err)
+		}
+		if reqs := tr.requests(); len(reqs) != 1 || reqs[0].FunctionCode != fc || !bytes.Equal(reqs[0].Payload, payload) {
+			t.Fatalf("fc 0x%02X: sent %+v", fc, reqs)
+		}
 	})
 }

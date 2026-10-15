@@ -226,7 +226,7 @@ func TestRTUReadFrame(t *testing.T) {
 	_ = p2.SetDeadline(time.Now().Add(100 * time.Millisecond))
 
 	txchan <- []byte{0x31, 0x82, 0x02, 0xc1, 0x6e}
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(0)
 	if err != nil {
 		t.Fatalf("readRTUFrame: %v", err)
 	}
@@ -238,13 +238,13 @@ func TestRTUReadFrame(t *testing.T) {
 	}
 
 	txchan <- []byte{0x30, 0x82, 0x12, 0xc0, 0xa2}
-	_, err = rt.readRTUFrame()
+	_, err = rt.readRTUFrame(0)
 	if err != protocol.ErrBadCRC {
 		t.Errorf("want ErrBadCRC, got %v", err)
 	}
 
 	txchan <- []byte{0x31, 0x03, 0x04, 0x11, 0x22, 0x33, 0x44, 0x7b, 0xc5}
-	res, err = rt.readRTUFrame()
+	res, err = rt.readRTUFrame(0)
 	if err != nil {
 		t.Fatalf("readRTUFrame: %v", err)
 	}

@@ -3,11 +3,13 @@
 package modbus
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -190,10 +192,16 @@ func goodDevice(req *adu.Request) (*adu.Response, error) {
 		return okRes(req, append([]byte{byte(len(body))}, body...)...), nil
 	case FCEncapsulatedInterface:
 		return okRes(req, 0x0E, p[1], 0x81, 0x00, 0x00, 0x01, 0x00, 0x03, 'a', 'b', 'c'), nil
+	case scriptedVendorFC:
+		return okRes(req, append([]byte{0xA5}, p...)...), nil
 	default:
 		return excRes(req, 0x01), nil
 	}
 }
+
+// scriptedVendorFC is a user-defined function code that goodDevice answers
+// with 0xA5 followed by the request payload.
+const scriptedVendorFC FunctionCode = 0x64
 
 // clientCall is one public Client method invocation with fixed arguments.
 type clientCall struct {
@@ -465,6 +473,21 @@ func allClientCalls() []clientCall {
 			}
 			return wantValue(v, devIDFor(DeviceIDExtended))
 		}},
+		{"SendRawRequest/vendor", one(scriptedVendorFC), func(ctx context.Context, c *Client, u uint8) error {
+			v, err := c.SendRawRequest(ctx, u, scriptedVendorFC, []byte{0x01, 0x02, 0x03})
+			if err != nil {
+				return err
+			}
+			return wantValue(v, &RawResponse{FunctionCode: scriptedVendorFC, Payload: []byte{0xA5, 0x01, 0x02, 0x03}})
+		}},
+		{"SendRawRequest/standard", one(FCReadHoldingRegisters), func(ctx context.Context, c *Client, u uint8) error {
+			v, err := c.SendRawRequest(ctx, u, FCReadHoldingRegisters, []byte{0x00, 0x0A, 0x00, 0x02})
+			if err != nil {
+				return err
+			}
+			want := append([]byte{4}, uint16sToBytes(BigEndian, scriptedRegs(2))...)
+			return wantValue(v, &RawResponse{FunctionCode: FCReadHoldingRegisters, Payload: want})
+		}},
 	}
 }
 
@@ -607,6 +630,9 @@ func TestClientCalls_Failures(t *testing.T) {
 			})
 			for _, mode := range modes {
 				t.Run(mode.name, func(t *testing.T) {
+					if mode.name == "empty success payload" && strings.HasPrefix(cc.name, "SendRawRequest") {
+						t.Skip("SendRawRequest does not parse the response: an empty payload is a valid answer")
+					}
 					c, tr, m := newScriptedClient(t, mode.fn)
 					err := cc.call(context.Background(), c, unit)
 					if !errors.Is(err, mode.wantErr) {
@@ -711,6 +737,30 @@ func TestClientCalls_RequestPDUs(t *testing.T) {
 			},
 			[]adu.Request{{UnitID: 1, FunctionCode: 0x2B, Payload: []byte{0x0E, 0x03, 0x00}}},
 		},
+		{
+			"SendRawRequest sends the PDU as given",
+			func(ctx context.Context, c *Client) error {
+				_, err := c.SendRawRequest(ctx, 1, scriptedVendorFC, []byte{0xDE, 0xAD})
+				return err
+			},
+			[]adu.Request{{UnitID: 1, FunctionCode: 0x64, Payload: []byte{0xDE, 0xAD}}},
+		},
+		{
+			"SendRawRequest with an empty payload",
+			func(ctx context.Context, c *Client) error {
+				_, err := c.SendRawRequest(ctx, 1, FCReadExceptionStatus, nil)
+				return err
+			},
+			[]adu.Request{{UnitID: 1, FunctionCode: 0x07}},
+		},
+		{
+			"SendRawRequest with the largest payload",
+			func(ctx context.Context, c *Client) error {
+				_, err := c.SendRawRequest(ctx, 1, scriptedVendorFC, bytes.Repeat([]byte{0x5A}, 252))
+				return err
+			},
+			[]adu.Request{{UnitID: 1, FunctionCode: 0x64, Payload: bytes.Repeat([]byte{0x5A}, 252)}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -791,6 +841,22 @@ func TestClientCalls_ParameterErrorsSendNothing(t *testing.T) {
 		"WriteFileRecords too much data": func(ctx context.Context, c *Client) error {
 			// 7 header bytes + 2*123 data bytes = 253 > 0xFB.
 			return c.WriteFileRecords(ctx, 1, []FileRecord{{FileNumber: 1, Data: make([]uint16, 123)}})
+		},
+		"SendRawRequest function code 0": func(ctx context.Context, c *Client) error {
+			_, err := c.SendRawRequest(ctx, 1, 0, nil)
+			return err
+		},
+		"SendRawRequest exception function code": func(ctx context.Context, c *Client) error {
+			_, err := c.SendRawRequest(ctx, 1, 0x83, []byte{0x02})
+			return err
+		},
+		"SendRawRequest function code 0xFF": func(ctx context.Context, c *Client) error {
+			_, err := c.SendRawRequest(ctx, 1, 0xFF, nil)
+			return err
+		},
+		"SendRawRequest payload over 252 bytes": func(ctx context.Context, c *Client) error {
+			_, err := c.SendRawRequest(ctx, 1, scriptedVendorFC, make([]byte, 253))
+			return err
 		},
 		"register payload with odd byte count": func(ctx context.Context, c *Client) error {
 			return c.writeRegisterPayload(ctx, 1, 0, []byte{1, 2, 3})

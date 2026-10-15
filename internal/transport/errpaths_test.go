@@ -220,7 +220,7 @@ func TestRTUReadFrame_ErrorPaths(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := rawRTU(&hookLink{scriptedLink: scriptedLink{chunks: tc.chunks, readErr: tc.readErr}})
-			res, err := rt.readRTUFrame()
+			res, err := rt.readRTUFrame(0)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("want %v, got %v (res=%+v)", tc.want, err, res)
 			}
@@ -237,7 +237,7 @@ func TestRTUReadFrame_VariableLength(t *testing.T) {
 
 	t.Run("silence ends frame", func(t *testing.T) {
 		link := &hookLink{scriptedLink: scriptedLink{chunks: splitEvery(diag, 1), readErr: os.ErrDeadlineExceeded}}
-		res, err := rawRTU(link).readRTUFrame()
+		res, err := rawRTU(link).readRTUFrame(0)
 		if err != nil {
 			t.Fatalf("readRTUFrame: %v", err)
 		}
@@ -249,7 +249,7 @@ func TestRTUReadFrame_VariableLength(t *testing.T) {
 	t.Run("empty poll ends frame", func(t *testing.T) {
 		// A serial link reports its poll timeout as (0, nil).
 		link := &hookLink{scriptedLink: scriptedLink{chunks: splitEvery(diag, 1)}, tail: []error{nil}}
-		res, err := rawRTU(link).readRTUFrame()
+		res, err := rawRTU(link).readRTUFrame(0)
 		if err != nil {
 			t.Fatalf("readRTUFrame: %v", err)
 		}
@@ -259,7 +259,7 @@ func TestRTUReadFrame_VariableLength(t *testing.T) {
 	})
 	t.Run("link error mid frame", func(t *testing.T) {
 		link := &hookLink{scriptedLink: scriptedLink{chunks: [][]byte{diag[:3], diag[3:5]}, readErr: sentinel}}
-		if _, err := rawRTU(link).readRTUFrame(); !errors.Is(err, sentinel) {
+		if _, err := rawRTU(link).readRTUFrame(0); !errors.Is(err, sentinel) {
 			t.Fatalf("want link error, got %v", err)
 		}
 	})
@@ -268,7 +268,7 @@ func TestRTUReadFrame_VariableLength(t *testing.T) {
 			scriptedLink: scriptedLink{chunks: [][]byte{diag[:3], diag[3:]}},
 			deadlineFn:   func(int) error { return sentinel },
 		}
-		if _, err := rawRTU(link).readRTUFrame(); !errors.Is(err, sentinel) {
+		if _, err := rawRTU(link).readRTUFrame(0); !errors.Is(err, sentinel) {
 			t.Fatalf("want deadline error, got %v", err)
 		}
 	})
@@ -277,7 +277,7 @@ func TestRTUReadFrame_VariableLength(t *testing.T) {
 		// cannot carry a valid CRC.
 		noise := bytes.Repeat([]byte{0x55}, adu.MaxRTUFrameLength)
 		link := &hookLink{scriptedLink: scriptedLink{chunks: [][]byte{diag[:3], noise}, readErr: os.ErrDeadlineExceeded}}
-		if _, err := rawRTU(link).readRTUFrame(); !errors.Is(err, protocol.ErrBadCRC) {
+		if _, err := rawRTU(link).readRTUFrame(0); !errors.Is(err, protocol.ErrBadCRC) {
 			t.Fatalf("want ErrBadCRC, got %v", err)
 		}
 	})

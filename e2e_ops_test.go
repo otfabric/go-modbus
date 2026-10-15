@@ -211,6 +211,17 @@ func e2eAllOps() []e2eOp {
 			_, err := c.ReadFIFOQueue(ctx, u, 0x04DE)
 			return err
 		}),
+
+		// Raw requests: a vendor function code through the raw request handler,
+		// and a standard one through its own handler.
+		one("SendRawRequest/vendor", e2eVendorFC, func(ctx context.Context, c *Client) error {
+			_, err := c.SendRawRequest(ctx, u, e2eVendorFC, []byte{0x01, 0x02})
+			return err
+		}),
+		one("SendRawRequest/standard", FCReadInputRegisters, func(ctx context.Context, c *Client) error {
+			_, err := c.SendRawRequest(ctx, u, FCReadInputRegisters, []byte{0x00, 0x00, 0x00, 0x02})
+			return err
+		}),
 	}
 
 	// Probes: an error is only returned for failures that are not a probe result.

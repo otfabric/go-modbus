@@ -512,13 +512,25 @@ func mbapResponseOutOfSync(req *adu.Request, res *adu.Response) bool {
 	if res.FunctionCode == req.FunctionCode|0x80 {
 		return len(res.Payload) != 1
 	}
-	if res.FunctionCode != req.FunctionCode || len(res.Payload) == 0 {
+	if res.FunctionCode != req.FunctionCode {
 		return true
 	}
 	// The same table tells the RTU transport how long a response is.
-	n, err := protocol.ExpectedRTUResponseLength(protocol.FunctionCode(res.FunctionCode), res.Payload[0])
-	if err != nil || n < 0 {
-		// Unknown or variable-length function: nothing to compare with.
+	var first byte
+	if len(res.Payload) > 0 {
+		first = res.Payload[0]
+	}
+	n, err := protocol.ExpectedRTUResponseLength(protocol.FunctionCode(res.FunctionCode), first)
+	if err != nil {
+		// A function the library does not implement (SendRawRequest): any
+		// length, none included, is the device's business.
+		return false
+	}
+	if len(res.Payload) == 0 {
+		return true
+	}
+	if n < 0 {
+		// Variable-length function: nothing to compare with.
 		return false
 	}
 	return len(res.Payload) != 1+n

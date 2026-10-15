@@ -83,6 +83,12 @@ type chaosFaultCase struct {
 	lenTo   func(cur int) int
 	splitAt int
 	gap     time.Duration
+	// wrongData lets the faulted call succeed with wrong data, and lostFollowUps
+	// is the number of follow-up calls that may fail. Both are for faults the
+	// receiver cannot see, such as a wrong MBAP length on a function code whose
+	// length only the MBAP header gives.
+	wrongData     bool
+	lostFollowUps int
 }
 
 func chaosFaultCases(timeout time.Duration) []chaosFaultCase {
@@ -162,15 +168,32 @@ func TestChaosFaultMatrix(t *testing.T) {
 	}
 }
 
+// chaosFaultCall is the request a fault case faults and then repeats on the
+// healthy link. Calls with different n get different answers; ok is false when
+// the call succeeded with wrong data.
+type chaosFaultCall func(ctx context.Context, c *Client, n int) (ok bool, err error)
+
+// chaosReadInputsCall reads 8 input registers at n.
+func chaosReadInputsCall(ctx context.Context, c *Client, n int) (bool, error) {
+	return chaosReadInputs(ctx, c, n, 8)
+}
+
 func chaosRunFaultCase(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout time.Duration, seed int64) {
-	rig := chaosNewRig(t, "tcp", seed, nil, nil)
+	chaosRunFaultCaseWith(t, mode, fc, timeout, seed, nil, chaosReadInputsCall)
+}
+
+// chaosRunFaultCaseWith runs fault case fc against handler (the rig's
+// reference device when nil), with call as the faulted and follow-up request.
+func chaosRunFaultCaseWith(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout time.Duration, seed int64,
+	handler RequestHandler, call chaosFaultCall) {
+	rig := chaosNewRig(t, "tcp", seed, handler, nil)
 	client := rig.open(mode, timeout)
 	wd := chaosNewWatchdog(t)
 
 	long, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if ok, err := chaosReadInputs(long, client, 0, 8); err != nil || !ok {
-		t.Fatalf("warm-up read: ok=%v err=%v", ok, err)
+	if ok, err := call(long, client, 0); err != nil || !ok {
+		t.Fatalf("warm-up call: ok=%v err=%v", ok, err)
 	}
 
 	pl := &chaosPlan{
@@ -189,7 +212,7 @@ func chaosRunFaultCase(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout 
 	var ok bool
 	var err error
 	wd.guard("faulted call", time.Duration(mode.attempts())*timeout+2*time.Second, func() {
-		ok, err = chaosReadInputs(context.Background(), client, 100, 8)
+		ok, err = call(context.Background(), client, 100)
 	})
 	if rig.proxy.injectedTotal() != 1 {
 		t.Fatalf("the fault was injected %d times, want once", rig.proxy.injectedTotal())
@@ -209,7 +232,7 @@ func chaosRunFaultCase(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout 
 	if got != want {
 		t.Errorf("faulted call: error class %q (%v), want %q", got, err, want)
 	}
-	if err == nil && !ok {
+	if err == nil && !ok && !fc.wrongData {
 		t.Errorf("faulted call: succeeded with wrong data")
 	}
 
@@ -225,7 +248,7 @@ func chaosRunFaultCase(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout 
 	// A client without RetryPolicy finds out that its idle connection was closed by
 	// the peer only when it uses it: that costs one request.
 	const followUp = 2 * time.Second
-	allowance := 0
+	allowance := fc.lostFollowUps
 	if mode.retry == nil && fc.fault&(chaosRSTAfter|chaosFINAfter) != 0 {
 		allowance = 1
 	}
@@ -235,7 +258,7 @@ func chaosRunFaultCase(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout 
 		wd.guard("follow-up call", time.Duration(mode.attempts())*followUp+2*time.Second, func() {
 			ctx, cancel := context.WithTimeout(context.Background(), followUp)
 			defer cancel()
-			ok, err = chaosReadInputs(ctx, client, addr, 8)
+			ok, err = call(ctx, client, addr)
 		})
 		switch {
 		case err == nil && !ok:

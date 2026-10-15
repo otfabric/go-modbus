@@ -69,6 +69,7 @@ Each subsystem has a **single owner** package.
 | `client_device_id.go` | Device identification (FC43) |
 | `client_diagnostics.go` | Diagnostics (FC08) |
 | `client_file.go` | File records (FC20/FC21) |
+| `client_raw.go` | Raw requests (`SendRawRequest`) |
 
 The server is split the same way:
 

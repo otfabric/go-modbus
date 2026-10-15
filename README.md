@@ -272,12 +272,20 @@ cancellation control independent of the connection lifecycle.
 | 23 | 0x17 | Read/Write Multiple Registers | `ReadWriteMultipleRegisters` |
 | 24 | 0x18 | Read FIFO Queue | `ReadFIFOQueue` |
 | 43/14 | 0x2B/0x0E | Read Device Identification | `ReadDeviceIdentification`, `ReadAllDeviceIdentification` |
+| any | 0x01–0x7F | Raw request: vendor, user-defined or any standard function code | `SendRawRequest` |
 
 **Note on advanced methods:**
 - `WriteCoilRaw` (FC05) sends an arbitrary 16-bit payload instead of the standard
   0xFF00/0x0000 values. It is intended exclusively for vendor-specific control semantics
   (toggle, interlock, delayed activation). Compliant devices may reject non-standard
   payloads — prefer `WriteCoil` for standard operations.
+- `SendRawRequest` sends any request PDU (function code 0x01–0x7F, up to 252 data
+  bytes) and returns the response PDU unparsed, for vendor function codes and for
+  recorders that capture what a device answers. It goes through
+  `AllowedFunctionCodes`, metrics, retries and the `PDUTap` like every method, and an
+  exception is an `*ExceptionError`. On RTU, the response to a function code the
+  library does not implement is framed by inter-frame silence, as for FC08 and FC43.
+  See [API.md § 2.10](API.md#210-raw-requests).
 - `ReadRegisterBytes` / `WriteRegisterBytes` transfer raw bytes backed by 16-bit registers.
   They are not byte-addressable — byte count must be even and maps to N/2 registers.
   Use them when the device register map represents opaque byte blobs (firmware, config blocks)
