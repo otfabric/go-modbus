@@ -97,10 +97,11 @@ import (
 //   all of them from many clients at once, with failing requests (-race)
 //                                                -> TestE2E_ServerFunctions_Parallel
 //
-// Raw request handler
-//   vendor function codes, fallback for every missing optional handler,
-//     oversized response, FC01-04 never reach it -> TestE2E_RawRequestHandler,
-//                                                   TestServerFunctions_RawFallback
+// Function codes the server does not support
+//   vendor, user-defined and unknown function codes, FC43 with another MEI
+//     type: Illegal Function, no handler call, connection usable
+//                                                -> TestE2E_UnsupportedFunctionCodes,
+//                                                   TestServerFunctions_UnsupportedFunctionCodes
 //
 // Completeness guard
 //   every exported Client request method is listed in e2eAllOps and served by

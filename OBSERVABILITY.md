@@ -59,8 +59,7 @@ request cancelled through its context is an `OnError` with `context.Canceled`; a
 expired deadline is an `OnTimeout`. On the server, a request for a function code
 no handler serves is an `OnError` with `ErrIllegalFunction`, and a request a
 handler leaves unanswered (`ErrNoResponse`, for example Force Listen Only Mode)
-is an `OnError` with `ErrNoResponse`. A request served by the raw request
-handler is reported like any other.
+is an `OnError` with `ErrNoResponse`.
 
 `Config.PDUTap` is not a metric: it receives the raw request and response PDUs of
 every answered request (exception responses included, before the calling method

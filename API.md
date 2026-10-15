@@ -27,7 +27,6 @@ defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
    - [RequestHandler interface](#33-requesthandler-interface)
    - [Request types](#34-request-types)
    - [Optional handler interfaces (FC07, FC08, FC0B, FC0C, FC17, FC20–FC24, FC43)](#35-optional-handler-interfaces)
-   - [Raw request handler](#36-raw-request-handler)
 4. [Errors](#4-errors) — also [ERRORS.md](ERRORS.md)
 5. [Logging](#5-logging) — also [OBSERVABILITY.md](OBSERVABILITY.md)
 6. [Metrics](#6-metrics) — also [OBSERVABILITY.md](OBSERVABILITY.md)
@@ -1259,9 +1258,9 @@ Counter), FC0C (Get Comm Event Log), FC17 (0x11, Report Server ID), FC20/FC21 (0
 Read/Write File Record), FC22 (0x16, Mask Write Register), FC23 (0x17, Read/Write Multiple
 Registers), FC24 (0x18, Read FIFO Queue) and FC43 (0x2B, Read Device Identification). If the `RequestHandler` also
 implements the corresponding interface, the server dispatches the FC to it; otherwise
-the request goes to the [raw request handler](#36-raw-request-handler), or, without one,
-is answered with `Illegal Function`. Every function code the client sends is served
-this way.
+the request is answered with `Illegal Function`. Every function code the client sends is
+served this way. Vendor, user-defined and unknown function codes are not supported and
+are always answered with `Illegal Function`.
 
 In each case the server parses and validates the request before the handler sees it,
 and encodes the response; a handler only supplies data. A malformed request closes the
@@ -1453,35 +1452,9 @@ requested category (basic = 0x00-0x02, regular = 0x00-0x7F, extended = 0x00-0xFF
 individual-access requests, and paginates large object sets across multiple responses using
 MoreFollows/NextObjectID — all transparently to the handler. When `ConformityLevel` is 0, the
 server derives a sensible level from the objects provided. Only MEI type 14 (0x0E) is
-supported; other MEI types go to the raw request handler or return `Illegal Function`, an
+supported; other MEI types return `Illegal Function`, an
 out-of-range Read Device ID code returns `Illegal Data Value`, and individual access to an
 unknown object returns `Illegal Data Address`.
-
-### 3.6 Raw request handler
-
-```go
-type RawRequestHandler interface {
-    HandleRawRequest(ctx context.Context, req *RawRequest) (payload []byte, err error)
-}
-
-type RawRequest struct {
-    ClientAddr   string
-    ClientRole   string
-    UnitID       uint8
-    FunctionCode FunctionCode
-    Payload      []byte // request PDU after the function code
-}
-```
-
-A `RequestHandler` that also implements `RawRequestHandler` serves every function code
-the server does not handle itself: vendor and user-defined function codes, FC43 with an
-MEI type other than 14, and every standard function whose optional handler the
-`RequestHandler` does not implement. The handler receives the request PDU as it came and
-returns the response PDU after the function code; the server prepends the function code.
-It does not validate either: the raw handler is responsible for both. Use it to serve
-vendor functions or to answer from a recording. A response longer than 252 bytes is
-answered with Server Device Failure, and errors map to exceptions as for every handler.
-FC01 to FC06, FC15 and FC16 never reach it.
 
 ---
 

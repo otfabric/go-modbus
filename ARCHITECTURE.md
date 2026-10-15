@@ -78,7 +78,7 @@ The server is split the same way:
 | `server_transport.go` | Per-connection loop, dispatch by function code, exceptions, metrics |
 | `server_bits.go`, `server_registers.go` | FC01–06, FC15/16, FC22/23 |
 | `server_device_id.go` | Device identification (FC43) |
-| `server_functions.go` | FC08, FC17, FC20/21, FC24 and the raw request handler |
+| `server_functions.go` | FC08, FC17, FC20/21 and FC24 |
 
 Every function code the client implements has a server handler; the e2e suite
 enforces it (`TestE2E_EveryClientFunctionIsServed`).
