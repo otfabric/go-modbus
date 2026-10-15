@@ -15,8 +15,9 @@ import (
 )
 
 // End-to-end tests for the server side of Diagnostics (FC08), Report Server ID
-// (FC17), Read/Write File Record (FC20/FC21), Read FIFO Queue (FC24) and the
-// raw request handler, plus the guard that keeps client and server complete.
+// (FC17), Read/Write File Record (FC20/FC21) and Read FIFO Queue (FC24), the
+// guard that keeps client and server complete, and the function codes that
+// are not supported.
 
 // e2eNonRequestMethods are the exported Client methods that put nothing on the
 // wire.
@@ -323,126 +324,35 @@ func TestE2E_ReadFIFOQueue(t *testing.T) {
 	})
 }
 
-// e2eRawDevice serves the four mandatory functions through an e2eDevice and
-// everything else through raw.
-type e2eRawDevice struct {
-	e2eBasicOnly
-	mu   sync.Mutex
-	seen []RawRequest
-	raw  func(req *RawRequest) ([]byte, error)
-}
-
-func (r *e2eRawDevice) HandleRawRequest(_ context.Context, req *RawRequest) ([]byte, error) {
-	r.mu.Lock()
-	r.seen = append(r.seen, *req)
-	fn := r.raw
-	r.mu.Unlock()
-	return fn(req)
-}
-
-func (r *e2eRawDevice) take() []RawRequest {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := r.seen
-	r.seen = nil
-	return out
-}
-
-// The raw handler serves vendor function codes and every standard one whose
-// optional handler is missing; FC01-04 still go to their handlers.
-func TestE2E_RawRequestHandler(t *testing.T) {
+// Vendor, user-defined and unknown function codes are not supported: the
+// server answers them with Illegal Function without calling a handler, and
+// the connection stays usable. So does FC43 with an MEI type other than 14.
+func TestE2E_UnsupportedFunctionCodes(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, kind string) {
 		dev := e2eNewDevice()
-		rd := &e2eRawDevice{e2eBasicOnly: e2eBasicOnly{dev}}
-		rd.raw = func(req *RawRequest) ([]byte, error) {
-			// A byte, not a FunctionCode: the raw handler sees every code.
-			switch byte(req.FunctionCode) {
-			case byte(FCDiagnostics), byte(FCWriteFileRecord), byte(FCMaskWriteRegister):
-				return req.Payload, nil // echo
-			case byte(FCReportServerID):
-				return []byte{3, 'R', 'W', 0xFF}, nil
-			case byte(FCReadExceptionStatus):
-				return []byte{0x5A}, nil
-			case byte(FCReadFIFOQueue):
-				return []byte{0, 4, 0, 1, 0xBE, 0xEF}, nil
-			case 0x41:
-				return append([]byte{0xAB}, req.Payload...), nil
-			case 0x42:
-				return nil, ErrIllegalDataValue
-			case 0x43:
-				return make([]byte, 253), nil
-			case 0x44:
-				return make([]byte, 252), nil
-			}
-			return nil, ErrIllegalFunction
-		}
-		p := e2eStart(t, kind, rd, e2eOpts{})
+		p := e2eStart(t, kind, dev, e2eOpts{})
 		c := p.client
 		ctx := context.Background()
 
-		if v, err := c.DiagnosticLoopback(ctx, e2eUnit, 0x7777); err != nil || v != 0x7777 {
-			t.Errorf("DiagnosticLoopback through raw = 0x%04X, %v", v, err)
+		for _, r := range []struct {
+			fc      byte
+			payload []byte
+		}{
+			{0x09, []byte{0, 0}}, {0x0D, nil}, {0x0E, nil}, {0x13, nil}, {0x19, []byte{0, 0}},
+			{0x29, nil}, {0x41, []byte{1, 2, 3}}, {0x64, nil}, {0x65, []byte{0}}, {0x7F, nil},
+			{byte(FCEncapsulatedInterface), []byte{0x0D, 0x00}},
+		} {
+			res := sendRawFC(t, c, e2eUnit, r.fc, r.payload)
+			if res.FunctionCode != r.fc|0x80 || !reflect.DeepEqual(res.Payload, []byte{byte(exIllegalFunction)}) {
+				t.Errorf("FC 0x%02X % X = %+v, want Illegal Function", r.fc, r.payload, res)
+			}
 		}
-		if rs, err := c.ReportServerID(ctx, e2eUnit); err != nil || !reflect.DeepEqual(rs.Data, []byte{'R', 'W', 0xFF}) {
-			t.Errorf("ReportServerID through raw = %+v, %v", rs, err)
+		if n := dev.callCount(); n != 0 {
+			t.Errorf("unsupported function codes reached the device %d times", n)
 		}
-		if v, err := c.ReadExceptionStatus(ctx, e2eUnit); err != nil || v != 0x5A {
-			t.Errorf("ReadExceptionStatus through raw = 0x%02X, %v", v, err)
-		}
-		if v, err := c.ReadFIFOQueue(ctx, e2eUnit, 1); err != nil || !reflect.DeepEqual(v, []uint16{0xBEEF}) {
-			t.Errorf("ReadFIFOQueue through raw = %04X, %v", v, err)
-		}
-		if err := c.MaskWriteRegister(ctx, e2eUnit, 3, 0xFF00, 0x0012); err != nil {
-			t.Errorf("MaskWriteRegister through raw: %v", err)
-		}
-		if err := c.WriteFileRecords(ctx, e2eUnit, []FileRecord{{FileNumber: 1, RecordNumber: 2, Data: []uint16{3}}}); err != nil {
-			t.Errorf("WriteFileRecords through raw: %v", err)
-		}
-		seen := rd.take()
-		if len(seen) != 6 {
-			t.Fatalf("raw handler saw %d requests, want 6: %+v", len(seen), seen)
-		}
-		if r := seen[0]; r.FunctionCode != FCDiagnostics || r.UnitID != e2eUnit || r.ClientAddr == "" ||
-			!reflect.DeepEqual(r.Payload, []byte{0x00, 0x00, 0x77, 0x77}) {
-			t.Errorf("raw request = %+v", r)
-		}
-
-		// Vendor function codes.
-		res := sendRawFC(t, c, e2eUnit, 0x41, []byte{1, 2, 3})
-		if res.FunctionCode != 0x41 || !reflect.DeepEqual(res.Payload, []byte{0xAB, 1, 2, 3}) {
-			t.Errorf("vendor FC 0x41 = %+v", res)
-		}
-		res = sendRawFC(t, c, e2eUnit, 0x42, nil)
-		if res.FunctionCode != 0xC2 || !reflect.DeepEqual(res.Payload, []byte{byte(exIllegalDataValue)}) {
-			t.Errorf("vendor FC 0x42 = %+v, want Illegal Data Value", res)
-		}
-		res = sendRawFC(t, c, e2eUnit, 0x43, nil)
-		if res.FunctionCode != 0xC3 || !reflect.DeepEqual(res.Payload, []byte{byte(exServerDeviceFailure)}) {
-			t.Errorf("oversized raw response = %+v, want Server Device Failure", res)
-		}
-		res = sendRawFC(t, c, e2eUnit, 0x44, nil)
-		if res.FunctionCode != 0x44 || len(res.Payload) != 252 {
-			t.Errorf("largest raw response: fc 0x%02X, %d bytes", res.FunctionCode, len(res.Payload))
-		}
-		res = sendRawFC(t, c, e2eUnit, 0x65, nil)
-		if res.FunctionCode != 0xE5 || !reflect.DeepEqual(res.Payload, []byte{byte(exIllegalFunction)}) {
-			t.Errorf("FC 0x65 = %+v, want Illegal Function", res)
-		}
-		rd.take()
-
-		// The mandatory functions never reach the raw handler.
 		dev.setHolding(5, 0x5555)
 		if v, err := c.ReadHoldingRegister(ctx, e2eUnit, 5); err != nil || v != 0x5555 {
-			t.Errorf("ReadHoldingRegister = 0x%04X, %v", v, err)
-		}
-		if err := c.WriteCoil(ctx, e2eUnit, 1, true); err != nil {
-			t.Errorf("WriteCoil: %v", err)
-		}
-		if seen := rd.take(); len(seen) != 0 {
-			t.Errorf("raw handler saw %+v", seen)
-		}
-		if n := len(dev.takeCalls()); n != 2 {
-			t.Errorf("device saw %d requests, want 2", n)
+			t.Errorf("ReadHoldingRegister afterwards = 0x%04X, %v", v, err)
 		}
 		if p.conns() != 1 {
 			t.Errorf("server connections = %d, want 1", p.conns())

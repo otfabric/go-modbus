@@ -359,7 +359,6 @@ interfaces serve the rest:
 | 23 | 0x17 | Read/Write Multiple Registers | `ReadWriteHandler` (optional) | — |
 | 24 | 0x18 | Read FIFO Queue | `FIFOQueueHandler` (optional) | — |
 | 43/14 | 0x2B/0x0E | Read Device Identification | `DeviceIdentificationHandler` (optional) | — |
-| any other | — | vendor, user-defined, or a missing optional handler | `RawRequestHandler` (optional) | — |
 
 Every function code the client sends is served: the end-to-end suite runs every
 client method against the server and fails if one is not answered
@@ -370,16 +369,15 @@ the `RequestHandler` also implements the corresponding interface (e.g.
 `ExceptionStatusHandler`, `DiagnosticsHandler`, `ReadFileRecordHandler`,
 `FIFOQueueHandler`), those FCs are dispatched accordingly. The server parses and
 validates the request, the handler supplies the data, and the server encodes the
-response. Otherwise the request goes to the `RawRequestHandler`, which receives the
-request PDU and returns the response PDU; with neither, the answer is `Illegal Function`.
-The raw handler also serves vendor and user-defined function codes, and lets a device
-answer from a recording. FC01 to FC04 always go to `RequestHandler`.
+response. Otherwise the answer is `Illegal Function`. Vendor, user-defined and
+unknown function codes are not supported: they are always answered with
+`Illegal Function`.
 
 For FC43 (Read Device Identification), the handler returns the full set of
 `DeviceIdentificationObject` values it implements plus a conformity level; the server owns
 all MEI framing, category filtering (basic/regular/extended/individual), and
 MoreFollows/NextObjectID pagination automatically. Only MEI type 14 (0x0E) is supported;
-other MEI types (e.g. CANopen 0x0D) go to the `RawRequestHandler`, or return `Illegal Function`.
+other MEI types (e.g. CANopen 0x0D) return `Illegal Function`.
 
 Returning a Modbus sentinel error (e.g. `ErrIllegalDataAddress`) causes the server to
 send the corresponding exception code back to the client. Any other non-nil error maps

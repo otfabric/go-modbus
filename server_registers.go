@@ -93,7 +93,7 @@ func (ms *Server) handleWriteSingleRegister(ctx context.Context, req *adu.Reques
 func (ms *Server) handleMaskWriteRegister(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	mwh, ok := ms.handler.(MaskWriteHandler)
 	if !ok {
-		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+		return nil, ErrIllegalFunction
 	}
 	if len(req.Payload) != 6 {
 		return nil, ErrProtocolError
@@ -124,7 +124,7 @@ func (ms *Server) handleMaskWriteRegister(ctx context.Context, req *adu.Request,
 func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	rwh, ok := ms.handler.(ReadWriteHandler)
 	if !ok {
-		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+		return nil, ErrIllegalFunction
 	}
 	// Both addresses, both quantities and the byte count: without them the
 	// request cannot be read at all.

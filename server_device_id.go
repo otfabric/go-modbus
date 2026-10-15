@@ -70,10 +70,10 @@ const maxDeviceIDObjectsBytes = 253 - 7
 func (ms *Server) handleReadDeviceIdentification(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
 	// Without a DeviceIdentificationHandler, and for MEI types other than Read
 	// Device Identification (0x0E), such as CANopen General Reference (0x0D), the
-	// request goes to the RawRequestHandler as it is (Illegal Function without one).
+	// answer is Illegal Function.
 	h, ok := ms.handler.(DeviceIdentificationHandler)
 	if !ok || len(req.Payload) >= 1 && MEIType(req.Payload[0]) != MEIReadDeviceIdentification {
-		return ms.handleRaw(ctx, req, txnID, clientAddr, clientRole)
+		return nil, ErrIllegalFunction
 	}
 	if len(req.Payload) < 3 {
 		return nil, ErrProtocolError
