@@ -48,10 +48,8 @@ repository's own tests.
 Every function code the client sends is served by the server, and the
 repository's end-to-end suite fails if one is not. Any other function code
 (vendor and user-defined ones included), an optional one whose handler the
-application does not provide, and an MEI type other than 14 go to the
-application's `RawRequestHandler` when it provides one, which answers with the
-raw response PDU; without it they are answered with exception 1 (illegal
-function).
+application does not provide, and an MEI type other than 14 are answered with
+exception 1 (illegal function).
 
 ## How the client treats a response
 
@@ -76,7 +74,7 @@ answer:
 | Request | Answer |
 |---------|--------|
 | MBAP header invalid (protocol identifier, length) | connection closed |
-| Function code not implemented, or its handler not provided | the `RawRequestHandler` if provided, else exception 1 |
+| Function code not implemented (vendor and user-defined ones included), or its handler not provided | exception 1 |
 | PDU too short to hold the fields of its function, FC01..06, FC22 and FC24 with a length other than the one the function has, FC17 with data, FC20 and FC21 with a byte count that is not the length of the rest | connection closed |
 | Quantity 0 or above the maximum of the function (FC01, 02, 03, 04, 15, 16, 23) | exception 3 |
 | FC15, FC16, FC23: byte count that is not the one the quantity asks for | exception 3 |

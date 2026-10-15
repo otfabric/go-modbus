@@ -1,5 +1,41 @@
 # go-modbus Releases
 
+## v1.7.1
+
+**Date:** 2026-10-15
+**Previous release:** v1.7.0
+
+## Summary
+
+Removes `RawRequestHandler` and `RawRequest`, added in v1.7.0. go-modbus supports the function codes of the Modbus specification only; vendor, user-defined and unknown function codes were never in scope. The raw handler served any function code from raw bytes, which is exactly that. It was added as a fallback for replaying recordings, but the typed handlers of v1.7.0 already serve every function the client sends, so nothing needs it. It was released one day earlier and has no users.
+
+## Changes
+
+### Removed
+
+- **`RawRequestHandler`** and **`RawRequest`**. This is an API removal in a patch release, made on purpose: the type was out of scope and unused.
+
+### Changed
+
+- Every function code without a server handler is answered with Illegal Function, as in v1.6.x:
+  - vendor, user-defined and unknown function codes;
+  - FC43 with an MEI type other than 14;
+  - a standard function whose optional handler the `RequestHandler` does not implement.
+
+  The handler is never called and the connection stays usable. A `RequestHandler` that implemented `HandleRawRequest` keeps compiling, but the method is no longer called.
+
+### Tests
+
+- `TestE2E_RawRequestHandler` and `TestServerFunctions_RawFallback` are replaced by `TestE2E_UnsupportedFunctionCodes` and `TestServerFunctions_UnsupportedFunctionCodes`. They check, over tcp and tcp+tls and in process, that vendor and unknown function codes, FC43 with MEI type 0x0D and every missing optional handler get Illegal Function. They also check that no handler is called, that metrics report an error, and that the connection stays usable.
+
+- The chaos monkey (`TestChaosMonkey`, `make soak`) now also runs FC08 Return Query Data, FC17, FC20 with two sub-requests and FC24 through the fault-injecting proxy, with handler faults, partitions and restarts. Every response is checked exactly against the rules of the chaos device, so an answer to another request shows. FC21 stays in the parallel test with injected failures (`TestE2E_ServerFunctions_Parallel`).
+
+### Unchanged
+
+- The client, the wire format and every typed handler of v1.7.0 (FC08, FC17, FC20, FC21, FC24 and the rest).
+
+---
+
 ## v1.7.0
 
 **Date:** 2026-10-15
@@ -25,7 +61,7 @@ The server now serves every function code the client sends. Until now it had no 
   - FC24: more than 31 values gets exception 3.
 
   Malformed requests close the connection. A response that does not fit, or FC20 records of the wrong length, get Server Device Failure. A Diagnostics handler can return `ErrNoResponse` to leave Force Listen Only Mode unanswered, as a serial-line device does.
-- **`RawRequestHandler`** (`HandleRawRequest(ctx, *RawRequest) ([]byte, error)`). The handler gets the request PDU after the function code and returns the response PDU after the function code. It serves:
+- **`RawRequestHandler`** (removed again in v1.7.1) (`HandleRawRequest(ctx, *RawRequest) ([]byte, error)`). The handler gets the request PDU after the function code and returns the response PDU after the function code. It serves:
   - vendor and user-defined function codes;
   - FC43 with an MEI type other than 14;
   - every standard function whose optional handler the `RequestHandler` does not implement, FC07, FC0B, FC0C, FC22, FC23 and FC43 included.
