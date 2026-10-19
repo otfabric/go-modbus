@@ -1029,7 +1029,7 @@ type ServerConfig struct {
     // TLSHandshakeTimeout is the maximum time for the TLS handshake. Default: 30 s.
     TLSHandshakeTimeout time.Duration
 
-    // Logger is the sink for log output. If nil, slog.Default() is used.
+    // Logger is the sink for log output. If nil (default), logging is disabled (no-op logger).
     Logger Logger
 
     // Metrics receives callbacks for every request handled by the server.
@@ -1199,7 +1199,7 @@ func (h *myHandler) HandleHoldingRegisters(ctx context.Context, req *modbus.Hold
 func (h *myHandler) HandleInputRegisters(ctx context.Context, req *modbus.InputRegistersRequest) ([]uint16, error) {
     return h.HandleHoldingRegisters(ctx, &modbus.HoldingRegistersRequest{
         ClientAddr: req.ClientAddr,
-        UnitId:     req.UnitId,
+        UnitID:     req.UnitID,
         Addr:       req.Addr,
         Quantity:   req.Quantity,
     })
