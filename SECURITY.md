@@ -6,7 +6,7 @@ If you discover a security vulnerability in `go-modbus`, please report it respon
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email **security@otfabric.com**, or open a private advisory on GitHub (the [Security](https://github.com/otfabric/go-modbus/security) tab → **Advisories** → **Report a vulnerability**), with:
+Instead, please email **security@otfabric.io**, or open a private advisory on GitHub (the [Security](https://github.com/otfabric/go-modbus/security) tab → **Advisories** → **Report a vulnerability**), with:
 
 - A description of the vulnerability
 - Steps to reproduce the issue, ideally a minimal program or test
