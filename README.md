@@ -60,7 +60,7 @@ import (
 )
 
 func main() {
-	client, err := modbus.NewClient(modbus.NewConfig(
+	client, err := modbus.New(modbus.NewConfig(
 		modbus.TransportConfig{URL: "tcp://192.168.1.10:502", DialTimeout: 5 * time.Second},
 		modbus.ExecutionConfig{Timeout: 3 * time.Second},
 		modbus.ObservabilityConfig{},
@@ -208,7 +208,7 @@ use case — you never need to use a higher tier.
 ## Transport modes
 
 The transport is selected by the `scheme://address` URL in `Config.URL`
-or `ServerConfiguration.URL`.
+or `ServerConfig.URL`.
 
 | Scheme | Transport | Client | Server |
 |---|---|:---:|:---:|
@@ -292,7 +292,7 @@ RTU, RTU-over-TCP/UDP) and does not restrict any FC by transport type.
 unsupported. It targets CANopen device profiles and has no practical use in typical Modbus
 deployments. Only MEI type 14 (0x0E, Read Device Identification) is implemented.
 
-**Device detection:** `SupportsFunction(ctx, unitID, fc)` checks a single read-style FC (FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20). Returns `(true, nil)` for a valid normal response or an exception that shows the function was recognised (for example Illegal Data Address), `(false, nil)` for probe-negative outcomes (timeout, Illegal Function, gateway failure), and `(false, err)` for real transport errors. For richer diagnostics, `ProbeFunction(ctx, unitID, fc)` returns a `ProbeResult` with `Outcome` (supported/exception/timeout/transport error/validation failed), optional `ExceptionCode`, `ResponseFC`, `RawPayload`, and `Reason` — useful for discovery tools and field debugging of quirky devices. `SupportsDeviceIdentification(ctx, unitID)` checks FC43 (Read Device Identification). **SunSpec discovery** lives in the `sunspec` subpackage: `sunspec.DetectSunSpec`, `sunspec.ReadSunSpecModelHeaders`, and `sunspec.DiscoverSunSpec` probe for the SunSpec "SunS" marker, enumerate model chains, and combine both for fingerprinting and inventory. The library does not decode SunSpec points or schemas — only transport-level detection and model headers. See [API.md § 2.7](API.md#27-modbus-device-detection) and [API.md § 2.8](API.md#28-sunspec-discovery).
+**Device detection:** `SupportsFunction(ctx, unitID, fc)` checks a single read-style FC (FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20). Returns `(true, nil)` for a valid normal response or an exception that shows the function was recognised (for example Illegal Data Address), `(false, nil)` for probe-negative outcomes (timeout, Illegal Function, gateway failure), and `(false, err)` for real transport errors. For richer diagnostics, `ProbeFunction(ctx, unitID, fc)` returns a `ProbeResult` with `Outcome` (supported/exception/timeout/transport error/validation failed), optional `ExceptionCode`, `ResponseFC`, `RawPayload`, and `Reason` — useful for discovery tools and field debugging of quirky devices. `SupportsDeviceIdentification(ctx, unitID)` checks FC43 (Read Device Identification). **SunSpec discovery** lives in the `sunspec` subpackage: `sunspec.Detect`, `sunspec.ReadModelHeaders`, and `sunspec.Discover` probe for the SunSpec "SunS" marker, enumerate model chains, and combine both for fingerprinting and inventory. The library does not decode SunSpec points or schemas — only transport-level detection and model headers. See [API.md § 2.7](API.md#27-modbus-device-detection) and [API.md § 2.8](API.md#28-sunspec-discovery).
 
 ### Codec API
 
@@ -401,8 +401,8 @@ structs — including `MaskWriteRequest` (FC22) and `ReadWriteRegistersRequest`
 ## Logging
 
 Both `Config` and `ServerConfig` expose a `Logger` field. When `nil` (the default),
-logging is disabled. Use `NewStdLogger`, `NewSlogLogger`, `NewSlogFieldLogger`, or
-`NopLogger()` to enable output. Optional `FieldLogger` / `ContextLogger` extensions
+logging is disabled. Use `NewStdLogger`, `NewSlogLogger`, or `NewSlogFieldLogger`
+to enable output (`NopLogger()` is the explicit no-op). Optional `FieldLogger` / `ContextLogger` extensions
 add structured fields and context-aware methods.
 
 Debug-level transport logging can include raw TX/RX frame payloads — useful for
