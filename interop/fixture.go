@@ -144,9 +144,9 @@ func loadFixture(t testing.TB, a adapter) *fixture {
 	if fx, ok := fixtureDocs[a.image]; ok {
 		return fx
 	}
-	out, stderr, err := docker("run", "--rm", a.image, "print-fixture", "baseline")
-	if err != nil {
-		t.Fatalf("print-fixture from %s: %v\n%s", a.image, err, stderr)
+	out, stderr, exit, err := runOnce(nil, a.image, "print-fixture", "baseline")
+	if err != nil || exit != 0 {
+		t.Fatalf("print-fixture from %s: exit %d, %v\n%s", a.image, exit, err, stderr)
 	}
 	fx := &fixture{}
 	if err := json.Unmarshal([]byte(out), fx); err != nil {
