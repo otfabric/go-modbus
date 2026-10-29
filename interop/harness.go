@@ -245,12 +245,13 @@ func entrypoint(image string) ([]string, error) {
 	if ep, ok := entrypoints[image]; ok {
 		return ep, nil
 	}
-	out, errOut, err := docker("image", "inspect", "--format", "{{json .Config.Entrypoint}}", image)
+	out, _, err := docker("image", "inspect", "--format", "{{json .Config.Entrypoint}}", image)
 	if err != nil {
 		// "docker run" would pull it; so does this.
 		if _, pullErr, perr := docker("pull", "-q", image); perr != nil {
 			return nil, fmt.Errorf("docker pull %s: %w\n%s", image, perr, pullErr)
 		}
+		var errOut string
 		if out, errOut, err = docker("image", "inspect", "--format", "{{json .Config.Entrypoint}}", image); err != nil {
 			return nil, fmt.Errorf("docker image inspect %s: %w\n%s", image, err, errOut)
 		}
