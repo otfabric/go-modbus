@@ -7,11 +7,11 @@ package interop
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -146,9 +146,9 @@ func (a adapter) capabilities(t testing.TB) *capabilities {
 	if c, ok := capabilitiesDocs[a.image]; ok {
 		return c
 	}
-	out, stderr, err := docker("run", "--rm", a.image, "print-capabilities")
-	if err != nil {
-		t.Fatalf("print-capabilities of %s: %v\n%s", a.image, err, stderr)
+	out, stderr, exit, err := runOnce(nil, a.image, "print-capabilities")
+	if err != nil || exit != 0 {
+		t.Fatalf("print-capabilities of %s: exit %d, %v\n%s", a.image, exit, err, stderr)
 	}
 	caps := &capabilities{}
 	if err := json.Unmarshal([]byte(out), caps); err != nil {
@@ -231,6 +231,81 @@ func docker(args ...string) (stdout, stderr string, err error) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err = cmd.Run()
 	return out.String(), errb.String(), err
+}
+
+var (
+	entrypointMu sync.Mutex
+	entrypoints  = map[string][]string{} // by image
+)
+
+// entrypoint returns the entrypoint of an image.
+func entrypoint(image string) ([]string, error) {
+	entrypointMu.Lock()
+	defer entrypointMu.Unlock()
+	if ep, ok := entrypoints[image]; ok {
+		return ep, nil
+	}
+	out, errOut, err := docker("image", "inspect", "--format", "{{json .Config.Entrypoint}}", image)
+	if err != nil {
+		return nil, fmt.Errorf("docker image inspect %s: %w\n%s", image, err, errOut)
+	}
+	var ep []string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &ep); err != nil || len(ep) == 0 {
+		return nil, fmt.Errorf("image %s has no entrypoint (%q)", image, strings.TrimSpace(out))
+	}
+	entrypoints[image] = ep
+	return ep, nil
+}
+
+// runOnce runs the image's program with command to completion and returns
+// what it wrote to stdout and stderr, and its exit code. err is set only
+// when Docker itself fails.
+//
+// The output does not go through Docker. Under load, Docker loses the
+// output of a container that exits within milliseconds: the result line
+// of a reference client went missing that way, with the right exit code
+// and nothing at all on stderr, seen in CI with the tokio-modbus and
+// libmodbus clients. It was missing from the attached streams of
+// "docker run" and from the container log alike. So the program's stdout
+// and stderr are files in a directory mounted from the host, written by
+// the program itself; the container runs detached and they are read once
+// it has exited. Every reference image has /bin/sh, which redirects them.
+func runOnce(dockerArgs []string, image string, command ...string) (stdout, stderr string, exit int, err error) {
+	ep, err := entrypoint(image)
+	if err != nil {
+		return "", "", 0, err
+	}
+	dir, err := os.MkdirTemp("", "go-modbus-interop-run-")
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	// The images run as an unprivileged user of their own.
+	if err := os.Chmod(dir, 0o777); err != nil {
+		return "", "", 0, err
+	}
+	name := fmt.Sprintf("go-modbus-interop-run-%d-%d", os.Getpid(), containerSeq.Add(1))
+	args := append([]string{"run", "-d", "--name", name, "-v", dir + ":/out", "--entrypoint", "/bin/sh"}, dockerArgs...)
+	args = append(args, image, "-c", `exec "$@" >/out/stdout 2>/out/stderr`, "sh")
+	args = append(append(args, ep...), command...)
+	defer func() { _, _, _ = docker("rm", "-f", name) }()
+	if _, errOut, err := docker(args...); err != nil {
+		return "", "", 0, fmt.Errorf("docker run %s: %w\n%s", image, err, errOut)
+	}
+	code, errOut, err := docker("wait", name)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("docker wait %s: %w\n%s", name, err, errOut)
+	}
+	if exit, err = strconv.Atoi(strings.TrimSpace(code)); err != nil {
+		return "", "", 0, fmt.Errorf("docker wait %s: exit code %q: %w", name, code, err)
+	}
+	// The program has exited: what it wrote is in the files.
+	out, err := os.ReadFile(filepath.Join(dir, "stdout"))
+	if err != nil {
+		return "", "", 0, fmt.Errorf("output of %s (exit %d): %w", image, exit, err)
+	}
+	errb, _ := os.ReadFile(filepath.Join(dir, "stderr"))
+	return string(out), string(errb), exit, nil
 }
 
 // The port the reference servers listen on inside their container.
@@ -508,19 +583,12 @@ func runClientAgainst(t testing.TB, a adapter, srv *refServer, args ...string) *
 
 func execClient(t testing.TB, a adapter, dockerArgs, clientArgs []string) *result {
 	t.Helper()
-	cmd := append([]string{"run", "--rm"}, dockerArgs...)
-	cmd = append(append(cmd, a.image, "client"), clientArgs...)
-	cmd = append(cmd, clientTimeouts...)
-	stdout, stderr, err := docker(cmd...)
-	r := &result{stderr: stderr}
-	var exitErr *exec.ExitError
-	switch {
-	case err == nil:
-	case errors.As(err, &exitErr):
-		r.exit = exitErr.ExitCode()
-	default:
+	command := append(append([]string{"client"}, clientArgs...), clientTimeouts...)
+	stdout, stderr, exit, err := runOnce(dockerArgs, a.image, command...)
+	if err != nil {
 		t.Fatalf("run %s client: %v", a.name, err)
 	}
+	r := &result{stderr: stderr, exit: exit}
 	line := strings.TrimSpace(stdout)
 	if strings.Count(line, "\n") != 0 || line == "" {
 		t.Fatalf("%s client %v: want one result line on stdout, got %q (exit %d, stderr %q)",
