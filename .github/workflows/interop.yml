@@ -96,6 +96,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          # Saturate the runner: the flake looks load-dependent.
+          for c in $(seq $(( $(nproc) * 2 ))); do (while :; do :; done) & done
           rc=0
           for i in 1 2 3; do
             go test -json -tags=interop -count=1 -timeout=30m ./interop/... | python3 .github/diag/annotate.py || rc=1
