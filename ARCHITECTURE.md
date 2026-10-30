@@ -7,6 +7,7 @@ and the ownership rules that govern it.
 
 ```
 github.com/otfabric/go-modbus          # public API — client, server, protocol types
+├── batch/                           # public batch-read planning (windows, results)
 ├── codec/                           # public codec package (numeric, text, time, …)
 ├── sunspec/                         # public SunSpec detection and discovery
 ├── internal/
@@ -14,6 +15,7 @@ github.com/otfabric/go-modbus          # public API — client, server, protocol
 │   ├── transport/                   # concrete transports: TCP, RTU, ASCII
 │   ├── session/                     # execution engine: pool, retry, request dispatch
 │   ├── protocol/                    # protocol constants, function codes, error sentinels
+│   ├── benchserver/                 # benchmark server: delay per request, request and byte counts
 │   └── logging/                     # prefixed logger adapter
 ├── cmd/                             # CLI client (main, parse, ops, render, scan)
 └── examples/
@@ -30,6 +32,9 @@ internal/session
     ↑
 modbus (root)
 
+modbus (root), codec ← batch
+modbus (root)       ← internal/benchserver (benchmarks only)
+
 internal/protocol ← modbus, codec, sunspec
 internal/adu      ← codec, sunspec (byte helpers)
 internal/logging  ← modbus, internal/session
@@ -40,6 +45,7 @@ internal/logging  ← modbus, internal/session
 - `internal/transport` must not import `codec`
 - `sunspec` must not import `internal/transport`
 - `codec` must not import `internal/transport` or `internal/session`
+- The root package must not import `batch` or `internal/benchserver`; `batch` uses the public API only
 
 ## Ownership rules
 
@@ -52,6 +58,7 @@ Each subsystem has a **single owner** package.
 | Connection pool, retry, execute | `internal/session` | |
 | Codecs (numeric, text, time, …) | `codec/` | Public subpackage; root has deprecated aliases |
 | SunSpec discovery | `sunspec/` | Public subpackage; root has deprecated aliases |
+| Batch-read planning | `batch/` | Public subpackage; plans and decodes, no scheduling or caching |
 | Protocol constants & errors | `internal/protocol` | Root re-exports via type aliases |
 | Logging | `internal/logging` | |
 | Client/server protocol API | `modbus` (root) | Uses `adu.Request`/`adu.Response` internally |
