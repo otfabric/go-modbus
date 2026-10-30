@@ -1365,12 +1365,19 @@ func TestClientMetrics_OnTimeout(t *testing.T) {
 		t.Fatalf("Listen: %v", err)
 	}
 	defer func() { _ = ln.Close() }()
+	// The server holds the connection until the test is over. A goroutine that
+	// just returned would leave the socket to the garbage collector, whose
+	// finalizer closes it: the client would then see EOF instead of a timeout.
+	release := make(chan struct{})
+	defer close(release)
 	go func() {
 		sock, _ := ln.Accept()
-		if sock != nil {
-			// Never respond so client times out (do not close, just block)
-			_, _ = sock.Read(make([]byte, 256))
+		if sock == nil {
+			return
 		}
+		defer func() { _ = sock.Close() }()
+		_, _ = sock.Read(make([]byte, 256))
+		<-release
 	}()
 	metrics := &testMetrics{}
 	client, err := New(Config{
@@ -1385,9 +1392,12 @@ func TestClientMetrics_OnTimeout(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = client.Close() }()
-	_, _ = client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
-	if metrics.onTimeout != 1 {
-		t.Errorf("expected OnTimeout call, onTimeout=%d", metrics.onTimeout)
+	_, err = client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
+	if !errors.Is(err, ErrRequestTimedOut) {
+		t.Errorf("want ErrRequestTimedOut, got %v", err)
+	}
+	if metrics.onTimeout != 1 || metrics.onError != 0 {
+		t.Errorf("expected one OnTimeout call and no OnError, onTimeout=%d onError=%d", metrics.onTimeout, metrics.onError)
 	}
 }
 
