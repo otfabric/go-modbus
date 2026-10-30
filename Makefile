@@ -18,12 +18,14 @@ GOFMT_CI = $(shell GOTOOLCHAIN=go$(GO_MOD_VERSION).0 go env GOROOT)/bin/gofmt
 
 # Output directory for generated binaries
 BIN_DIR := bin
+# The CLI is a nested module (ADR-0009): ./... of this module does not reach it.
+CLI_DIR := cmd/modbus-cli
 # Build tag of the interop package (excluded from default ./... builds).
 INTEROP_TAGS := interop
 # All packages except /examples (for lint/vet), ./interop included
 PKGS := $(shell go list -tags=$(INTEROP_TAGS) ./... | grep -v '/examples$$' | sed 's,^github.com/otfabric/go-modbus,.,')
-# Core library + subpackages: tests and coverage (exclude cmd, examples and the interop suite)
-TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/cmd' | grep -v '/interop' | sed 's,^github.com/otfabric/go-modbus,.,')
+# Core library + subpackages: tests and coverage (exclude examples and the interop suite)
+TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/interop' | sed 's,^github.com/otfabric/go-modbus,.,')
 
 # Reference implementations for 'make interop': otfabric/modbus-interop v0.2.0
 # (libmodbus v3.2.0, PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83,
@@ -50,10 +52,10 @@ COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS  := -s -w -X main.version=$(VERSION) -X main.tag=$(TAG) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)
 
-build-cmd: ## Build CLI binary from cmd/modbus-cli/ package
+build-cmd: ## Build the CLI binary from the nested module in cmd/modbus-cli/
 	@echo "Building command line interface ($(VERSION))"
 	@mkdir -p $(BIN_DIR)
-	@go build -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/modbus-cli" ./cmd/modbus-cli/
+	@cd $(CLI_DIR) && go build -ldflags "$(LDFLAGS)" -o "$(CURDIR)/$(BIN_DIR)/modbus-cli" .
 
 build-examples: ## Build binaries from examples/*.go
 	@echo "Building examples"
@@ -81,18 +83,22 @@ fmt-check: ## Fail if the go.mod-version gofmt or the local gofmt would change a
 lint: ## Run staticcheck (includes -tags=interop for ./interop)
 	@echo "Running staticcheck"
 	@staticcheck -tags=$(INTEROP_TAGS) $(PKGS)
+	@cd $(CLI_DIR) && staticcheck ./...
 
 lint-ci: ## Run golangci-lint (build-tags include interop; see .golangci.yml)
 	@echo "Running golangci-lint"
 	@golangci-lint run $(PKGS)
+	@cd $(CLI_DIR) && golangci-lint run ./...
 
 vet: ## Run go vet on project packages (includes -tags=interop compile of ./interop)
 	@echo "Running go vet on packages: $(PKGS)"
 	@go vet -tags=$(INTEROP_TAGS) $(PKGS)
+	@cd $(CLI_DIR) && go vet ./...
 
 vuln: ## Run govulncheck
 	@echo "Running govulncheck"
 	@govulncheck ./...
+	@cd $(CLI_DIR) && govulncheck ./...
 
 test: ## Run tests on core library only
 	@echo "Running tests on packages: $(TEST_PKGS)"

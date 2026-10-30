@@ -541,11 +541,14 @@ The flat `Config` struct remains fully supported and backward-compatible.
 
 ## modbus-cli
 
-A command-line Modbus client is included in `cmd/modbus-cli/`:
+A command-line Modbus client is included in `cmd/modbus-cli/`. It is a nested
+module, so the library does not depend on cobra. Download a binary from the
+[releases](https://github.com/otfabric/go-modbus/releases), or build it from a
+checkout:
 
 ```bash
-go build -o modbus-cli ./cmd/modbus-cli/
-./modbus-cli --help
+make build-cmd
+./bin/modbus-cli --help
 ```
 
 <details>
