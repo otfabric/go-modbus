@@ -1,5 +1,19 @@
 # go-modbus Releases
 
+## Unreleased
+
+### Changed
+
+- **`cmd/modbus-cli` is now a nested module** (`github.com/otfabric/go-modbus/cmd/modbus-cli`).
+  The library's `go.mod` no longer requires cobra, so consumers stop
+  inheriting it. Library import paths and the exported API are unchanged.
+  - Release binaries are published as before.
+  - Build from a checkout with `make build-cmd`, or `cd cmd/modbus-cli && go build .`.
+  - `go install github.com/otfabric/go-modbus/cmd/modbus-cli@<version>` works
+    up to v1.9.0 and not after it, while the nested module's `replace` is in place.
+
+---
+
 ## v1.9.0
 
 **Date:** 2026-10-30

@@ -168,7 +168,7 @@ internal/transport/    TCP, RTU and ASCII transports
 internal/session/      Execute, retry and connection-pool layer
 internal/protocol/     Function codes, exceptions, response validation, probes
 internal/logging/      Logger plumbing
-cmd/modbus-cli/        Command-line client
+cmd/modbus-cli/        Command-line client (nested module)
 interop/               Tests against other Modbus stacks (build tag "interop", needs Docker)
 examples/              Runnable examples
 spec/                  Protocol reference notes
