@@ -244,7 +244,8 @@ func TestE2E_Client_RequestTimeout(t *testing.T) {
 	})
 }
 
-// A context deadline replaces the configured Timeout, in both directions.
+// A request ends at the configured Timeout or the context deadline, whichever
+// comes first.
 func TestE2E_Client_ContextDeadline(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, kind string) {
 		dev := e2eNewDevice()
@@ -286,7 +287,7 @@ func TestE2E_Client_ContextDeadline(t *testing.T) {
 			t.Errorf("request with an expired deadline reached the server (%d)", n)
 		}
 
-		// Longer than Timeout: the request may take longer than Timeout.
+		// Longer than Timeout: Timeout still ends the request.
 		short := p.newClient(func(c *Config) { c.Timeout = 20 * time.Millisecond })
 		if err := short.Open(); err != nil {
 			t.Fatal(err)
@@ -299,10 +300,15 @@ func TestE2E_Client_ContextDeadline(t *testing.T) {
 			return nil
 		})
 		ctx, cancel = context.WithTimeout(bg, e2eWait)
-		got, err := short.ReadHoldingRegister(ctx, e2eUnit, 1)
+		start = time.Now()
+		_, err = short.ReadHoldingRegister(ctx, e2eUnit, 1)
+		elapsed = time.Since(start)
 		cancel()
-		if err != nil || got != 0x1111 {
-			t.Errorf("request with a context deadline beyond Timeout = 0x%04X, %v", got, err)
+		if !errors.Is(err, ErrRequestTimedOut) {
+			t.Errorf("request with a context deadline beyond Timeout: %v, want ErrRequestTimedOut", err)
+		}
+		if elapsed > e2eWait/2 {
+			t.Errorf("request ended after %v; Timeout 20ms, context deadline %v", elapsed, e2eWait)
 		}
 		if _, err := short.ReadHoldingRegister(bg, e2eUnit, 1); !errors.Is(err, ErrRequestTimedOut) {
 			t.Errorf("the same request without a context deadline: %v, want ErrRequestTimedOut", err)

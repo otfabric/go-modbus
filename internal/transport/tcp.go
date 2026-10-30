@@ -49,12 +49,7 @@ func (tt *TCP) Close() error {
 
 // ExecuteRequest sends req and returns the response.
 func (tt *TCP) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
-	var deadline time.Time
-	if d, ok := ctx.Deadline(); ok {
-		deadline = d
-	} else {
-		deadline = time.Now().Add(tt.Timeout)
-	}
+	deadline := requestDeadline(ctx, tt.Timeout)
 	if err := tt.Socket.SetDeadline(deadline); err != nil {
 		return nil, err
 	}

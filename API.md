@@ -84,7 +84,8 @@ type Config struct {
     StopBits uint
 
     // Timeout is the per-request I/O deadline. If 0, a sensible default is applied:
-    // 300 ms for RTU, 1 s for all TCP/UDP modes. On tcp and tcp+tls the connection a
+    // 300 ms for RTU, 1 s for all TCP/UDP modes. A context deadline that comes
+    // earlier ends the request earlier; a later one does not extend it. On tcp and tcp+tls the connection a
     // request timed out on is closed; the next request dials a new one (see 2.2).
     Timeout time.Duration
 
@@ -288,8 +289,10 @@ All read methods share the same signature preamble:
 func (mc *Client) <Method>(ctx context.Context, unitID uint8, addr uint16, ...) (..., error)
 ```
 
-`ctx` propagates cancellation and deadlines. If the context carries a deadline it
-overrides the configured `Timeout`. A context that is already cancelled or
+`ctx` propagates cancellation and deadlines. A request ends at the configured
+`Timeout` or at the context's deadline, whichever comes first: a context
+deadline can shorten a request but not extend it past `Timeout`. To give a slow
+request more time, raise `Timeout`. A context that is already cancelled or
 expired fails the call with `ctx.Err()` before anything is sent. Cancelling the
 context while the request is in flight makes the call return promptly with an
 error for which `errors.Is(err, context.Canceled)` is true; an expiring deadline

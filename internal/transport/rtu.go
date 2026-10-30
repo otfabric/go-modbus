@@ -98,12 +98,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // ExecuteRequest sends req and returns the response.
 func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
-	var deadline time.Time
-	if d, ok := ctx.Deadline(); ok {
-		deadline = d
-	} else {
-		deadline = time.Now().Add(rt.Timeout)
-	}
+	deadline := requestDeadline(ctx, rt.Timeout)
 	if err := rt.Link.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
