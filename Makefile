@@ -2,7 +2,7 @@
 # This will output the help for each task
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
-.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz soak check clean interop test-interop
+.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak check clean interop test-interop
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
@@ -102,12 +102,19 @@ coverage: ## Run tests with coverage on core library only (writes coverage.out)
 	@echo "Running coverage"
 	@go test -count=1 -race -coverprofile=coverage.out -covermode=atomic $(TEST_PKGS)
 
+# Duration each benchmark runs. Override with BENCHTIME=... (e.g. BENCHTIME=2s).
+BENCHTIME ?= 1s
+bench: ## Run the read-strategy benchmarks (requests/op, pdu-bytes/op, time, allocations)
+	@echo "Benchmarking (BENCHTIME=$(BENCHTIME))"
+	@go test -run='^$$' -bench=. -benchmem -benchtime=$(BENCHTIME) $(TEST_PKGS)
+
 # Duration each fuzz target runs. Override with FUZZTIME=... (e.g. FUZZTIME=5m).
 FUZZTIME ?= 30s
 fuzz: ## Run back-to-back fuzz targets for FUZZTIME each (default 30s)
 	@echo "Fuzzing (FUZZTIME=$(FUZZTIME))"
 	@go test -run='^$$' -fuzz='^FuzzServerRequest$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzClientResponseParse$$' -fuzztime=$(FUZZTIME) .
+	@go test -run='^$$' -fuzz='^FuzzCompile$$' -fuzztime=$(FUZZTIME) ./batch
 
 # Duration the chaos and the stress tests each keep looping in soak mode. Override with
 # SOAKTIME=... (e.g. SOAKTIME=30m). A failing chaos run logs its seed; replay it with
