@@ -55,8 +55,10 @@ type Config struct {
 	// StopBits sets the number of serial stop bits (rtu and ascii only).
 	// Defaults to 2 without parity and 1 with parity.
 	StopBits uint
-	// Timeout sets the request timeout value. On tcp and tcp+tls the connection
-	// a request timed out on is closed and the next request dials a new one: the
+	// Timeout sets the request timeout value. A request ends at Timeout or at
+	// its context's deadline, whichever comes first, so a context deadline can
+	// shorten a request but not extend it. On tcp and tcp+tls the connection a
+	// request timed out on is closed and the next request dials a new one: the
 	// late response must not be taken for the answer to a later request.
 	Timeout time.Duration
 	// DialTimeout sets the maximum time for establishing a connection (TCP dial,

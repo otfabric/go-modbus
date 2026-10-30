@@ -5,6 +5,7 @@ package transport
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
 )
@@ -30,4 +31,21 @@ func writeFull(w io.Writer, buf []byte) error {
 		}
 	}
 	return nil
+}
+
+// requestDeadline returns the I/O deadline of a request: timeout from now,
+// or the context's deadline when that comes first. A timeout of zero or less
+// leaves the context's deadline alone.
+func requestDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	d, ok := ctx.Deadline()
+	if timeout <= 0 {
+		if ok {
+			return d
+		}
+		return time.Now()
+	}
+	if t := time.Now().Add(timeout); !ok || t.Before(d) {
+		return t
+	}
+	return d
 }
