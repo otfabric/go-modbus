@@ -35,6 +35,7 @@ defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
 9. [TLS helpers](#9-tls-helpers)
 10. [Type constants](#10-type-constants)
 11. [Codec API](#11-codec-api)
+12. [Batch reads (package batch)](#12-batch-reads-package-batch)
 
 ---
 
@@ -2022,6 +2023,13 @@ Used in `Config.Parity` (serial RTU and ASCII only).
 
 `Endianness` (`BigEndian`, `LittleEndian`) and `WordOrder` (`HighWordFirst`, `LowWordFirst`) are type constants used when mapping layout names (e.g. in CLI or descriptor tooling) to `RegisterLayout`. Byte and word order for typed read/write are defined by the codec’s `RegisterLayout`, not by client-wide state.
 
+### Read limits
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `MaxReadCoils` | 2000 | Most coils or discrete inputs one FC01/FC02 request reads |
+| `MaxReadRegisters` | 125 | Most registers one FC03/FC04 request reads |
+
 ### `RegType`
 
 Distinguishes holding from input registers on read calls.
@@ -2460,4 +2468,80 @@ func ExecuteRuntimeDecodePlanOffline(regs []uint16, plan RuntimeDecodePlan) (*Ru
 ```
 
 `ValidateRuntimeDecodePlan` returns a `*RuntimePlanValidationError` when the window is invalid (quantity not 1–125, address overflow), items have empty or duplicate names, a codec is nil, or an item’s offset and register count would extend past the window. The executors perform one read (or use the provided slice) and decode each item; per-item decode failures are recorded in `RuntimeDecodedValue.Error` and do not abort the whole plan.
+
+For a batch of reads over several windows, bit reads included, see [§ 12](#12-batch-reads-package-batch).
+
+---
+
+## 12. Batch reads (package `batch`)
+
+```go
+import "github.com/otfabric/go-modbus/batch"
+```
+
+Package `batch` plans a set of named reads: it validates them and groups them into windows, the read requests that cover them. It generalizes the single-window [batch decode plan](#1111-batch-decode-plan) to many windows, several unit IDs and all four read function codes. A batch is planned once and has no timers, background goroutines or caches.
+
+```go
+type Item struct {
+    Name   string
+    UnitID uint8
+    FC     FunctionCode          // FCReadCoils, FCReadDiscreteInputs, FCReadHoldingRegisters or FCReadInputRegisters
+    Addr   uint16
+    Count  uint16                // registers or bits; 0 = Codec.RegisterSpec().Count
+    Codec  codec.RuntimeDecoder  // register reads only; nil = raw registers or bits
+}
+
+type Options struct {
+    MaxGap       uint16     // unrequested registers/bits a window may span between items; 0 = none
+    MaxRegisters uint16     // register window limit, 1..125; 0 = MaxReadRegisters
+    MaxBits      uint16     // bit window limit, 1..2000; 0 = MaxReadCoils
+    Boundaries   []Boundary // addresses no window may span
+}
+
+type Boundary struct {
+    UnitID uint8
+    FC     FunctionCode
+    Addr   uint16 // no window holds both Addr-1 and Addr
+}
+
+func Compile(items []Item, opts Options) (*Plan, error)
+
+func (p *Plan) Items() []Item
+func (p *Plan) Windows() []Window
+func (p *Plan) FunctionCodes() []FunctionCode
+func (p *Plan) Stats() Stats
+func (p *Plan) Decode(data []WindowData) (*Result, error)
+```
+
+**Planning.** `Compile` groups items by unit ID and function code and never merges different ones. Within a group it sweeps items in address order. An item joins the current window when it starts at most `MaxGap` addresses after the window's end, the merged window stays within the limit, and no boundary falls inside it. Contiguous, overlapping and duplicate items therefore share a window; with the default `MaxGap` of 0, no unrequested address is read. An item larger than the limit gets consecutive windows of its own. Windows are ordered by unit ID, function code and address, so the plan does not depend on the order of the items.
+
+`Compile` returns a `*ValidationError` (`Item`, `Index`, `Reason`) for an empty or duplicate name, a function code other than FC01–FC04, a codec on a bit read, a codec whose register count differs from `Count`, a zero count, a range past `0xFFFF`, an item that spans a boundary, or a limit above the protocol's.
+
+**Inspection.** A `Plan` is immutable and safe for concurrent use; its accessors return copies. `Windows` lists the requests (`UnitID`, `FC`, `Addr`, `Count`, the indexes of the `Items` served, and `Gap`, the registers or bits read that no item asked for). `Stats` counts requests, registers and bits, and request and response PDU bytes. `FunctionCodes` lists the codes the plan uses, for `Config.AllowedFunctionCodes`.
+
+**Results.** `Decode` builds the result from the data of each window (`WindowData`: `Registers` or `Bits`, or `Err`), for captures and tests. Every window and item gets a `State`:
+
+| State | Window | Item |
+|---|---|---|
+| `OK` | read | read and, with a codec, decoded into `Value` |
+| `Failed` | the request failed (`Err`) | a window serving it failed; `Err` is a `*WindowError` |
+| `DecodeFailed` | — | read, but the codec rejected the registers; `Err` is the codec's |
+| `NotAttempted` | not read (`Err` wraps `ErrNotAttempted`) | a window serving it was not read |
+
+`NotAttempted` is the zero value. `Result.Items` follows the order of the items given to `Compile`. An item read in several windows keeps the part read before the first window that is not `OK`. A window's data must hold exactly its count of registers or bits; `Decode` returns a `*ValidationError` otherwise.
+
+x, UnitID: 1, FC: modbus.FCReadHoldingRegisters, Addr: 100, Codec: f32},
+    {Name: "energy", UnitID: 1, FC: modbus.FCReadHoldingRegisters, Addr: 102, Codec: u32},
+    {Name: "alarms", UnitID: 1, FC: modbus.FCReadCoils, Addr: 0, Count: 32},
+}, batch.Options{})
+if err != nil {
+    return err // a configuration error, before any I/O
+}
+// Two windows: coils 0-31, and holding registers 100-103 for power and energy.
+for _, w := range plan.Windows() {
+    fmt.Println(w.UnitID, w.FC, w.Addr, w.Count)
+}
+```
+
+Executing a plan against a client is not part of this release.
 
