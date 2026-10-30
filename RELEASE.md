@@ -1,5 +1,41 @@
 # go-modbus Releases
 
+## v1.9.0
+
+**Date:** 2026-10-30
+**Previous release:** v1.8.0
+
+## Summary
+
+A request now ends at `Config.Timeout` or at its context's deadline,
+whichever comes first. Until now a context deadline replaced `Timeout`, even
+when it was later. A device that never answers could then hold a request for
+the whole context deadline: in a batch or polling loop with an overall
+deadline, one silent device used up the budget of all the others.
+
+## Changes
+
+### Changed (behaviour)
+
+- **A context deadline no longer extends a request past `Config.Timeout`.**
+  An earlier context deadline still ends the request early, as before.
+  - Applies to every client URL scheme: tcp, tcp+tls, udp, rtu, rtu over
+    tcp and udp, ascii and ascii over tcp.
+  - A request that relied on a long context deadline to run longer than
+    `Timeout` now fails with `ErrRequestTimedOut` at `Timeout`. To give a
+    slow request more time, raise `Timeout`.
+  - Errors are unchanged: a request that runs out of time, by either limit,
+    fails with `ErrRequestTimedOut`.
+
+### Tests
+
+- `TestE2E_Client_ContextDeadline` checks the new rule over every transport:
+  a 20 ms `Timeout` ends a request whose context deadline is much later.
+- New transport tests check that `Timeout` ends a request under a 10 s context
+  deadline on tcp, rtu and ascii. A client test checks both directions.
+
+---
+
 ## v1.8.0
 
 **Date:** 2026-10-30
