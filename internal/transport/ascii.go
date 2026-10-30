@@ -53,12 +53,7 @@ func (at *ASCII) Interrupt() {
 
 // ExecuteRequest sends req and returns the response.
 func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
-	var deadline time.Time
-	if d, ok := ctx.Deadline(); ok {
-		deadline = d
-	} else {
-		deadline = time.Now().Add(at.Timeout)
-	}
+	deadline := requestDeadline(ctx, at.Timeout)
 	if err := at.Link.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
