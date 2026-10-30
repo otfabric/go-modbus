@@ -61,6 +61,11 @@ no handler serves is an `OnError` with `ErrIllegalFunction`, and a request a
 handler leaves unanswered (`ErrNoResponse`, for example Force Listen Only Mode)
 is an `OnError` with `ErrNoResponse`.
 
+A `batch` plan executed on a client makes one ordinary request per window, so
+each window is one `OnRequest` and one outcome; windows a stopped batch did not
+attempt are never requested and not reported. `Plan.Stats` gives the requests a
+plan makes, and every `WindowResult` its `Started` and `Finished` time.
+
 `Config.PDUTap` is not a metric: it receives the raw request and response PDUs of
 every answered request (exception responses included, before the calling method
 validates them) with the time the response was received, for recording what a

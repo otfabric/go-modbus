@@ -31,6 +31,8 @@ Modbus exception from the unit.
 | RTU CRC / ASCII LRC / short frame | `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` |
 | Peer Modbus exception (0x01–0x0B) | `*ExceptionError` (`errors.Is` → matching `ErrIllegal…` sentinel) |
 | Codec encode/decode failure | `codec` package sentinels / typed errors |
+| `batch.Compile` / `Decode` given invalid items or data | `*batch.ValidationError` |
+| `batch` `Plan.Execute` that did not read every window | result **and** `*batch.ExecError` (`errors.Is` → `batch.ErrIncomplete`, the first window error, and the reason the batch stopped) |
 
 Prefer:
 
@@ -84,6 +86,17 @@ discarded). A Modbus exception does not. The client itself stays open through
 all of them; only `Close` makes it return `ErrClientNotOpen`. The serial-framed
 transports and `udp` keep their link unless it is down. See
 [API.md § 2.2](API.md#22-lifecycle).
+
+## Batch execution
+
+`batch` `Plan.Execute` sorts window errors by what they say about the link. A
+Modbus exception, or a function code `Config.AllowedFunctionCodes` refuses, fails
+only its window. A timeout, transport error or protocol error ends the batch: the
+remaining windows are `NotAttempted`, with an error wrapping
+`batch.ErrNotAttempted` and that error (`Options.ContinueOnTransportError` reads
+them anyway). A cancelled or expired context always ends the batch. Every window
+and item keeps its own `State` and `Err`; see
+[API.md § 12](API.md#12-batch-reads-package-batch).
 
 ## Retries
 

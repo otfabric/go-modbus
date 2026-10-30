@@ -50,6 +50,8 @@ type Plan struct {
 	// itemWindows holds, per item, the indexes of the windows serving it,
 	// in address order.
 	itemWindows [][]int
+	// continueOnTransportError is Options.ContinueOnTransportError.
+	continueOnTransportError bool
 }
 
 // Compile validates items and groups them into windows. It performs no I/O.
@@ -77,7 +79,7 @@ func Compile(items []Item, opts Options) (*Plan, error) {
 		}
 	}
 
-	p := &Plan{items: make([]Item, len(items)), itemWindows: make([][]int, len(items))}
+	p := &Plan{items: make([]Item, len(items)), itemWindows: make([][]int, len(items)), continueOnTransportError: opts.ContinueOnTransportError}
 	names := make(map[string]bool, len(items))
 	for i, it := range items {
 		if err := validateItem(i, &it, names, opts.Boundaries); err != nil {
