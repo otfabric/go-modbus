@@ -1,0 +1,5 @@
+# OT Fabric engineering policy adoption (otfabric/engineering standards/README.md#adoption).
+policy: "1.0"
+profile: protocol-library
+mode: baseline
+owner: bartvanbos
