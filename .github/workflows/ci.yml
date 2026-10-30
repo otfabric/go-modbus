@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   ci:
-    uses: otfabric/.github/.github/workflows/go-ci.yml@v2.1.0
+    uses: otfabric/.github/.github/workflows/go-ci.yml@v3.1.1
     with:
       run-govulncheck: true
       coverage-min: "95"
@@ -31,7 +31,7 @@ jobs:
   # The CLI is a nested module (ADR-0009). It has no tests; this job keeps
   # tidy, vet, lint and the matrix build on it.
   cli:
-    uses: otfabric/.github/.github/workflows/go-ci.yml@v2.1.0
+    uses: otfabric/.github/.github/workflows/go-ci.yml@v3.1.1
     with:
       module-dir: cmd/modbus-cli
       test-exclude-regex: "/example(s)?($|/)"
