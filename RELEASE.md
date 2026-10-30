@@ -1,5 +1,16 @@
 # go-modbus Releases
 
+## v1.10.1
+
+**Date:** 2026-10-30
+**Previous release:** v1.10.0
+
+### Dependencies
+
+- `go-serial` → v0.2.0: on macOS and BSD the baud constant no longer ends up in `Cflag`, where it set parity and stop-bit flags on the port.
+
+---
+
 ## v1.10.0
 
 **Date:** 2026-10-30
