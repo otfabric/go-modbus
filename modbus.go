@@ -61,6 +61,13 @@ const (
 	PortModbusTLS = protocol.PortModbusTLS
 )
 
+// Read limits of the Modbus specification: the most coils or discrete inputs
+// (FC01, FC02) and the most registers (FC03, FC04) one read request returns.
+const (
+	MaxReadCoils     = protocol.MaxReadCoils
+	MaxReadRegisters = protocol.MaxReadRegisters
+)
+
 // Protocol limits (unexported for use by client/server).
 const (
 	maxReadCoils      = protocol.MaxReadCoils
