@@ -2,7 +2,7 @@
 # This will output the help for each task
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
-.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak check clean interop test-interop
+.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak check clean interop test-interop coverage-check cross e2e
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
@@ -115,6 +115,8 @@ bench: ## Run the read-strategy benchmarks (requests/op, pdu-bytes/op, time, all
 	@go test -run='^$$' -bench=. -benchmem -benchtime=$(BENCHTIME) $(TEST_PKGS)
 
 # Duration each fuzz target runs. Override with FUZZTIME=... (e.g. FUZZTIME=5m).
+# Same minimum as coverage-min in ci.yml.
+COVER_MIN := 95
 FUZZTIME ?= 30s
 fuzz: ## Run back-to-back fuzz targets for FUZZTIME each (default 30s)
 	@echo "Fuzzing (FUZZTIME=$(FUZZTIME))"
@@ -145,6 +147,22 @@ interop: test-interop ## Alias for test-interop
 cover: coverage ## Open coverage report in browser
 	@echo "Opening coverage report"
 	@go tool cover -html=coverage.out
+
+coverage-check: coverage ## Fail when total coverage is below COVER_MIN
+	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%","",$$3); print $$3}'); \
+	awk -v t="$$total" -v m="$(COVER_MIN)" 'BEGIN { if (t+0 < m+0) { printf "coverage %.1f%% < %s%%\n", t, m; exit 1 } else printf "coverage %.1f%% >= %s%%\n", t, m }'
+
+CROSS_PLATFORMS := linux/amd64 linux/arm64 linux/arm darwin/arm64 windows/amd64
+
+cross: ## Cross-compile without cgo for the supported platforms
+	@for p in $(CROSS_PLATFORMS); do \
+		echo "Building for $$p"; \
+		CGO_ENABLED=0 GOOS=$${p%/*} GOARCH=$${p#*/} go build ./... || exit 1; \
+		(cd $(CLI_DIR) && CGO_ENABLED=0 GOOS=$${p%/*} GOARCH=$${p#*/} go build -o /dev/null ./...) || exit 1; \
+	done
+
+e2e: ## End-to-end suite: public client against this module's server over loopback (TestE2E_*)
+	@go test -count=1 -race -run '^TestE2E_' .
 
 check: fmt fmt-check lint lint-ci vet vuln test coverage ## Run format + lint + vet + vuln + test
 
