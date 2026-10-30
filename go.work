@@ -1,0 +1,9 @@
+// The go-binary-release workflow builds main-path from the repository root;
+// this workspace lets it reach the nested CLI module (ADR-0009). The Makefile
+// sets GOWORK=off and builds inside cmd/modbus-cli.
+go 1.23
+
+use (
+	.
+	./cmd/modbus-cli
+)
