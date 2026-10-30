@@ -134,8 +134,10 @@ func (h *Handler) HandleInputRegisters(ctx context.Context, req *modbus.InputReg
 }
 
 // Start serves h over Modbus TCP on a loopback port until tb ends and
-// returns an open client for it. The client is closed when tb ends.
-func Start(tb testing.TB, h modbus.RequestHandler) *modbus.Client {
+// returns an open client for it. The client is closed when tb ends. Each
+// configure function may change the client's configuration before it is
+// created.
+func Start(tb testing.TB, h modbus.RequestHandler, configure ...func(*modbus.Config)) *modbus.Client {
 	tb.Helper()
 	var (
 		srv *modbus.Server
@@ -161,7 +163,11 @@ func Start(tb testing.TB, h modbus.RequestHandler) *modbus.Client {
 	}
 	tb.Cleanup(func() { _ = srv.Stop() })
 
-	client, err := modbus.New(modbus.Config{URL: url, Timeout: 10 * time.Second, Logger: modbus.NopLogger()})
+	cfg := modbus.Config{URL: url, Timeout: 10 * time.Second, Logger: modbus.NopLogger()}
+	for _, f := range configure {
+		f(&cfg)
+	}
+	client, err := modbus.New(cfg)
 	if err != nil {
 		tb.Fatalf("benchserver: New: %v", err)
 	}

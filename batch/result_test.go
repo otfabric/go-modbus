@@ -166,6 +166,28 @@ func TestDecode_Bits(t *testing.T) {
 	}
 }
 
+func TestDecode_SplitBitItem(t *testing.T) {
+	p, err := batch.Compile([]batch.Item{item("coils", 1, fc01, 0, 5)}, batch.Options{MaxBits: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bits := []bool{true, false, false, true, true}
+	res, err := p.Decode([]batch.WindowData{{Bits: bits[:2]}, {Bits: bits[2:4]}, {Bits: bits[4:]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ir := res.Items[0]; ir.State != batch.OK || !reflect.DeepEqual(ir.Bits, bits) {
+		t.Errorf("item = %+v, want bits %v", ir, bits)
+	}
+	res, err = p.Decode([]batch.WindowData{{Bits: bits[:2]}, {Err: modbus.ErrRequestTimedOut}, {Err: batch.ErrNotAttempted}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ir := res.Items[0]; ir.State != batch.Failed || !reflect.DeepEqual(ir.Bits, bits[:2]) {
+		t.Errorf("item = %+v, want Failed with the first two bits", ir)
+	}
+}
+
 func TestDecode_OverlapAndGap(t *testing.T) {
 	p, err := batch.Compile([]batch.Item{
 		item("a", 1, fc03, 100, 4),
