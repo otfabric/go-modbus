@@ -3,6 +3,8 @@
 package batch_test
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/otfabric/go-modbus"
@@ -96,4 +98,63 @@ func BenchmarkDecode(b *testing.B) {
 			})
 		}
 	}
+}
+
+// BenchmarkExecute reads every read set through a plan against benchserver,
+// at every delay of benchserver.Delays. Compare it with BenchmarkReadEach in
+// the root package, which makes the same reads one request each.
+func BenchmarkExecute(b *testing.B) {
+	for _, delay := range benchserver.Delays {
+		h := &benchserver.Handler{Delay: delay}
+		c := benchserver.Start(b, h)
+		for _, set := range benchserver.ReadSets() {
+			items := setItems(set)
+			for _, st := range strategies {
+				b.Run(fmt.Sprintf("delay=%v/%s/%s", delay, set.Name, st.name), func(b *testing.B) {
+					p, err := batch.Compile(items, st.opts)
+					if err != nil {
+						b.Fatal(err)
+					}
+					ctx := context.Background()
+					b.ReportAllocs()
+					h.Reset()
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						if _, err := p.Execute(ctx, c); err != nil {
+							b.Fatal(err)
+						}
+					}
+					b.StopTimer()
+					h.ReportMetrics(b)
+				})
+			}
+		}
+	}
+}
+
+// BenchmarkExecuteOverhead compares a one-item plan with the direct request
+// it makes, on loopback: the difference is the cost of Execute itself.
+func BenchmarkExecuteOverhead(b *testing.B) {
+	c := benchserver.Start(b, &benchserver.Handler{})
+	ctx := context.Background()
+	b.Run("ReadRegisters", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := c.ReadRegisters(ctx, 1, 100, 2, modbus.HoldingRegister); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("Execute", func(b *testing.B) {
+		p, err := batch.Compile([]batch.Item{item("a", 1, fc03, 100, 2)}, batch.Options{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := p.Execute(ctx, c); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

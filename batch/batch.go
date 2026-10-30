@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// Package batch plans and decodes sets of Modbus reads.
+// Package batch plans, executes and decodes sets of Modbus reads.
 //
 // A batch is a list of named read items. Compile validates the items and
 // groups them into windows: the read requests that cover them, each within
@@ -9,10 +9,12 @@
 // unrequested addresses happens only when Options.MaxGap allows it.
 //
 // A Plan is immutable and safe for concurrent use. It can be inspected
-// without I/O (Windows, Stats, FunctionCodes), and Decode turns the data of
-// its windows into per-item results, with an explicit State for every
-// window and item. The package does not schedule, cache or retry: a batch is
-// planned once and run when the caller decides.
+// without I/O (Windows, Stats, FunctionCodes). Execute reads its windows
+// one after another through a Reader such as *modbus.Client, and Decode
+// turns captured window data into the same result: per-item results, with
+// an explicit State for every window and item, kept when a batch fails
+// part-way. The package does not schedule, cache, retry or start
+// goroutines: a batch is planned once and run when the caller decides.
 package batch
 
 import (
@@ -60,6 +62,11 @@ type Options struct {
 	// Boundaries are addresses no window may span, for devices that reject
 	// reads across internal blocks.
 	Boundaries []Boundary
+	// ContinueOnTransportError makes Execute go on with the next window
+	// after a transport error (a timeout, a broken connection, a protocol
+	// error) instead of ending the batch. A cancelled or expired context
+	// always ends it. The planner ignores it.
+	ContinueOnTransportError bool
 }
 
 // Boundary separates two address blocks of one unit and address space: no
