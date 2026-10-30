@@ -2479,7 +2479,7 @@ For a batch of reads over several windows, bit reads included, see [§ 12](#12-b
 import "github.com/otfabric/go-modbus/batch"
 ```
 
-Package `batch` plans a set of named reads: it validates them and groups them into windows, the read requests that cover them. It generalizes the single-window [batch decode plan](#1111-batch-decode-plan) to many windows, several unit IDs and all four read function codes. A batch is planned once and has no timers, background goroutines or caches.
+Package `batch` plans a set of named reads and executes them: it validates them, groups them into windows, the read requests that cover them, and reads the windows one after another. It generalizes the single-window [batch decode plan](#1111-batch-decode-plan) to many windows, several unit IDs and all four read function codes. A batch is planned once and has no timers, background goroutines or caches.
 
 ```go
 type Item struct {
@@ -2496,6 +2496,8 @@ type Options struct {
     MaxRegisters uint16     // register window limit, 1..125; 0 = MaxReadRegisters
     MaxBits      uint16     // bit window limit, 1..2000; 0 = MaxReadCoils
     Boundaries   []Boundary // addresses no window may span
+
+    ContinueOnTransportError bool // Execute: go on after a transport error instead of stopping
 }
 
 type Boundary struct {
@@ -2511,6 +2513,14 @@ func (p *Plan) Windows() []Window
 func (p *Plan) FunctionCodes() []FunctionCode
 func (p *Plan) Stats() Stats
 func (p *Plan) Decode(data []WindowData) (*Result, error)
+func (p *Plan) Execute(ctx context.Context, r Reader) (*Result, error)
+
+// Reader is satisfied by *modbus.Client.
+type Reader interface {
+    ReadRegisters(ctx context.Context, unitID uint8, addr, quantity uint16, regType RegType) ([]uint16, error)
+    ReadCoils(ctx context.Context, unitID uint8, addr, quantity uint16) ([]bool, error)
+    ReadDiscreteInputs(ctx context.Context, unitID uint8, addr, quantity uint16) ([]bool, error)
+}
 ```
 
 **Planning.** `Compile` groups items by unit ID and function code and never merges different ones. Within a group it sweeps items in address order. An item joins the current window when it starts at most `MaxGap` addresses after the window's end, the merged window stays within the limit, and no boundary falls inside it. Contiguous, overlapping and duplicate items therefore share a window; with the default `MaxGap` of 0, no unrequested address is read. An item larger than the limit gets consecutive windows of its own. Windows are ordered by unit ID, function code and address, so the plan does not depend on the order of the items.
@@ -2519,7 +2529,32 @@ func (p *Plan) Decode(data []WindowData) (*Result, error)
 
 **Inspection.** A `Plan` is immutable and safe for concurrent use; its accessors return copies. `Windows` lists the requests (`UnitID`, `FC`, `Addr`, `Count`, the indexes of the `Items` served, and `Gap`, the registers or bits read that no item asked for). `Stats` counts requests, registers and bits, and request and response PDU bytes. `FunctionCodes` lists the codes the plan uses, for `Config.AllowedFunctionCodes`.
 
-**Results.** `Decode` builds the result from the data of each window (`WindowData`: `Registers` or `Bits`, or `Err`), for captures and tests. Every window and item gets a `State`:
+**Execution.** `Execute` reads the windows in plan order, one request after another on the calling goroutine, through the client's own read methods: each window is one ordinary request, with the client's timeout, retry policy, metrics and connection handling. It adds no retries, connections or goroutines of its own, and keeps no state between calls, so one plan may be executed repeatedly and from several goroutines. The windows are not an atomic snapshot: each `WindowResult` carries the `Started` and `Finished` time of its request, and `Result` those of the batch.
+
+What a failed window does to the rest of the batch depends on the error:
+
+| Error of a window | That window | Remaining windows |
+|---|---|---|
+| Modbus exception (`*ExceptionError`, gateway exceptions included) | `Failed` | read |
+| Refused by `Config.AllowedFunctionCodes` (`ErrFunctionCodeNotAllowed`); nothing is sent | `Failed` | read |
+| Timeout, lost connection, protocol error, wrong number of values | `Failed` | `NotAttempted`; read with `ContinueOnTransportError` |
+| Context cancelled or expired, before or during the window | `Failed` if in flight | `NotAttempted`, always |
+
+The context is checked before each window and cancels the request in flight. A window that was not attempted has an `Err` wrapping both `ErrNotAttempted` and the reason the batch stopped.
+
+`Execute` returns a nil error only when every window is `OK`; an item whose codec rejects its registers is `DecodeFailed` and does not change that. Otherwise it returns the complete result **and** an `*ExecError`:
+
+```go
+type ExecError struct {
+    Failed, NotAttempted, Total int // window counts
+    First error                     // error of the first Failed window
+    Stop  error                     // why the remaining windows were not attempted; nil if all were
+}
+```
+
+`errors.Is(err, batch.ErrIncomplete)` matches any `*ExecError`, and `errors.Is` also matches `First` and `Stop`: `errors.Is(err, modbus.ErrIllegalDataAddress)`, `errors.Is(err, context.Canceled)`. A nil `Reader` returns a nil result and a `*ValidationError`.
+
+**Results.** `Execute` and `Decode` return the same `Result`. `Decode` builds it from the data of each window (`WindowData`: `Registers` or `Bits`, or `Err`), for captures and tests. Every window and item gets a `State`:
 
 | State | Window | Item |
 |---|---|---|
@@ -2543,5 +2578,20 @@ for _, w := range plan.Windows() {
 }
 ```
 
-Executing a plan against a client is not part of this release.
+Executing it, and using the partial result of an incomplete batch:
+
+```go
+res, err := plan.Execute(ctx, client)
+if err != nil && !errors.Is(err, batch.ErrIncomplete) {
+    return err // a nil client
+}
+for _, it := range res.Items {
+    switch it.State {
+    case batch.OK:
+        fmt.Println(it.Name, it.Value, it.Registers, it.Bits)
+    default:
+        fmt.Println(it.Name, it.State, it.Err)
+    }
+}
+```
 

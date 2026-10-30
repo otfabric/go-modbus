@@ -1,5 +1,81 @@
 # go-modbus Releases
 
+## v1.8.0
+
+**Date:** 2026-10-30
+**Previous release:** v1.7.2
+
+## Summary
+
+New package `batch` plans and executes sets of named Modbus reads. It
+validates the items, groups them into the fewest read requests the protocol
+and device limits allow, reads those requests one after another on a client,
+and returns an explicit state for every request and every item. A batch that
+fails part-way still returns what it read. The package is synchronous: no
+timers, goroutines, caches, retries or scheduling of its own. The client and
+the wire format are unchanged.
+
+## Changes
+
+### Added
+
+- **Package `batch`** ([API.md § 12](API.md#12-batch-reads-package-batch)).
+  - `Compile(items, Options)` groups items by unit ID and function code
+    (FC01–FC04) into windows. Contiguous, overlapping and duplicate items
+    share a window. Merging across unrequested addresses is opt-in
+    (`MaxGap`). Window sizes are capped by `MaxRegisters` / `MaxBits`, and
+    `Boundaries` are addresses no window may span. Items larger than a window
+    are split. Invalid input is a `*ValidationError`, before any I/O.
+  - A `Plan` is immutable and safe for concurrent use: `Windows`, `Items`,
+    `Stats` (requests and PDU bytes) and `FunctionCodes` (for
+    `Config.AllowedFunctionCodes`).
+  - `Plan.Execute(ctx, Reader)` reads the windows sequentially through the
+    client's own read methods, so the client's timeout, retry policy, metrics
+    and connection handling apply to every window. `*modbus.Client`
+    satisfies `Reader`.
+    - A Modbus exception, or a refused function code, fails only its window.
+    - A timeout, transport error or protocol error ends the batch unless
+      `Options.ContinueOnTransportError` is set.
+    - A cancelled or expired context always ends it.
+  - Every window and item has a `State`: `OK`, `Failed`, `DecodeFailed` or
+    `NotAttempted`. An item split across windows keeps the part read before
+    a failure and is decoded only when complete. `Execute` returns a nil
+    error only when every window is OK; otherwise it returns the full result
+    with an `*ExecError` (matches `ErrIncomplete`, the first window error and
+    the reason the batch stopped).
+  - `Plan.Decode` builds the same result from captured window data.
+- **`MaxReadCoils`** and **`MaxReadRegisters`**: the protocol's read limits.
+
+### Performance
+
+Measured on loopback with a server delay per request, against one request per
+read (`BenchmarkReadEach`):
+
+| Reads | One request each | `batch` |
+|---|---|---|
+| 32 contiguous, 20 ms per request | 32 requests, 682 ms | 1 request, 21 ms |
+| 16 with 2-register gaps, `MaxGap: 2` | 16 requests | 1 request |
+| 22 on two units and three function codes | 22 requests | 3 requests |
+
+Planning takes about 2 µs. `Execute` adds about 1 µs and 5 allocations to a
+one-request plan.
+
+### Tests and tooling
+
+- Planner property tests, a brute-force optimality check and `FuzzCompile`.
+- End-to-end executor tests against a fault-injecting server: exceptions,
+  gateway exceptions, a timeout on the fourth of five windows, cancellation
+  and deadlines, `AllowedFunctionCodes`, and 32 goroutines sharing one plan
+  and client.
+- `make bench` and read benchmarks for the client, the single-window decode
+  plan and `batch`.
+
+### Unchanged
+
+- The client, the server and the wire format.
+
+---
+
 ## v1.7.2
 
 **Date:** 2026-10-29
