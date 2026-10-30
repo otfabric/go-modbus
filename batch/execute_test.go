@@ -692,3 +692,51 @@ func TestExecError(t *testing.T) {
 		t.Errorf("Error() = %q, want the stop reason", got)
 	}
 }
+
+// deadlineReader times out every request as a client does when the
+// context's deadline is reached, and waits for the deadline to pass but not
+// for the context to report it.
+type deadlineReader struct {
+	fakeReader
+	deadline time.Time
+}
+
+func (r *deadlineReader) ReadRegisters(ctx context.Context, unit uint8, addr, quantity uint16, rt modbus.RegType) ([]uint16, error) {
+	if r.n == 1 {
+		r.n++
+		time.Sleep(time.Until(r.deadline))
+		return nil, modbus.ErrRequestTimedOut
+	}
+	return r.fakeReader.ReadRegisters(ctx, unit, addr, quantity, rt)
+}
+
+// TestExecute_DeadlineBeforeContext checks that a deadline ends the batch
+// even when the request returns before the context reports it, with
+// ContinueOnTransportError set.
+func TestExecute_DeadlineBeforeContext(t *testing.T) {
+	p, err := batch.Compile([]batch.Item{item("a", 1, fc03, 0, 2), item("b", 1, fc03, 10, 2), item("c", 1, fc03, 20, 2)},
+		batch.Options{ContinueOnTransportError: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The context never expires on its own: only its deadline has passed.
+	deadline := time.Now().Add(20 * time.Millisecond)
+	ctx := deadlineCtx{context.Background(), deadline}
+	r := &deadlineReader{deadline: deadline}
+	res, err := p.Execute(ctx, r)
+	ee := execError(t, err)
+	if !errors.Is(ee.Stop, context.DeadlineExceeded) {
+		t.Errorf("Stop = %v, want context.DeadlineExceeded", ee.Stop)
+	}
+	if got, want := windowStates(res), []batch.State{batch.OK, batch.Failed, batch.NotAttempted}; !reflect.DeepEqual(got, want) {
+		t.Errorf("window states %v, want %v", got, want)
+	}
+}
+
+// deadlineCtx has a deadline but never reports it through Err or Done.
+type deadlineCtx struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c deadlineCtx) Deadline() (time.Time, bool) { return c.deadline, true }

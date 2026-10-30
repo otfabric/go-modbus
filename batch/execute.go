@@ -90,9 +90,7 @@ func (p *Plan) Execute(ctx context.Context, r Reader) (*Result, error) {
 		wr := WindowResult{Window: w}
 		wr.Items = append([]int(nil), w.Items...)
 		if stop == nil {
-			if err := ctx.Err(); err != nil {
-				stop = err
-			}
+			stop = ctxDone(ctx)
 		}
 		if stop != nil {
 			wr.State, wr.Err = NotAttempted, fmt.Errorf("%w: %w", ErrNotAttempted, stop)
@@ -119,8 +117,8 @@ func (p *Plan) Execute(ctx context.Context, r Reader) (*Result, error) {
 		if err != nil {
 			wr.State, wr.Err, wr.Registers, wr.Bits = Failed, err, nil, nil
 			switch {
-			case ctx.Err() != nil:
-				stop = ctx.Err()
+			case ctxDone(ctx) != nil:
+				stop = ctxDone(ctx)
 			case !windowOnly(err) && !p.continueOnTransportError:
 				stop = err
 			}
@@ -132,6 +130,19 @@ func (p *Plan) Execute(ctx context.Context, r Reader) (*Result, error) {
 	res.Items = p.itemResults(res.Windows)
 	res.Finished = time.Now()
 	return res, executeError(res.Windows, stop)
+}
+
+// ctxDone returns the context's error, or context.DeadlineExceeded once its
+// deadline has passed: a client can report a request that reached the
+// deadline as timed out a moment before the context itself expires.
+func ctxDone(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if d, ok := ctx.Deadline(); ok && !time.Now().Before(d) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // windowOnly reports whether err concerns only the request that returned
