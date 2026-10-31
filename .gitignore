@@ -13,3 +13,15 @@ coverage.*
 # MacOS
 .DS_Store
 /cmd/modbus-cli/modbus-cli
+
+# Build artefacts live in /bin/ and /release/ (otfabric/engineering REPO-005)
+/release/
+*.test
+coverage.out
+
+# Output of a bare `go build`, anchored so it can never hide a source folder
+/examples/codec_read/codec_read
+/examples/sunspec_detect/sunspec_detect
+/examples/tcp_server/tcp_server
+/examples/tls_client/tls_client
+/examples/tls_server/tls_server

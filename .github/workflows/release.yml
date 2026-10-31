@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   release-package:
-    uses: otfabric/.github/.github/workflows/go-package-release.yml@v3.2.0
+    uses: otfabric/.github/.github/workflows/go-package-release.yml@v3.3.0
     with:
       bump: ${{ inputs.bump }}
       release-name-prefix: go-modbus
@@ -29,7 +29,7 @@ jobs:
 
   release-modbus-cli-binary:
     needs: release-package
-    uses: otfabric/.github/.github/workflows/go-binary-release.yml@v3.2.0
+    uses: otfabric/.github/.github/workflows/go-binary-release.yml@v3.3.0
     with:
       bump: none
       binary-name: modbus-cli
