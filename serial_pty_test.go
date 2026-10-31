@@ -19,7 +19,18 @@ import (
 // These tests exercise the serial port wrapper and the serial client
 // transports against a pseudo-terminal: the client opens the slave side like a
 // real serial device while the test plays the remote device on the master
-// side. They are skipped when no pseudo-terminal can be allocated.
+// side. They are skipped when no pseudo-terminal can be allocated, unless
+// MODBUS_REQUIRE_PTY=1 makes that a failure (the serial job in ci.yml sets it).
+
+// skipNoPTY skips a test that needs a pseudo-terminal, or fails it when
+// MODBUS_REQUIRE_PTY=1 says this machine must have one.
+func skipNoPTY(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("MODBUS_REQUIRE_PTY") == "1" {
+		t.Fatalf("MODBUS_REQUIRE_PTY=1: "+format, args...)
+	}
+	t.Skipf("set MODBUS_REQUIRE_PTY=1 to fail instead: "+format, args...)
+}
 
 // openTestPTY returns the master side of a fresh pseudo-terminal and the
 // device path of its slave side.
@@ -27,12 +38,12 @@ func openTestPTY(t *testing.T) (master *os.File, slavePath string) {
 	t.Helper()
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {
-		t.Skipf("no pseudo-terminal available: %v", err)
+		skipNoPTY(t, "no pseudo-terminal available: %v", err)
 	}
 	slavePath, err = ptySlavePath(master)
 	if err != nil {
 		_ = master.Close()
-		t.Skipf("cannot resolve pseudo-terminal slave: %v", err)
+		skipNoPTY(t, "cannot resolve pseudo-terminal slave: %v", err)
 	}
 	t.Cleanup(func() { _ = master.Close() })
 	return master, slavePath
@@ -45,7 +56,7 @@ func openPTYSerial(t *testing.T) (*serialPortWrapper, *os.File) {
 	master, slavePath := openTestPTY(t)
 	spw := newSerialPortWrapper(&serialPortConfig{Device: slavePath, Speed: 19200, DataBits: 8, StopBits: 1})
 	if err := spw.Open(); err != nil {
-		t.Skipf("serial port cannot be opened on a pseudo-terminal here: %v", err)
+		skipNoPTY(t, "serial port cannot be opened on a pseudo-terminal here: %v", err)
 	}
 	t.Cleanup(func() { _ = spw.Close() })
 	return spw, master
@@ -181,7 +192,7 @@ func TestRTUClient_OverPTY(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	if err := c.Open(); err != nil {
-		t.Skipf("serial port cannot be opened on a pseudo-terminal here: %v", err)
+		skipNoPTY(t, "serial port cannot be opened on a pseudo-terminal here: %v", err)
 	}
 	defer func() { _ = c.Close() }()
 	if info := c.Info(); !info.IsOpen || info.Transport != TransportRTU || info.Endpoint != slavePath || info.PoolEnabled {
@@ -236,7 +247,7 @@ func TestRTUClient_OverPTY_Timeout(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	if err := c.Open(); err != nil {
-		t.Skipf("serial port cannot be opened on a pseudo-terminal here: %v", err)
+		skipNoPTY(t, "serial port cannot be opened on a pseudo-terminal here: %v", err)
 	}
 	defer func() { _ = c.Close() }()
 
@@ -259,7 +270,7 @@ func TestASCIIClient_OverPTY(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	if err := c.Open(); err != nil {
-		t.Skipf("serial port cannot be opened on a pseudo-terminal here: %v", err)
+		skipNoPTY(t, "serial port cannot be opened on a pseudo-terminal here: %v", err)
 	}
 	defer func() { _ = c.Close() }()
 	if info := c.Info(); !info.IsOpen || info.Transport != TransportASCII {

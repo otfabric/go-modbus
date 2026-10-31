@@ -1,0 +1,75 @@
+# Extended tier (otfabric/engineering standards/testing.md#ci-tiers): long
+# fuzzing, and the chaos and stress tests in soak mode. The interop suite is
+# not repeated here: it runs on every push against pinned images.
+#
+# A chaos failure logs its seed: MODBUS_CHAOS_SEED=<seed> replays it. A fuzz
+# failure leaves its input in the artifact: commit it with the fix.
+name: Nightly
+run-name: "Nightly on ${{ github.ref_name }}"
+
+on:
+  schedule:
+    - cron: "11 2 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzz-time:
+        description: Time per fuzz target
+        required: false
+        default: 5m
+      soak-time:
+        description: Time per chaos and stress scenario set
+        required: false
+        default: 30m
+
+permissions:
+  contents: read
+
+env:
+  GOPRIVATE: github.com/otfabric/*
+
+jobs:
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      # Stable, as in go-ci: Go 1.26's fuzz coordinator has a race.
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+      - run: make fuzz FUZZTIME=${{ inputs.fuzz-time || '5m' }}
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-corpus-nightly
+          path: "**/testdata/fuzz/"
+
+  soak:
+    name: Chaos and stress soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+      - run: make soak SOAKTIME=${{ inputs.soak-time || '30m' }}
