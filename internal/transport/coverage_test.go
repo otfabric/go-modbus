@@ -72,14 +72,10 @@ func TestRTUReadVariableLengthDiagnostics(t *testing.T) {
 	payload := []byte{0x00, 0x00, 0x12, 0x34}
 	frame := adu.AssembleRTUFrame(0x01, byte(protocol.FCDiagnostics), payload)
 
-	go func() {
-		// Feed the frame byte by byte with small delay to allow the
-		// variable-length reader to accumulate bytes then time out.
-		for _, b := range frame {
-			_, _ = p1.Write([]byte{b})
-			time.Sleep(50 * time.Microsecond)
-		}
-	}()
+	// One write: the pipe hands the bytes over as the reader asks for them, so
+	// a slow runner cannot open a gap of t3.5 inside the frame. The reader
+	// then times out after the last byte.
+	go func() { _, _ = p1.Write(frame) }()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
 	res, err := rt.readRTUFrame()
