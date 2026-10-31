@@ -39,6 +39,31 @@ jobs:
       go-versions: '["1.23", "1.24", "1.25", "1.26"]'
     secrets: inherit
 
+  # The per-package coverage floor (TEST-012). This job also holds the
+  # prerequisite of the serial transport tests, so MODBUS_REQUIRE_PTY turns a
+  # test that would skip into a failure.
+  coverage-packages:
+    name: Per-package coverage
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/otfabric/*
+      MODBUS_REQUIRE_PTY: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+      - run: make coverage-pkg-check
+
   # Extended fuzz run of the back-to-back conformance suite. Opt-in: only runs
   # on a manual dispatch with "Run the extended fuzz job" enabled (default off).
   # Seed corpora also run as unit tests in the `ci` job above.

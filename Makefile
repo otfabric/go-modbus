@@ -2,7 +2,7 @@
 # This will output the help for each task
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
-.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak check clean interop test-interop coverage-check cross e2e
+.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak check clean interop test-interop coverage-check cross e2e coverage-pkg-check
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
@@ -117,11 +117,14 @@ bench: ## Run the read-strategy benchmarks (requests/op, pdu-bytes/op, time, all
 # Duration each fuzz target runs. Override with FUZZTIME=... (e.g. FUZZTIME=5m).
 # Same minimum as coverage-min in ci.yml.
 COVER_MIN := 95
+# Per-package floor (TEST-012): what the weakest package measures now, rounded down.
+COVER_PKG_MIN := 90
 FUZZTIME ?= 30s
 fuzz: ## Run back-to-back fuzz targets for FUZZTIME each (default 30s)
 	@echo "Fuzzing (FUZZTIME=$(FUZZTIME))"
 	@go test -run='^$$' -fuzz='^FuzzServerRequest$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzClientResponseParse$$' -fuzztime=$(FUZZTIME) .
+	@go test -run='^$$' -fuzz='^FuzzServerFunctions$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzCompile$$' -fuzztime=$(FUZZTIME) ./batch
 
 # Duration the chaos and the stress tests each keep looping in soak mode. Override with
@@ -164,7 +167,12 @@ cross: ## Cross-compile without cgo for the supported platforms
 e2e: ## End-to-end suite: public client against this module's server over loopback (TestE2E_*)
 	@go test -count=1 -race -run '^TestE2E_' .
 
-check: fmt fmt-check lint lint-ci vet vuln test coverage ## Run format + lint + vet + vuln + test
+coverage-pkg-check: coverage ## Fail when a package is below COVER_PKG_MIN
+	@awk -v m="$(COVER_PKG_MIN)" 'NR > 1 { n[$$1] = $$2; if ($$3 > 0) h[$$1] = 1 } \
+	END { for (k in n) { p = k; sub(/\/[^\/]*$$/, "", p); s[p] += n[k]; if (k in h) c[p] += n[k] } \
+	for (p in s) { v = 100 * c[p] / s[p]; if (v < m) { printf "%s: %.1f%% < %s%%\n", p, v, m; bad = 1 } } exit bad }' coverage.out
+
+check: fmt fmt-check lint lint-ci vet vuln test coverage-pkg-check ## Run format + lint + vet + vuln + test
 
 clean: ## Remove generated binaries
 	@echo "Cleaning up"

@@ -64,6 +64,68 @@ if err != nil {
 }
 ```
 
+## Sentinels
+
+Every exported sentinel of the module. All match through `errors.Is`, including
+through a typed error or a wrapping `fmt.Errorf`.
+
+### Exception sentinels
+
+The peer answered with an exception PDU; `*ExceptionError` wraps the sentinel of
+the code. A `RequestHandler` returns the same sentinels to make the server answer
+with that exception.
+
+| Sentinel | Code | Meaning |
+|---|---|---|
+| `ErrIllegalFunction` | 0x01 | The unit does not serve this function code |
+| `ErrIllegalDataAddress` | 0x02 | The address range does not exist on the unit |
+| `ErrIllegalDataValue` | 0x03 | A value in the request is not acceptable. The server also answers with it when a request's quantity or byte count is out of range |
+| `ErrServerDeviceFailure` | 0x04 | The unit failed while performing the action. The server answers with it when a handler returns an unmapped error or a response that does not fit |
+| `ErrAcknowledge` | 0x05 | The unit accepted a long-running request and is still processing it |
+| `ErrServerDeviceBusy` | 0x06 | The unit is busy; send the request again later |
+| `ErrMemoryParityError` | 0x08 | The unit found a parity error reading extended file memory |
+| `ErrGWPathUnavailable` | 0x0A | A gateway has no path to the target unit |
+| `ErrGWTargetFailedToRespond` | 0x0B | A gateway got no answer from the target unit. `Probe*` treats it like a timeout |
+
+### Framing and response validation
+
+These mean the response on the link could not be trusted. None is retried by the
+built-in retry policies. `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` and
+`ErrProtocolError` are described in the quick reference above.
+
+| Sentinel | Meaning |
+|---|---|
+| `ErrBadUnitID` | The response carries a different unit ID from the request |
+| `ErrBadTransactionID` | MBAP responses kept arriving with the wrong transaction ID. Single mismatches are logged and skipped; this is returned when mismatches and unknown protocol IDs together reach the anomaly limit of the request |
+| `ErrUnknownProtocolID` | MBAP frames kept arriving with a protocol ID other than 0, up to the same limit |
+| `ErrInvalidMBAPLength` | A received MBAP length field is outside the valid range, or a request's payload would not fit an MBAP length |
+
+### Transport and server
+
+| Sentinel | Meaning |
+|---|---|
+| `ErrSerialPortNotOpen` | A read or write on a serial port that was never opened or was closed. The client treats it as a lost link |
+| `ErrNoResponse` | Returned **by a `RequestHandler`**, not by the client: the server sends nothing and keeps the connection, so the client runs into its timeout. It models a silent device |
+
+### SunSpec discovery
+
+| Sentinel | Meaning |
+|---|---|
+| `ErrSunSpecModelChainInvalid` | The chain cannot exist: a model runs past register 0xFFFF, leaves no room for the next header, or has length 0 without being the end model. Models read before the fault are returned with it |
+| `ErrSunSpecModelChainLimitExceeded` | The chain passed `MaxAddressSpan`. Models read so far are returned with it |
+
+### Package `codec`
+
+| Sentinel | Meaning |
+|---|---|
+| `codec.ErrCodecRegisterCount` | The register slice has the wrong length for the codec (also unwrapped from `*codec.CodecRegisterCountError`). A batch decode item whose window is too short reports it too |
+| `codec.ErrCodecLayout` | The layout is not valid for the codec, or a descriptor has none (`*codec.CodecLayoutError`) |
+| `codec.ErrCodecValue` | The value cannot be encoded or decoded, or a codec parameter is out of range (`*codec.CodecValueError`) |
+| `codec.ErrCodecByteCount` | The byte slice has the wrong length for the codec (`*codec.CodecByteCountError`) |
+| `codec.ErrUnknownCodec` | The registry has no codec with this ID, or a decimal limb order in the ID is not known |
+| `codec.ErrEncodingError` | The input to a byte permutation has the wrong length |
+| `codec.ErrInvalidLayout` | `NewRegisterLayout` got a register count outside 1..4, the wrong number of positions, or an out-of-range or repeated position |
+
 ## Categories
 
 | Category | Type | Match with |
