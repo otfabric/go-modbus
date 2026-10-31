@@ -12,3 +12,4 @@ coverage.*
 
 # MacOS
 .DS_Store
+/cmd/modbus-cli/modbus-cli
