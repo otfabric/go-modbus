@@ -1,64 +1,70 @@
 name: Self-interop
-run-name: "Self-interop (${{ github.event_name }}) on ${{ github.ref_name }}"
+run-name: "Self-interop against modbus-interop-otfabric:latest, by @${{ github.actor }} on ${{ github.ref_name }}"
 
-# This commit against the newest published image of go-modbus itself
-# (ghcr.io/otfabric/modbus-interop-otfabric, from otfabric/modbus-interop), in both
-# roles. The e2e tests run both sides from one commit; this one finds a change
-# on the wire that breaks an earlier release.
+# Manual only. This commit against the latest published image of go-modbus itself
+# (ghcr.io/otfabric/modbus-interop-otfabric:latest, from otfabric/modbus-interop),
+# in both roles. The e2e tests run both sides from one commit; this one finds a
+# change on the wire that breaks an earlier release.
 #
-# Never a required check, and no release waits for it. It looks the image up
-# when it runs and nothing is committed back: there is no pin to bump, so
-# publishing an image can never ask for a go-modbus release. A pass is not
-# independent verification (INTEROPERABILITY.md).
+# Not part of the Interop workflow, which runs against the independent references,
+# and never a required check. Nothing is pinned or committed, so it cannot ask for
+# a release. A pass is not independent verification (INTEROPERABILITY.md).
 on:
-  schedule:
-    - cron: "40 4 * * *"
   workflow_dispatch:
-    inputs:
-      image:
-        description: "Image to test against (default: the newest published)"
-        required: false
 
 permissions:
   contents: read
 
+env:
+  IMAGE: ghcr.io/otfabric/modbus-interop-otfabric:latest
+
 jobs:
   self-interop:
-    name: This commit against the newest release
+    name: This commit against modbus-interop-otfabric:latest
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
-      - name: Find the image
-        id: image
+      - name: Pull the image
+        run: docker pull "${IMAGE}"
+
+      - name: Versions
+        id: versions
         env:
-          REQUESTED: ${{ inputs.image }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
         run: |
-          image="${REQUESTED}"
-          if [ -z "${image}" ]; then
-            # Without the commit, which does not sort by age: the tag of the version
-            # itself is its newest build.
-            tag=$(git ls-remote --tags --refs https://github.com/otfabric/modbus-interop.git 'modbus-interop-otfabric/v*' \
-              | sed -e 's,.*refs/tags/modbus-interop-otfabric/,,' -e 's/-[0-9a-f]*$//' | sort -V | tail -1)
-            if [ -z "${tag}" ]; then
-              echo "::notice::No modbus-interop-otfabric image is published yet: nothing to test against."
-              exit 0
-            fi
-            image="ghcr.io/otfabric/modbus-interop-otfabric:${tag}"
-          fi
-          docker pull --quiet "${image}"
-          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${image}")
-          echo "image=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Against \`${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Versions"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| go-modbus under test | \`${REF}\` at \`${SHA}\` (\`$(git describe --tags --always)\`) |"
+            echo "| Go | \`$(go env GOVERSION)\` |"
+            echo "| Image | \`${IMAGE}\` |"
+            echo "| Image digest | \`${digest}\` |"
+            echo "| Image reports | \`$(docker run --rm "${IMAGE}" version)\` |"
+            docker run --rm "${IMAGE}" print-capabilities | jq -r '"| go-modbus in the image | `\(.upstream.version)` at `\(.upstream.revision)` |"'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Run the interop suite
-        if: steps.image.outputs.image != ''
         env:
-          MODBUS_INTEROP_OTFABRIC_IMAGE: ${{ steps.image.outputs.image }}
+          MODBUS_INTEROP_OTFABRIC_IMAGE: ${{ steps.versions.outputs.digest }}
           MODBUS_INTEROP_ADAPTERS: otfabric
-        run: GOWORK=off go test -tags interop -count=1 -timeout 25m ./interop/
+        run: |
+          set -o pipefail
+          GOWORK=off go test -v -tags interop -count=1 -timeout 25m ./interop/ 2>&1 | tee interop.log
+          {
+            echo "## Result"
+            echo
+            echo "- $(grep -c -- '--- PASS' interop.log) passed, $(grep -c -- '--- SKIP' interop.log) skipped, $(grep -c -- '--- FAIL' interop.log) failed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
