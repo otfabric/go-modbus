@@ -124,7 +124,7 @@ MODBUS_INTEROP_ADAPTERS=pymodbus make interop
 make interop MODBUS_INTEROP_PYMODBUS_IMAGE=ghcr.io/otfabric/modbus-interop-pymodbus:dev
 
 # Against a released go-modbus (the Self-interop workflow, never required)
-MODBUS_INTEROP_ADAPTERS=otfabric MODBUS_INTEROP_OTFABRIC_IMAGE=ghcr.io/otfabric/otfabric-go-modbus:<tag> make interop
+MODBUS_INTEROP_ADAPTERS=otfabric MODBUS_INTEROP_OTFABRIC_IMAGE=ghcr.io/otfabric/modbus-interop-otfabric:<tag> make interop
 ```
 
 A change to what is sent to or accepted from a peer (framing, request validation, exception responses, FC43 paging) must keep `make interop` green. When go-modbus and a reference stack disagree, the specification decides, not the test: fix go-modbus if it is wrong, and if the other stack is, say so in a comment that names the stack and its version and keep the exception as narrow as the one request it is about. `make vet`, `make lint` and `make lint-ci` compile and lint the package (they pass `-tags=interop`); gopls needs `-tags=interop` in `buildFlags` to do the same.
