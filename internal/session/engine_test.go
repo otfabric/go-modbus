@@ -127,6 +127,39 @@ func TestEngine_Execute_Success(t *testing.T) {
 	}
 }
 
+// A response that arrives once Close has begun, as one can over TLS, where the
+// peer learns of the close before the connection is closed.
+func TestEngine_Execute_ResponseDuringClose(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"single", Config{}},
+		{"pool", Config{UsePool: true, MinConns: 1, MaxConns: 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var e *Engine
+			cfg := tc.cfg
+			cfg.Dial = func() (Transport[*adu.Request, *adu.Response], error) {
+				return &mockTransport{execFn: func(_ context.Context, req *adu.Request) (*adu.Response, error) {
+					if err := e.Close(); err != nil {
+						t.Errorf("Close: %v", err)
+					}
+					return &adu.Response{UnitID: req.UnitID, FunctionCode: req.FunctionCode}, nil
+				}}, nil
+			}
+			e = NewEngine(cfg)
+			if err := e.Open(); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			res, err := e.Execute(context.Background(), &adu.Request{UnitID: 1, FunctionCode: 0x03})
+			if res != nil || !errors.Is(err, protocol.ErrClientNotOpen) {
+				t.Errorf("Execute: res=%v err=%v, want ErrClientNotOpen", res, err)
+			}
+		})
+	}
+}
+
 func TestEngine_Execute_NotOpen(t *testing.T) {
 	dial := func() (Transport[*adu.Request, *adu.Response], error) {
 		return &mockTransport{}, nil
