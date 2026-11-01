@@ -2,7 +2,7 @@ name: Self-interop
 run-name: "Self-interop (${{ github.event_name }}) on ${{ github.ref_name }}"
 
 # This commit against the newest published image of go-modbus itself
-# (ghcr.io/otfabric/otfabric-go-modbus, from otfabric/modbus-interop), in both
+# (ghcr.io/otfabric/modbus-interop-otfabric, from otfabric/modbus-interop), in both
 # roles. The e2e tests run both sides from one commit; this one finds a change
 # on the wire that breaks an earlier release.
 #
@@ -41,13 +41,13 @@ jobs:
         run: |
           image="${REQUESTED}"
           if [ -z "${image}" ]; then
-            tag=$(git ls-remote --tags --refs https://github.com/otfabric/modbus-interop.git 'otfabric-go-modbus/v*' \
-              | sed 's,.*refs/tags/otfabric-go-modbus/,,' | sort -V | tail -1)
+            tag=$(git ls-remote --tags --refs https://github.com/otfabric/modbus-interop.git 'modbus-interop-otfabric/v*' \
+              | sed 's,.*refs/tags/modbus-interop-otfabric/,,' | sort -V | tail -1)
             if [ -z "${tag}" ]; then
-              echo "::notice::No otfabric-go-modbus image is published yet: nothing to test against."
+              echo "::notice::No modbus-interop-otfabric image is published yet: nothing to test against."
               exit 0
             fi
-            image="ghcr.io/otfabric/otfabric-go-modbus:${tag}"
+            image="ghcr.io/otfabric/modbus-interop-otfabric:${tag}"
           fi
           docker pull --quiet "${image}"
           digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${image}")
