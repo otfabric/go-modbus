@@ -1,0 +1,62 @@
+name: Self-interop
+run-name: "Self-interop (${{ github.event_name }}) on ${{ github.ref_name }}"
+
+# This commit against the newest published image of go-modbus itself
+# (ghcr.io/otfabric/otfabric-go-modbus, from otfabric/modbus-interop), in both
+# roles. The e2e tests run both sides from one commit; this one finds a change
+# on the wire that breaks an earlier release.
+#
+# Never a required check, and no release waits for it. It looks the image up
+# when it runs and nothing is committed back: there is no pin to bump, so
+# publishing an image can never ask for a go-modbus release. A pass is not
+# independent verification (INTEROPERABILITY.md).
+on:
+  schedule:
+    - cron: "40 4 * * *"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Image to test against (default: the newest published)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  self-interop:
+    name: This commit against the newest release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Find the image
+        id: image
+        env:
+          REQUESTED: ${{ inputs.image }}
+        run: |
+          image="${REQUESTED}"
+          if [ -z "${image}" ]; then
+            tag=$(git ls-remote --tags --refs https://github.com/otfabric/modbus-interop.git 'otfabric-go-modbus/v*' \
+              | sed 's,.*refs/tags/otfabric-go-modbus/,,' | sort -V | tail -1)
+            if [ -z "${tag}" ]; then
+              echo "::notice::No otfabric-go-modbus image is published yet: nothing to test against."
+              exit 0
+            fi
+            image="ghcr.io/otfabric/otfabric-go-modbus:${tag}"
+          fi
+          docker pull --quiet "${image}"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${image}")
+          echo "image=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Against \`${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the interop suite
+        if: steps.image.outputs.image != ''
+        env:
+          MODBUS_INTEROP_OTFABRIC_IMAGE: ${{ steps.image.outputs.image }}
+          MODBUS_INTEROP_ADAPTERS: otfabric
+        run: GOWORK=off go test -tags interop -count=1 -timeout 25m ./interop/

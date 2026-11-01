@@ -51,6 +51,11 @@ const (
 	digitalpetri = "digitalpetri"
 	nmodbus      = "nmodbus"
 	tokiomodbus  = "tokiomodbus"
+	// otfabric is go-modbus itself, as published by otfabric/modbus-interop. It
+	// is not a reference: it runs only when MODBUS_INTEROP_OTFABRIC_IMAGE names
+	// an image, and what it shows is compatibility between releases of this
+	// library, not independent verification.
+	otfabric = "otfabric"
 )
 
 var defaultImages = []adapter{
@@ -68,6 +73,8 @@ var defaultImages = []adapter{
 //	MODBUS_INTEROP_DIGITALPETRI_IMAGE, MODBUS_INTEROP_NMODBUS_IMAGE,
 //	MODBUS_INTEROP_TOKIOMODBUS_IMAGE
 //
+// MODBUS_INTEROP_OTFABRIC_IMAGE adds a released go-modbus (see [otfabric]).
+//
 // MODBUS_INTEROP_ADAPTERS restricts the run to a comma-separated subset.
 //
 // The references do not all support the same: a test asks the image what it
@@ -77,6 +84,9 @@ func adapters(t testing.TB) []adapter {
 	all := make([]adapter, len(defaultImages))
 	for i, a := range defaultImages {
 		all[i] = adapter{a.name, getenv("MODBUS_INTEROP_"+strings.ToUpper(a.name)+"_IMAGE", a.image)}
+	}
+	if image := os.Getenv("MODBUS_INTEROP_OTFABRIC_IMAGE"); image != "" {
+		all = append(all, adapter{otfabric, image})
 	}
 	only := os.Getenv("MODBUS_INTEROP_ADAPTERS")
 	if only == "" {
