@@ -1,5 +1,20 @@
 # go-modbus Releases
 
+## v1.10.4
+
+**Date:** 2026-11-01
+**Previous release:** v1.10.3
+
+### Fixed
+
+- `Client.Close`: a response that arrives once `Close` has begun now gives `ErrClientNotOpen`, as documented. It could reach the caller when the peer answered during the close, which a TLS connection allows because it tells the peer before closing the socket.
+
+### Changed
+
+- Interop runs against modbus-interop v0.3.2. The upstream versions of the references are unchanged.
+
+---
+
 ## v1.10.3
 
 **Date:** 2026-10-31
