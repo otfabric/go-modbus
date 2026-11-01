@@ -176,6 +176,11 @@ func (e *Engine) Execute(ctx context.Context, req *adu.Request) (*adu.Response, 
 			obs.OnAttempt(req.UnitID, req.FunctionCode, attempt, time.Since(attemptStart), err)
 		}
 		if err == nil {
+			// Closing a connection takes a moment, and a TLS one tells the peer first:
+			// a response can still arrive once Close has begun.
+			if e.isClosed() {
+				return nil, protocol.ErrClientNotOpen
+			}
 			return res, nil
 		}
 		// Close tears the connections down under the running requests: whatever
