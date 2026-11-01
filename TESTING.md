@@ -10,6 +10,7 @@ How to run each test tier. No hardware is needed: tests use in-process servers, 
 | End-to-end | `make e2e` (`TestE2E_*`) | none | yes, as part of the package tests |
 | Chaos, stress | `go test -race -count=1 -run 'Chaos\|Stress' .` | none | yes, as part of the package tests |
 | Soak | `make soak SOAKTIME=10m` | none | nightly, 30 minutes |
+| Under load | `make stress-load` | none | nightly |
 | Fuzz | `make fuzz` (`FUZZTIME`, default 30s) | none | yes, 10s per target; nightly, 5 minutes per target |
 | Benchmarks | `make bench` (`BENCHTIME`) | none | no |
 | Interop | `make interop` | Docker | yes, Interop workflow |
