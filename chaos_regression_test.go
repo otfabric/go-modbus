@@ -25,7 +25,8 @@ import (
 // request is answered with its own data. (It used to be answered with the
 // leftover bytes: wrong data and a nil error.)
 func TestChaosRegressionNoStaleBytesAfterTimeout(t *testing.T) {
-	const timeout = 100 * time.Millisecond
+	// Long enough for the writes below on a loaded machine: they have to succeed.
+	const timeout = 500 * time.Millisecond
 	rig := chaosNewRig(t, "tcp", 1, nil, nil)
 	client := rig.open(chaosModeSingle, timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -308,7 +309,9 @@ func TestChaosRegressionHandlerContextCancelledOnDisconnect(t *testing.T) {
 // client timed out.)
 func TestChaosRegressionSlowHandlerResponseDelivered(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, kind string) {
-		const serverTimeout = 100 * time.Millisecond
+		// Long enough for the client's next request on a loaded machine: an idle
+		// connection is closed, rightly.
+		const serverTimeout = 400 * time.Millisecond
 		dev := chaosNewDevice(1)
 		dev.setHook(func(context.Context) error {
 			time.Sleep(serverTimeout + 50*time.Millisecond)

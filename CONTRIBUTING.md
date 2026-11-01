@@ -104,6 +104,7 @@ GOWORK=off go test -race -count=1 -run 'E2E|Chaos|Stress' .
 
 # Soak: keep looping for SOAKTIME per suite (default 2m), new seed every round
 make soak SOAKTIME=10m
+make stress-load
 
 # Replay a failing chaos round (the seed is logged on failure)
 MODBUS_CHAOS_SEED=1234567 GOWORK=off go test -race -count=1 -run 'TestChaosMonkey/tcp/pool$' .

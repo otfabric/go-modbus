@@ -2,7 +2,7 @@
 # This will output the help for each task
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
-.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak check clean interop test-interop coverage-check cross e2e coverage-pkg-check
+.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak stress-load check clean interop test-interop coverage-check cross e2e coverage-pkg-check
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
@@ -135,6 +135,9 @@ soak: ## Run the chaos and stress tests under the race detector for SOAKTIME eac
 	@echo "Soaking chaos and stress tests (SOAKTIME=$(SOAKTIME))"
 	@MODBUS_CHAOS_DURATION=$(SOAKTIME) MODBUS_STRESS_DURATION=$(SOAKTIME) \
 		go test -race -count=1 -timeout=0 -run 'Chaos|Stress' .
+
+stress-load: ## Repeat the chaos regression tests under CPU contention with the race detector (about 5 to 15 minutes)
+	@scripts/stress-load.sh bin/stress-load
 
 test-interop: ## Run the interop suite against the libmodbus, PyModbus, digitalpetri, NModbus and tokio-modbus reference images (needs Docker)
 	@echo "Running interop tests against $(MODBUS_INTEROP_LIBMODBUS_IMAGE), $(MODBUS_INTEROP_PYMODBUS_IMAGE), $(MODBUS_INTEROP_DIGITALPETRI_IMAGE), $(MODBUS_INTEROP_NMODBUS_IMAGE) and $(MODBUS_INTEROP_TOKIOMODBUS_IMAGE)"

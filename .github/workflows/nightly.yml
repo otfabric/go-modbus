@@ -73,3 +73,25 @@ jobs:
           TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
         run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: make soak SOAKTIME=${{ inputs.soak-time || '30m' }}
+
+  # Rare races need a goroutine to stall at the wrong moment: load makes them show.
+  # A failure here is a finding, not a flake (standards/testing.md, TEST-R01).
+  stress-load:
+    name: Chaos regressions under load
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+      - run: make stress-load
