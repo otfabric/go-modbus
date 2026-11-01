@@ -1,5 +1,17 @@
 # go-modbus Releases
 
+## v1.10.5
+
+**Date:** 2026-11-01
+**Previous release:** v1.10.4
+
+### Changed
+
+- The bundled command-line tools are built on v1.10.4, and so have its `Client.Close` fix. Library code is the same as v1.10.4.
+- Interop runs against modbus-interop v0.3.3, which has new base images. The upstream versions of the references are unchanged.
+
+---
+
 ## v1.10.4
 
 **Date:** 2026-11-01

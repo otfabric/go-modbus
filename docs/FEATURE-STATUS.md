@@ -8,7 +8,7 @@ None of this is a conformance claim: nothing is certified, and no Modbus Organiz
 
 | go-modbus | Go | modbus-interop | Supported |
 |---|---|---|---|
-| **v1.10.4** | 1.23 or later (CI: 1.23 to 1.26) | v0.3.2 | **yes** |
+| **v1.10.5** | 1.23 or later (CI: 1.23 to 1.26) | v0.3.3 | **yes** |
 
 Security fixes: see [SECURITY.md](../SECURITY.md).
 

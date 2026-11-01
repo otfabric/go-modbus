@@ -706,7 +706,7 @@ The images are the only thing shared with modbus-interop; nothing of it is
 cloned or built here. Scenarios, expected values and assertions live in this
 repository.
 
-This version is qualified against modbus-interop v0.3.2 (libmodbus v3.2.0,
+This version is qualified against modbus-interop v0.3.3 (libmodbus v3.2.0,
 PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
 0.17.0). The five images are named in `interop/harness.go`, the Makefile and
 the Interop workflow, which runs on every push and pull request. To test

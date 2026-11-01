@@ -110,7 +110,7 @@ category the device has objects for, with the bit for individual access
 Besides its own tests the library is run against five independent
 implementations, as client and as server, on every push. The reference
 builds are the images of
-[otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.3.2:
+[otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.3.3:
 
 | Reference | Version | go-modbus client → reference server | reference client → go-modbus server |
 |-----------|---------|-------------------------------------|-------------------------------------|
@@ -211,7 +211,7 @@ a test fail; the suite records them where it meets them):
   probe reads one register, is not checked against it.
 
 Further findings on these stacks are in modbus-interop's
-[COMPATIBILITY.md](https://github.com/otfabric/modbus-interop/blob/v0.3.2/docs/COMPATIBILITY.md).
+[COMPATIBILITY.md](https://github.com/otfabric/modbus-interop/blob/v0.3.3/docs/COMPATIBILITY.md).
 
 It has **not** been run against certified test equipment. Reports from the
 field are welcome.

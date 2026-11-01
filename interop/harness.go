@@ -28,7 +28,7 @@ type adapter struct {
 }
 
 // The reference images this version of go-modbus is qualified against:
-// otfabric/modbus-interop v0.3.2 (libmodbus v3.2.0, PyModbus 3.16.1,
+// otfabric/modbus-interop v0.3.3 (libmodbus v3.2.0, PyModbus 3.16.1,
 // digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus 0.17.0).
 //
 // The images are pinned by the multi-arch index digests of the release
@@ -36,12 +36,12 @@ type adapter struct {
 // modbus-interop means
 // changing these constants, and the Makefile and the interop workflow follow.
 const (
-	interopRelease           = "v0.3.2"
-	defaultLibmodbusImage    = "ghcr.io/otfabric/modbus-interop-libmodbus@sha256:405c7a3f4317d878fd512ed197ce82c73225c32fa62fee06bcba00afb3b0a14b"
-	defaultPymodbusImage     = "ghcr.io/otfabric/modbus-interop-pymodbus@sha256:b41e5218233021929fa9f986c70346c1956eed970b36e26003f75c2381f7f8c8"
-	defaultDigitalpetriImage = "ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:c28c0ebf295ba84798886c5105887ad7b3ea23fab04ba8dced82a107c53d9f48"
-	defaultNmodbusImage      = "ghcr.io/otfabric/modbus-interop-nmodbus@sha256:77249db77d8f7e8812c58bf47728a2fb2d340800e925aeb195c3011264063564"
-	defaultTokiomodbusImage  = "ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:1613ed01740a8625f3071b770cef01247455335d41c17c90bc76048ae779ac83"
+	interopRelease           = "v0.3.3"
+	defaultLibmodbusImage    = "ghcr.io/otfabric/modbus-interop-libmodbus@sha256:7aebd97a0fd9872266be54aad7793971a661676ebc11b939374d0c469d2cd0c3"
+	defaultPymodbusImage     = "ghcr.io/otfabric/modbus-interop-pymodbus@sha256:dbd305a7789a0f1469d403a163ce463297cda77066bf4b1a14d7604031361e3b"
+	defaultDigitalpetriImage = "ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:2784f46b1978413584f070277677a5340062bf4c7b93bc9a6b31ec9b97a9e2b8"
+	defaultNmodbusImage      = "ghcr.io/otfabric/modbus-interop-nmodbus@sha256:18d4d701a5571fd9eaa63629345bcbcfe260fe76ba5ee7ea8b9f8b9d897d75ff"
+	defaultTokiomodbusImage  = "ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:48b1d97e13a5a44579b9efc23cd26d8dd12605f5185b5a0553ed6df0dbf9750d"
 )
 
 // Names of the adapters, where a test has to name one.
