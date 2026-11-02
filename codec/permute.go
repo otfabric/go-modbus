@@ -10,7 +10,7 @@ import "fmt"
 // layout.RegisterCount()*2.
 func PermuteBytesDecode(raw []byte, layout RegisterLayout) ([]byte, error) {
 	byteCount := layout.RegisterCount() * 2
-	if uint16(len(raw)) != byteCount {
+	if len(raw) != int(byteCount) {
 		return nil, fmt.Errorf("%w: PermuteBytesDecode: expected %d bytes, got %d", ErrEncodingError, byteCount, len(raw))
 	}
 	pos := layout.BytePositions()
@@ -32,7 +32,7 @@ func PermuteBytesDecode(raw []byte, layout RegisterLayout) ([]byte, error) {
 // layout.RegisterCount()*2.
 func PermuteBytesEncode(canonical []byte, layout RegisterLayout) ([]byte, error) {
 	byteCount := layout.RegisterCount() * 2
-	if uint16(len(canonical)) != byteCount {
+	if len(canonical) != int(byteCount) {
 		return nil, fmt.Errorf("%w: PermuteBytesEncode: expected %d bytes, got %d", ErrEncodingError, byteCount, len(canonical))
 	}
 	pos := layout.BytePositions()

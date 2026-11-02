@@ -184,11 +184,9 @@ func canonicalToUint48(canonical []byte) uint64 {
 }
 
 func uint48ToCanonical(v uint64) []byte {
-	v = v & 0xFFFFFFFFFFFF
-	return []byte{
-		byte(v >> 40), byte(v >> 32), byte(v >> 24),
-		byte(v >> 16), byte(v >> 8), byte(v),
-	}
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], v)
+	return b[2:]
 }
 
 func (c uint48Codec) DecodeRegisters(regs []uint16) (uint64, error) {
