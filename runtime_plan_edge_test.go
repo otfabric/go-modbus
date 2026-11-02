@@ -103,3 +103,17 @@ func TestExecuteRuntimeDecodePlan_WindowAtEndOfAddressSpace(t *testing.T) {
 		}
 	}
 }
+
+// The register count is compared in full: 65536 registers more than the window
+// must not pass as the window's quantity.
+func TestExecuteRuntimeDecodePlanOffline_LengthDoesNotWrap(t *testing.T) {
+	plan := RuntimeDecodePlan{
+		Window: ReadWindow{Addr: 0, Quantity: 2, RegType: HoldingRegister},
+		Items:  []RuntimeDecodeItem{{Name: "a", Codec: codec.MustRuntimeCodecByID("uint16/layout:21")}},
+	}
+	_, err := ExecuteRuntimeDecodePlanOffline(make([]uint16, 2+1<<16), plan)
+	var ve *RuntimePlanValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("2+65536 registers for a 2-register window: got %v, want *RuntimePlanValidationError", err)
+	}
+}

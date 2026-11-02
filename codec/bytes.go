@@ -26,7 +26,7 @@ func (c bytesCodec) DecodeRegisters(regs []uint16) ([]byte, error) {
 }
 
 func (c bytesCodec) EncodeRegisters(b []byte) ([]uint16, error) {
-	if uint16(len(b)) != c.byteCount {
+	if len(b) != int(c.byteCount) {
 		return nil, &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("expected %d bytes, got %d", c.byteCount, len(b))}
 	}
 	return bytesToUint16s(BigEndian, b), nil
@@ -51,7 +51,7 @@ func (c uint8SliceCodec) DecodeRegisters(regs []uint16) ([]uint8, error) {
 }
 
 func (c uint8SliceCodec) EncodeRegisters(b []uint8) ([]uint16, error) {
-	if uint16(len(b)) != c.byteCount {
+	if len(b) != int(c.byteCount) {
 		return nil, &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("expected %d bytes, got %d", c.byteCount, len(b))}
 	}
 	return bytesToUint16s(BigEndian, b), nil

@@ -134,7 +134,7 @@ func ExecuteRuntimeDecodePlanOffline(regs []uint16, plan RuntimeDecodePlan) (*Ru
 	if err := ValidateRuntimeDecodePlan(plan); err != nil {
 		return nil, err
 	}
-	if uint16(len(regs)) != plan.Window.Quantity {
+	if len(regs) != int(plan.Window.Quantity) {
 		return nil, &RuntimePlanValidationError{Reason: fmt.Sprintf("regs length %d != window quantity %d", len(regs), plan.Window.Quantity)}
 	}
 	return executePlanOffline(regs, plan)
@@ -169,7 +169,7 @@ func executePlanOffline(regs []uint16, plan RuntimeDecodePlan) (*RuntimeDecodeRe
 			RegisterCount: count,
 		}
 		end := item.Offset + count
-		if uint16(len(regs)) < end {
+		if len(regs) < int(end) {
 			result.Values[i].Error = fmt.Errorf("%w: regs length %d < offset+count %d", codec.ErrCodecRegisterCount, len(regs), end)
 			continue
 		}

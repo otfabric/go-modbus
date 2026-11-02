@@ -1,5 +1,20 @@
 # go-modbus Releases
 
+## v1.10.6
+
+**Date:** 2026-11-02
+**Previous release:** v1.10.5
+
+### Fixed
+
+- `codec.ValidateRegisterSpec`, `codec.ValidateByteSpec`, `codec.PermuteBytesDecode`, `codec.PermuteBytesEncode`, the `EncodeRegisters` of the bytes and uint8-slice codecs, and `ExecuteRuntimeDecodePlanOffline` compare the full length of a slice. A slice 65536 elements longer than expected passed as the expected length; the bytes codecs then returned far more registers than their spec. The `Actual` field of `CodecRegisterCountError` and `CodecByteCountError` shows a length above 65535 as 65535.
+
+### Changed
+
+- Internal byte helpers that only tests used are removed from `codec`. No exported API changes.
+
+---
+
 ## v1.10.5
 
 **Date:** 2026-11-01

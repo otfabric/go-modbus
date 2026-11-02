@@ -275,23 +275,6 @@ func TestUint64ByteHelpers_AllOrders(t *testing.T) {
 			if !slices.Equal(vals, []uint64{v, 0xFFFFFFFFFFFFFFFE}) {
 				t.Errorf("bytesToUint64s = %X, want [%X FFFFFFFFFFFFFFFE]", vals, v)
 			}
-			signed := bytesToInt64s(tc.e, tc.w, second)
-			if !slices.Equal(signed, []int64{-2}) {
-				t.Errorf("bytesToInt64s = %v, want [-2]", signed)
-			}
 		})
-	}
-}
-
-func TestBytesToInt48s_SignExtension(t *testing.T) {
-	in := []byte{
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
-		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
-		0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-		0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-	}
-	want := []int64{5, -2, 1<<47 - 1, -(1 << 47)}
-	if got := bytesToInt48s(BigEndian, HighWordFirst, in); !slices.Equal(got, want) {
-		t.Errorf("bytesToInt48s = %v, want %v", got, want)
 	}
 }
