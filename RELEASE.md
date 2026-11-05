@@ -1,5 +1,32 @@
 # go-modbus Releases
 
+## v1.11.0
+
+**Date:** 2026-11-05
+**Previous release:** v1.10.7
+
+### Changed
+
+- Go 1.26 or later is required (was 1.23). CI runs Go 1.26 and 1.27. `go fix` modernised the code; no exported API changes.
+- Count, length and address fields go through range-checked conversions, and two's-complement reinterpretation in `codec` goes through explicit helpers. A static scan finds no unchecked integer conversion left. Output is unchanged for every valid input.
+
+### Fixed
+
+- Server: a response that cannot be written in full within `ServerConfig.Timeout` closes the connection. A client that sent requests but never read kept its connection and `MaxClients` slot, and a partly written response put the stream out of step.
+- RTU and ASCII (also over TCP and UDP): after a failed exchange the link is drained before the next request. A late answer to a timed-out request was returned as the answer to the next request, with no error.
+- RTU: variable-length answers (FC08, FC43) honour the request deadline and context. A device trickling bytes stretched a read to seconds and ended with a CRC error.
+- `udp://` and `rtuoverudp://`: bytes left over from one datagram are dropped when the next exchange starts. Trailing bytes made the next request fail, and on `rtuoverudp://` a repeated answer was returned as the next request's data.
+- Server FC0B and FC0C: a handler that returns a nil response is answered with Server Device Failure, without a recovered panic and its stack trace in the log.
+- Server FC43: an object value longer than 255 bytes, and FC0C more events than the byte count can hold, are answered with Server Device Failure instead of a truncated length byte.
+- `SerialCharTime` returned a negative duration for rates above 11 Gbit/s.
+- `modbus-cli`: quantities are limited per function code and ranges past 0xFFFF are refused (`rc:0+65535` wrapped to 0, `rh:uint64:0+16384` panicked); `--endianness little` named unknown layouts for 64-bit values and was ignored for 16-bit values; JSON output dropped `addr` 0 and records with NaN or infinite floats (now the strings `"NaN"`, `"+Inf"`, `"-Inf"`); zero or negative `--timeout`, negative `sleep` and `ping` intervals, empty `wr:bytes`/`wr:string`, `repeat` without an operation and invalid `--data-bits`/`--stop-bits` are refused before connecting; scans, `ping` and `sleep` stop on interrupt, and an interrupted `sleep` exits 1.
+
+### Tests
+
+- Hostile client, hostile server and hostile serial/UDP peer tests, five new fuzz targets with seed corpora, and tests for the `modbus-cli` (coverage 98 %, gated at 95 % in CI).
+
+---
+
 ## v1.10.7
 
 **Date:** 2026-11-03
