@@ -36,7 +36,7 @@ Serial transports run on a pseudo-terminal on Linux and macOS, and those tests s
 
 ## Fuzz regressions
 
-Fuzz targets: `FuzzServerRequest`, `FuzzClientResponseParse`, `FuzzServerFunctions` (root package) and `FuzzCompile` (`batch`). `make fuzz` lists its targets by name; a new target must be added there.
+Fuzz targets: `FuzzServerRequest`, `FuzzClientResponseParse`, `FuzzServerFunctions` (root package), `FuzzCompile` (`batch`), `FuzzHostileRuntimeDecode` (`codec`), `FuzzHostileTCPResponse`, `FuzzHostileRTUResponse`, `FuzzHostileASCIIResponse` (`internal/transport`) and `FuzzHostileDiscover` (`sunspec`). `make fuzz` lists its targets by name; a new target must be added there.
 
 A failing input is written to `testdata/fuzz/<target>/`. Commit that file with the fix: `go test` replays it from then on.
 

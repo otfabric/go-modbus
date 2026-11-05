@@ -41,7 +41,7 @@ Modbus TCP, UDP, RTU and ASCII carry no authentication and no encryption: anyone
 ### Running a Server
 
 - A plain `tcp://` server accepts any client that can reach it. Bind it to a specific interface rather than all interfaces where you can, and restrict access at the network level
-- Set `MaxClients` and `Timeout` so that idle or excess connections cannot exhaust the server
+- Set `MaxClients` and `Timeout` so that idle or excess connections cannot exhaust the server. A client that sends requests but does not read the answers is disconnected once a response cannot be written within `Timeout`
 - Handlers receive data from the network: validate addresses, quantities and values before acting on them, especially for writes that drive physical equipment. A panic in a handler is recovered and answered with a Server Device Failure exception, but it is not a substitute for validation
 
 ### Writing to Devices

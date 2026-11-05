@@ -175,9 +175,14 @@ func (ms *Server) serveConn(connCtx context.Context, connCancel context.CancelFu
 			break
 		}
 		// res is nil when the handler chose not to answer (ErrNoResponse).
+		// A response that could not be written, or only in part, leaves the
+		// stream out of step, and a client that does not read would hold the
+		// connection forever: close it.
 		if res != nil {
 			if writeErr := t.WriteFrame(in.txnID, res); writeErr != nil {
-				ms.logger.Warningf("failed to write response: %v", writeErr)
+				ms.logger.Warningf("failed to write response, closing link (client address: '%s'): %v", clientAddr, writeErr)
+				connCancel()
+				break
 			}
 		}
 		mu.Lock()

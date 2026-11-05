@@ -53,6 +53,9 @@ type RTU struct {
 	lastActivity time.Time
 	t35          time.Duration
 	t1           time.Duration
+	// drain is set when an exchange failed: its answer may still arrive, and
+	// must not be read as the answer to the next request.
+	drain bool
 }
 
 // NewRTU returns a new RTU transport.
@@ -103,6 +106,10 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // ExecuteRequest sends req and returns the response.
 func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
+	if rt.drain {
+		discardLink(rt.Link, rt.t35*3)
+		rt.drain = false
+	}
 	deadline := requestDeadline(ctx, rt.Timeout)
 	if err := rt.Link.SetDeadline(deadline); err != nil {
 		return nil, err
@@ -126,13 +133,16 @@ func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 			return nil, err
 		}
 	}
-	res, err := rt.readRTUFrame()
-	if err == nil {
+	res, err := rt.readRTUFrame(ctx, deadline)
+	switch {
+	case err == nil:
 		rt.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", res.UnitID, res.FunctionCode, res.Payload)
-	}
-	if err == protocol.ErrBadCRC || err == protocol.ErrProtocolError || err == protocol.ErrShortFrame {
-		_ = sleepCtx(ctx, time.Duration(adu.MaxRTUFrameLength)*rt.t1)
+	case err == protocol.ErrBadCRC || err == protocol.ErrProtocolError || err == protocol.ErrShortFrame:
+		// Wait out the rest of the frame, but not past the request deadline.
+		_ = sleepCtx(ctx, min(time.Duration(adu.MaxRTUFrameLength)*rt.t1, time.Until(deadline)))
 		discardLink(rt.Link, rt.t35*3)
+	default:
+		rt.drain = true
 	}
 	if err != protocol.ErrRequestTimedOut {
 		rt.lastActivity = time.Now()
@@ -156,7 +166,7 @@ func (rt *RTU) WriteResponse(res *adu.Response) error {
 	return nil
 }
 
-func (rt *RTU) readRTUFrame() (*adu.Response, error) {
+func (rt *RTU) readRTUFrame(ctx context.Context, deadline time.Time) (*adu.Response, error) {
 	rxbuf := make([]byte, adu.MaxRTUFrameLength)
 	byteCount, err := io.ReadFull(rt.Link, rxbuf[0:3])
 	if (byteCount > 0 || err == nil) && byteCount != 3 {
@@ -172,7 +182,7 @@ func (rt *RTU) readRTUFrame() (*adu.Response, error) {
 	if bytesNeeded == protocol.RTUResponseLengthVariable {
 		switch protocol.FunctionCode(rxbuf[1]) {
 		case protocol.FCDiagnostics, protocol.FCEncapsulatedInterface:
-			return rt.readVariableLengthResponse(rxbuf[:3])
+			return rt.readVariableLengthResponse(ctx, deadline, rxbuf[:3])
 		default:
 			return nil, protocol.ErrProtocolError
 		}
@@ -226,14 +236,22 @@ func midFrameErr(err error) error {
 // readVariableLengthResponse reads an RTU response whose length is not known
 // from the header alone (FC08 diagnostics, FC2B encapsulated interface).
 // It reads byte-by-byte until an inter-frame silence (t3.5) is detected, then
-// validates CRC and parses the frame.
-func (rt *RTU) readVariableLengthResponse(header []byte) (*adu.Response, error) {
+// validates CRC and parses the frame. A device that trickles bytes cannot keep
+// it reading past the request deadline or a cancelled ctx.
+func (rt *RTU) readVariableLengthResponse(ctx context.Context, deadline time.Time, header []byte) (*adu.Response, error) {
 	const minFrameBytes = 6
 	buf := make([]byte, adu.MaxRTUFrameLength)
 	copy(buf, header)
 	offset := len(header)
 	for offset < adu.MaxRTUFrameLength {
-		if err := rt.Link.SetDeadline(time.Now().Add(rt.t35)); err != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		byteDeadline := time.Now().Add(rt.t35)
+		if byteDeadline.After(deadline) {
+			byteDeadline = deadline
+		}
+		if err := rt.Link.SetDeadline(byteDeadline); err != nil {
 			return nil, err
 		}
 		n, readErr := rt.Link.Read(buf[offset : offset+1])
@@ -242,6 +260,9 @@ func (rt *RTU) readVariableLengthResponse(header []byte) (*adu.Response, error) 
 			continue
 		}
 		if readErr != nil && os.IsTimeout(readErr) {
+			if !time.Now().Before(deadline) {
+				return nil, protocol.ErrRequestTimedOut
+			}
 			break
 		}
 		if readErr != nil {

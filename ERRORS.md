@@ -146,8 +146,13 @@ protocol error and a transport error all end the connection the request ran on:
 it is closed, and the next request dials a new one (a pooled connection is
 discarded). A Modbus exception does not. The client itself stays open through
 all of them; only `Close` makes it return `ErrClientNotOpen`. The serial-framed
-transports and `udp` keep their link unless it is down. See
-[API.md § 2.2](API.md#22-lifecycle).
+transports and `udp` keep their link unless it is down, and discard a late
+answer to a failed request before the next one. An RTU response of variable
+length (FC08, FC43) that keeps trickling in ends with `ErrRequestTimedOut` at
+the request deadline. See [API.md § 2.2](API.md#22-lifecycle).
+
+On the server, a response that cannot be written in full within
+`ServerConfig.Timeout` closes the connection.
 
 ## Batch execution
 

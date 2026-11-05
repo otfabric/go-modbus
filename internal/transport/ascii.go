@@ -29,7 +29,14 @@ type ASCII struct {
 	// rxbuf holds bytes received after the end of the last frame returned by
 	// readFrame (server use: a client may pipeline requests).
 	rxbuf []byte
+	// drain is set when an exchange failed: its answer may still arrive, and
+	// must not be read as the answer to the next request.
+	drain bool
 }
+
+// asciiDrainWindow is how long the link is read and discarded before a
+// request that follows a failed exchange.
+const asciiDrainWindow = 20 * time.Millisecond
 
 // NewASCII returns a new ASCII transport.
 func NewASCII(link RTULink, timeout time.Duration, log logging.Logger) *ASCII {
@@ -53,6 +60,10 @@ func (at *ASCII) Interrupt() {
 
 // ExecuteRequest sends req and returns the response.
 func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
+	if at.drain {
+		discardLink(at.Link, asciiDrainWindow)
+		at.drain = false
+	}
 	deadline := requestDeadline(ctx, at.Timeout)
 	if err := at.Link.SetDeadline(deadline); err != nil {
 		return nil, err
@@ -72,6 +83,7 @@ func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Res
 
 	unitID, fc, payload, err := at.readFrame(ctx, deadline)
 	if err != nil {
+		at.drain = true
 		return nil, err
 	}
 	at.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", unitID, fc, payload)
