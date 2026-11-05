@@ -78,7 +78,7 @@ func TestRTUReadVariableLengthDiagnostics(t *testing.T) {
 	go func() { _, _ = p1.Write(frame) }()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatalf("readRTUFrame (diagnostics): %v", err)
 	}
@@ -112,7 +112,7 @@ func TestRTUReadVariableLengthEncapsulated(t *testing.T) {
 	}()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatalf("readRTUFrame (encapsulated): %v", err)
 	}
@@ -140,7 +140,7 @@ func TestRTUReadVariableLengthDiagnostics_ShortFrame(t *testing.T) {
 	}()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	_, err := rt.readRTUFrame()
+	_, err := rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if err == nil {
 		t.Error("expected error for short diagnostics frame")
 	}
@@ -165,7 +165,7 @@ func TestRTUReadVariableLengthEncapsulated_BadCRC(t *testing.T) {
 	}()
 
 	_ = p2.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	_, err := rt.readRTUFrame()
+	_, err := rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if !errors.Is(err, protocol.ErrBadCRC) {
 		t.Errorf("expected ErrBadCRC, got %v", err)
 	}
@@ -193,7 +193,7 @@ func TestRTUReadRTUFrame_FIFO(t *testing.T) {
 	frame := adu.AssembleRTUFrame(0x01, byte(protocol.FCReadFIFOQueue), payload)
 	txchan <- frame
 
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatalf("readRTUFrame (FIFO): %v", err)
 	}
@@ -222,7 +222,7 @@ func TestRTUReadRTUFrame_FIFO_BadCRC(t *testing.T) {
 	frame[len(frame)-1] ^= 0xFF // corrupt CRC
 	txchan <- frame
 
-	_, err := rt.readRTUFrame()
+	_, err := rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if !errors.Is(err, protocol.ErrBadCRC) {
 		t.Errorf("expected ErrBadCRC, got %v", err)
 	}
@@ -346,7 +346,7 @@ func TestTCPReadResponse_UnknownProtocolIDLoop(t *testing.T) {
 
 	// Send frames with wrong protocol ID (0x0001 instead of 0x0000).
 	// Body must have valid length so discardBytes works correctly.
-	for i := 0; i < maxAnomalies; i++ {
+	for range maxAnomalies {
 		// MBAP header: txnID=0x0001, protocolID=0x0001 (wrong), length=0x0004
 		frame := []byte{0x00, 0x01, 0x00, 0x01, 0x00, 0x04, 0x31, 0x06, 0x12, 0x34}
 		txchan <- frame
@@ -377,7 +377,7 @@ func TestRTUReadRTUFrame_ShortPayload(t *testing.T) {
 		_ = p1.Close()
 	}()
 
-	_, err := rt.readRTUFrame()
+	_, err := rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if err == nil {
 		t.Error("expected error for short payload")
 	}

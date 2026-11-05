@@ -111,7 +111,6 @@ const chaosScenarioPace = 500 * time.Millisecond
 // (MODBUS_CHAOS_DURATION) each scenario loops with a new seed per round.
 func TestChaosMonkey(t *testing.T) {
 	for i, sc := range chaosScenarios() {
-		sc := sc
 		seed := int64(1000 + i)
 		t.Run(sc.name, func(t *testing.T) {
 			chaosSoak(t, chaosEnvDuration, chaosSoakShare, chaosScenarioPace, seed, func(t *testing.T, seed int64) {

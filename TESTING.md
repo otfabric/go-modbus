@@ -6,7 +6,7 @@ How to run each test tier. No hardware is needed: tests use in-process servers, 
 
 | Tier | Command | Prerequisites | In CI |
 |---|---|---|---|
-| Unit | `make test` | none | yes, Go 1.23 to 1.26, with `-race` |
+| Unit | `make test` | none | yes, Go 1.26 and 1.27, with `-race` |
 | End-to-end | `make e2e` (`TestE2E_*`) | none | yes, as part of the package tests |
 | Chaos, stress | `go test -race -count=1 -run 'Chaos\|Stress' .` | none | yes, as part of the package tests |
 | Soak | `make soak SOAKTIME=10m` | none | nightly, 30 minutes |
@@ -36,7 +36,7 @@ Serial transports run on a pseudo-terminal on Linux and macOS, and those tests s
 
 ## Fuzz regressions
 
-Fuzz targets: `FuzzServerRequest`, `FuzzClientResponseParse`, `FuzzServerFunctions` (root package) and `FuzzCompile` (`batch`). `make fuzz` lists its targets by name; a new target must be added there.
+Fuzz targets: `FuzzServerRequest`, `FuzzClientResponseParse`, `FuzzServerFunctions` (root package), `FuzzCompile` (`batch`), `FuzzHostileRuntimeDecode` (`codec`), `FuzzHostileTCPResponse`, `FuzzHostileRTUResponse`, `FuzzHostileASCIIResponse` (`internal/transport`) and `FuzzHostileDiscover` (`sunspec`). `make fuzz` lists its targets by name; a new target must be added there.
 
 A failing input is written to `testdata/fuzz/<target>/`. Commit that file with the fix: `go test` replays it from then on.
 

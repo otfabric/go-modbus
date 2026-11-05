@@ -42,3 +42,11 @@ handler's job. See [SECURITY.md](SECURITY.md).
   request only after those checks. The specification leaves this open; the
   five reference servers answer 11 ([INTEROPERABILITY.md](INTEROPERABILITY.md)).
 - The server does not filter unit identifiers: that is the handler's job.
+- The serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`,
+  `asciiovertcp`) carry no transaction ID. After a failed exchange the client
+  discards what arrives for a short window (3 × t3.5 for RTU, 20 ms for ASCII)
+  before the next request; an answer that arrives later than that can still be
+  read as the answer to the next request.
+- Modbus/UDP is not standardised: `udp` and `rtuoverudp` assume one ADU per
+  datagram. Bytes left in a datagram are dropped when the next request is
+  written, and a datagram longer than 260 bytes is cut off by the socket.

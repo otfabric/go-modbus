@@ -266,7 +266,7 @@ func TestEngine_CloseInterrupts(t *testing.T) {
 			}
 			const callers = 4
 			done := make(chan error, callers)
-			for i := 0; i < callers; i++ {
+			for range callers {
 				go func() {
 					_, err := e.Execute(context.Background(), &adu.Request{})
 					done <- err
@@ -277,7 +277,7 @@ func TestEngine_CloseInterrupts(t *testing.T) {
 			if err := e.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
-			for i := 0; i < callers; i++ {
+			for range callers {
 				select {
 				case err := <-done:
 					if !errors.Is(err, protocol.ErrClientNotOpen) {
@@ -413,7 +413,7 @@ func TestPool_WaitersWokenOnDiscardAndDialFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	results := make(chan error, 2)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		go func() {
 			tr, err := p.acquire(context.Background())
 			if err == nil {
@@ -428,7 +428,7 @@ func TestPool_WaitersWokenOnDiscardAndDialFailure(t *testing.T) {
 	p.discard(first)
 	close(gate)
 	var failed, ok int
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case err := <-results:
 			if errors.Is(err, dialErr) {

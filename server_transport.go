@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"errors"
+	"math"
 	"net"
 	"runtime/debug"
 	"sync"
@@ -174,9 +175,14 @@ func (ms *Server) serveConn(connCtx context.Context, connCancel context.CancelFu
 			break
 		}
 		// res is nil when the handler chose not to answer (ErrNoResponse).
+		// A response that could not be written, or only in part, leaves the
+		// stream out of step, and a client that does not read would hold the
+		// connection forever: close it.
 		if res != nil {
 			if writeErr := t.WriteFrame(in.txnID, res); writeErr != nil {
-				ms.logger.Warningf("failed to write response: %v", writeErr)
+				ms.logger.Warningf("failed to write response, closing link (client address: '%s'): %v", clientAddr, writeErr)
+				connCancel()
+				break
 			}
 		}
 		mu.Lock()
@@ -468,6 +474,10 @@ func (ms *Server) handleCommEventCounter(ctx context.Context, req *adu.Request, 
 	if err != nil {
 		return nil, err
 	}
+	if cr == nil {
+		ms.logger.Errorf("comm event counter handler returned nil response")
+		return nil, ErrServerDeviceFailure
+	}
 	payload := uint16ToBytes(BigEndian, cr.Status)
 	payload = append(payload, uint16ToBytes(BigEndian, cr.EventCount)...)
 	return newSuccessResponse(req, txnID, payload), nil
@@ -488,8 +498,18 @@ func (ms *Server) handleCommEventLog(ctx context.Context, req *adu.Request, txnI
 	if err != nil {
 		return nil, err
 	}
-	byteCount := 6 + len(cl.Events)
-	payload := []byte{byte(byteCount)}
+	if cl == nil {
+		ms.logger.Errorf("comm event log handler returned nil response")
+		return nil, ErrServerDeviceFailure
+	}
+	// Events the one-byte byte count cannot count cannot be sent. Fewer
+	// that still overflow the frame are caught by the response size check
+	// in serveRequest.
+	n := len(cl.Events)
+	if n > math.MaxUint8-6 {
+		return nil, ErrServerDeviceFailure
+	}
+	payload := []byte{byte(6 + n)}
 	payload = append(payload, uint16ToBytes(BigEndian, cl.Status)...)
 	payload = append(payload, uint16ToBytes(BigEndian, cl.EventCount)...)
 	payload = append(payload, uint16ToBytes(BigEndian, cl.MessageCount)...)

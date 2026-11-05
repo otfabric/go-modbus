@@ -170,10 +170,11 @@ func (ms *Server) handleReportServerID(ctx context.Context, req *adu.Request, tx
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxReportServerIDLen {
+	n := len(data)
+	if n > maxReportServerIDLen {
 		return nil, ErrServerDeviceFailure
 	}
-	return newSuccessResponse(req, txnID, append([]byte{byte(len(data))}, data...)), nil
+	return newSuccessResponse(req, txnID, append([]byte{byte(n)}, data...)), nil
 }
 
 // handleReadFileRecords serves FC20.
@@ -224,12 +225,12 @@ func (ms *Server) handleReadFileRecords(ctx context.Context, req *adu.Request, t
 	if len(records) != len(subs) {
 		return nil, ErrServerDeviceFailure
 	}
-	payload := []byte{byte(respLen)}
+	payload := []byte{adu.Uint8(respLen)}
 	for i, rec := range records {
 		if len(rec) != int(subs[i].RecordLength) {
 			return nil, ErrServerDeviceFailure
 		}
-		payload = append(payload, byte(1+2*len(rec)), 0x06)
+		payload = append(payload, adu.Uint8(1+2*len(rec)), 0x06)
 		payload = append(payload, uint16sToBytes(BigEndian, rec)...)
 	}
 	return newSuccessResponse(req, txnID, payload), nil
@@ -303,11 +304,12 @@ func (ms *Server) handleReadFIFOQueue(ctx context.Context, req *adu.Request, txn
 	if err != nil {
 		return nil, err
 	}
-	if len(values) > maxFIFOCount {
+	n := len(values)
+	if n > maxFIFOCount {
 		return nil, ErrIllegalDataValue
 	}
-	payload := uint16ToBytes(BigEndian, uint16(2+2*len(values)))
-	payload = append(payload, uint16ToBytes(BigEndian, uint16(len(values)))...)
+	payload := uint16ToBytes(BigEndian, uint16(2+2*n))
+	payload = append(payload, uint16ToBytes(BigEndian, uint16(n))...)
 	payload = append(payload, uint16sToBytes(BigEndian, values)...)
 	return newSuccessResponse(req, txnID, payload), nil
 }

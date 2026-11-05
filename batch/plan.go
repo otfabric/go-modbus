@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/otfabric/go-modbus"
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // Window is one read request of a plan.
@@ -263,10 +264,10 @@ func (p *Plan) addWindow(unit uint8, fc modbus.FunctionCode, first, last int, me
 	p.windows = append(p.windows, Window{
 		UnitID: unit,
 		FC:     fc,
-		Addr:   uint16(first),
-		Count:  uint16(last - first + 1),
+		Addr:   adu.Uint16(first),
+		Count:  adu.Uint16(last - first + 1),
 		Items:  members,
-		Gap:    uint16(last - first + 1 - covered),
+		Gap:    adu.Uint16(last - first + 1 - covered),
 	})
 	for _, i := range members {
 		p.itemWindows[i] = append(p.itemWindows[i], w)

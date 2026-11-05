@@ -164,12 +164,11 @@ func randomBatch(r *rand.Rand, n int) ([]batch.Item, batch.Options) {
 func TestCompile_Properties(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	valid := 0
-	for iter := 0; iter < 5000; iter++ {
+	for range 5000 {
 		items, opts := randomBatch(r, 1+r.Intn(16))
 		p, err := batch.Compile(items, opts)
 		if err != nil {
-			var ve *batch.ValidationError
-			if !errors.As(err, &ve) {
+			if _, ok := errors.AsType[*batch.ValidationError](err); !ok {
 				t.Fatalf("Compile error %v is not a *ValidationError", err)
 			}
 			continue
@@ -207,14 +206,14 @@ func windowSets(p *batch.Plan) []win {
 // limit.
 func TestCompile_Optimal(t *testing.T) {
 	r := rand.New(rand.NewSource(2))
-	for iter := 0; iter < 2000; iter++ {
+	for range 2000 {
 		n := 1 + r.Intn(7)
 		opts := batch.Options{MaxGap: uint16(r.Intn(4)), MaxRegisters: uint16(4 + r.Intn(12))}
 		if r.Intn(2) == 0 {
 			opts.Boundaries = []batch.Boundary{{UnitID: 1, FC: fc03, Addr: uint16(r.Intn(40))}}
 		}
 		var items []batch.Item
-		for i := 0; i < n; i++ {
+		for i := range n {
 			it := item("i"+itoa(uint16(i)), 1, fc03, uint16(r.Intn(40)), uint16(1+r.Intn(int(opts.MaxRegisters))))
 			items = append(items, it)
 		}
@@ -316,8 +315,7 @@ func FuzzCompile(f *testing.F) {
 		}
 		p, err := batch.Compile(items, opts)
 		if err != nil {
-			var ve *batch.ValidationError
-			if !errors.As(err, &ve) {
+			if _, ok := errors.AsType[*batch.ValidationError](err); !ok {
 				t.Fatalf("Compile error %v is not a *ValidationError", err)
 			}
 			return

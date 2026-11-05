@@ -124,8 +124,7 @@ func TestMapExceptionCodeToError(t *testing.T) {
 	if !errors.Is(err, ErrIllegalDataAddress) {
 		t.Errorf("want ErrIllegalDataAddress, got %v", err)
 	}
-	var exErr *ExceptionError
-	if errors.As(err, &exErr) {
+	if exErr, ok := errors.AsType[*ExceptionError](err); ok {
 		if exErr.FunctionCode != FCReadHoldingRegisters || exErr.ExceptionCode != exIllegalDataAddress {
 			t.Errorf("ExceptionError: fc=%v ec=%v", exErr.FunctionCode, exErr.ExceptionCode)
 		}

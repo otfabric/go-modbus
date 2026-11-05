@@ -142,7 +142,7 @@ func TestReadRegisterBits(t *testing.T) {
 	if len(bits) != 4 {
 		t.Fatalf("len(bits)=%d want 4", len(bits))
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if !bits[i] {
 			t.Errorf("bits[%d] want true", i)
 		}

@@ -53,12 +53,7 @@ func (ms *Server) handleReadBools(ctx context.Context, req *adu.Request, txnID u
 		return nil, ErrServerDeviceFailure
 	}
 
-	byteCount := uint8(len(coils) / 8)
-	if len(coils)%8 != 0 {
-		byteCount++
-	}
-
-	payload := []byte{byteCount}
+	payload := []byte{adu.Uint8((len(coils) + 7) / 8)}
 	payload = append(payload, encodeBools(coils)...)
 
 	return newSuccessResponse(req, txnID, payload), nil

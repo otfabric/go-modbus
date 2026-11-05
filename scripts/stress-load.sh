@@ -9,7 +9,11 @@
 #   stress-load.sh <output dir> [count] [processes]
 set -euo pipefail
 
-out="${1:?usage: stress-load.sh <output dir> [count] [processes]}"
+if [[ $# -lt 1 ]]; then
+	sed -n '9s/^#   //p' "$0" | sed 's/^/usage: /' >&2
+	exit 2
+fi
+out="$1"
 count="${2:-100}"
 procs="${3:-8}"
 cores="$(getconf _NPROCESSORS_ONLN)"
@@ -21,7 +25,8 @@ go test -c -race -o "${bin}" .
 burners=()
 stop() { [[ ${#burners[@]} -eq 0 ]] || kill "${burners[@]}" 2>/dev/null || true; }
 trap stop EXIT
-for ((i = 0; i < cores * 2; i++)); do
+burn=$((cores * 2))
+for ((i = 0; i < burn; i++)); do
 	(while :; do :; done) &
 	burners+=("$!")
 done

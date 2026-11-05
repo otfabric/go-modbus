@@ -53,7 +53,7 @@ func (ms *Server) handleReadRegisters(ctx context.Context, req *adu.Request, txn
 		return nil, ErrServerDeviceFailure
 	}
 
-	payload := []byte{uint8(len(regs) * 2)}
+	payload := []byte{adu.Uint8(len(regs) * 2)}
 	payload = append(payload, uint16sToBytes(BigEndian, regs)...)
 
 	return newSuccessResponse(req, txnID, payload), nil
@@ -182,7 +182,7 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 		return nil, ErrServerDeviceFailure
 	}
 
-	payload := []byte{uint8(len(regs) * 2)}
+	payload := []byte{adu.Uint8(len(regs) * 2)}
 	payload = append(payload, uint16sToBytes(BigEndian, regs)...)
 	return newSuccessResponse(req, txnID, payload), nil
 }

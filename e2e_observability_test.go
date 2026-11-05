@@ -96,7 +96,7 @@ func TestE2E_Metrics_OneOutcomePerRequest(t *testing.T) {
 		// A paginated device identification read is one logical client request
 		// and one server request per page.
 		dev.mu.Lock()
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			dev.objects = append(dev.objects, DeviceIdentificationObject{ID: DeviceIDObjectID(0x80 + i), Value: string(make([]byte, 200))})
 		}
 		dev.mu.Unlock()

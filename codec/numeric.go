@@ -8,6 +8,52 @@ import (
 	"math"
 )
 
+// Two's-complement reinterpretations between same-width signed and unsigned
+// integers. The bit pattern is preserved exactly; each conversion is split on
+// the sign bit so that the value converted always fits the target type.
+
+func uint16ToInt16(u uint16) int16 {
+	if u > math.MaxInt16 {
+		return int16(u&math.MaxInt16) + math.MinInt16
+	}
+	return int16(u)
+}
+
+func int16ToUint16(v int16) uint16 {
+	if v < 0 {
+		return uint16(v&math.MaxInt16) | 1<<15
+	}
+	return uint16(v)
+}
+
+func uint32ToInt32(u uint32) int32 {
+	if u > math.MaxInt32 {
+		return int32(u&math.MaxInt32) + math.MinInt32
+	}
+	return int32(u)
+}
+
+func int32ToUint32(v int32) uint32 {
+	if v < 0 {
+		return uint32(v&math.MaxInt32) | 1<<31
+	}
+	return uint32(v)
+}
+
+func uint64ToInt64(u uint64) int64 {
+	if u > math.MaxInt64 {
+		return int64(u&math.MaxInt64) + math.MinInt64
+	}
+	return int64(u)
+}
+
+func int64ToUint64(v int64) uint64 {
+	if v < 0 {
+		return uint64(v&math.MaxInt64) | 1<<63
+	}
+	return uint64(v)
+}
+
 // uint16Codec encodes/decodes a single 16-bit register with optional byte permutation.
 type uint16Codec struct{ layout RegisterLayout }
 
@@ -55,12 +101,12 @@ func (c int16Codec) DecodeRegisters(regs []uint16) (int16, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int16(binary.BigEndian.Uint16(canonical)), nil
+	return uint16ToInt16(binary.BigEndian.Uint16(canonical)), nil
 }
 
 func (c int16Codec) EncodeRegisters(v int16) ([]uint16, error) {
 	canonical := make([]byte, 2)
-	binary.BigEndian.PutUint16(canonical, uint16(v))
+	binary.BigEndian.PutUint16(canonical, int16ToUint16(v))
 	raw, err := PermuteBytesEncode(canonical, c.layout)
 	if err != nil {
 		return nil, err
@@ -89,9 +135,9 @@ func (c int16SignMagnitudeCodec) DecodeRegisters(regs []uint16) (int16, error) {
 }
 
 func (c int16SignMagnitudeCodec) EncodeRegisters(v int16) ([]uint16, error) {
-	mag := uint16(v)
+	mag := int16ToUint16(v)
 	if v < 0 {
-		mag = uint16(-v)
+		mag = int16ToUint16(-v)
 	}
 	if mag > 0x7FFF {
 		return nil, &CodecValueError{Codec: c.ID(), Reason: "magnitude exceeds 15 bits (max 32767)"}
@@ -149,12 +195,12 @@ func (c int32Codec) DecodeRegisters(regs []uint16) (int32, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int32(binary.BigEndian.Uint32(canonical)), nil
+	return uint32ToInt32(binary.BigEndian.Uint32(canonical)), nil
 }
 
 func (c int32Codec) EncodeRegisters(v int32) ([]uint16, error) {
 	canonical := make([]byte, 4)
-	binary.BigEndian.PutUint32(canonical, uint32(v))
+	binary.BigEndian.PutUint32(canonical, int32ToUint32(v))
 	raw, err := PermuteBytesEncode(canonical, c.layout)
 	if err != nil {
 		return nil, err
@@ -231,16 +277,16 @@ func (c int48Codec) DecodeRegisters(regs []uint16) (int64, error) {
 		return 0, err
 	}
 	if u&(1<<47) != 0 {
-		return int64(u | ^uint64(0x0000FFFFFFFFFFFF)), nil
+		return uint64ToInt64(u | ^uint64(0x0000FFFFFFFFFFFF)), nil
 	}
-	return int64(u), nil
+	return uint64ToInt64(u), nil
 }
 
 func (c int48Codec) EncodeRegisters(v int64) ([]uint16, error) {
 	if v < minInt48 || v > maxInt48 {
 		return nil, &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("value %d out of range %d..%d", v, int64(minInt48), int64(maxInt48))}
 	}
-	return uint48Codec(c).EncodeRegisters(uint64(v) & maxUint48)
+	return uint48Codec(c).EncodeRegisters(int64ToUint64(v) & maxUint48)
 }
 
 // uint64Codec encodes/decodes four registers as uint64.
@@ -290,11 +336,11 @@ func (c int64Codec) DecodeRegisters(regs []uint16) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int64(u), nil
+	return uint64ToInt64(u), nil
 }
 
 func (c int64Codec) EncodeRegisters(v int64) ([]uint16, error) {
-	return uint64Codec(c).EncodeRegisters(uint64(v))
+	return uint64Codec(c).EncodeRegisters(int64ToUint64(v))
 }
 
 // float32Codec encodes/decodes two registers as float32.

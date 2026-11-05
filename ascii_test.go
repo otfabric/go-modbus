@@ -59,7 +59,7 @@ func TestASCIIOverTCPClient(t *testing.T) {
 		case FCReadHoldingRegisters:
 			qty := uint16(req.Payload[2])<<8 | uint16(req.Payload[3])
 			res.Payload = []byte{byte(qty * 2)}
-			for i := uint16(0); i < qty; i++ {
+			for i := range qty {
 				v, ok := holding[start+i]
 				if !ok {
 					res.FunctionCode |= 0x80

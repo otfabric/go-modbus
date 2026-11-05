@@ -17,8 +17,7 @@ func wantProtocolError(t *testing.T, err error, op string) {
 	if err == nil {
 		t.Fatalf("%s: expected error, got nil", op)
 	}
-	var pe *ProtocolError
-	if !errors.As(err, &pe) {
+	if _, ok := errors.AsType[*ProtocolError](err); !ok {
 		t.Fatalf("%s: expected *ProtocolError, got %T: %v", op, err, err)
 	}
 }
@@ -159,7 +158,6 @@ func TestClient_ReadFIFOQueue_Branches(t *testing.T) {
 		{"ok", []byte{0x00, 0x04, 0x00, 0x01, 0x11, 0x22}, false, []uint16{0x1122}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			client, cleanup := startMockServer(t, func(txid []byte, unitID, fc byte, _ []byte) []byte {
 				return normalFrame(txid, unitID, fc, tc.payload)
@@ -196,7 +194,6 @@ func TestClient_ReadFileRecords_Branches(t *testing.T) {
 		{"ok", []byte{0x04, 0x03, 0x06, 0x00, 0x42}, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			client, cleanup := startMockServer(t, func(txid []byte, unitID, fc byte, _ []byte) []byte {
 				return normalFrame(txid, unitID, fc, tc.payload)

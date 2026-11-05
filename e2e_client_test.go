@@ -49,7 +49,7 @@ func (g *e2eGate) hook(ctx context.Context, _ e2eCall) error {
 // waitEntered waits until n handler calls have started.
 func (g *e2eGate) waitEntered(t *testing.T, n int) {
 	t.Helper()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		select {
 		case <-g.entered:
 		case <-time.After(e2eWait):
@@ -105,7 +105,7 @@ func TestE2E_Client_OpenCloseLifecycle(t *testing.T) {
 		}
 
 		// Open is idempotent: one connection, however often it is called.
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			if err := c.Open(); err != nil {
 				t.Fatalf("Open #%d: %v", i+1, err)
 			}
@@ -128,7 +128,7 @@ func TestE2E_Client_OpenCloseLifecycle(t *testing.T) {
 		firstAddr := dev.takeCalls()[0].ClientAddr
 
 		// Close is idempotent and releases the server-side connection.
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			if err := c.Close(); err != nil {
 				t.Errorf("Close #%d: %v", i+1, err)
 			}
@@ -535,7 +535,7 @@ func TestE2E_Client_ConnectionPool(t *testing.T) {
 	}
 
 	// Sequential requests reuse the pre-warmed connections.
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		if err := c.WriteRegister(ctx, e2eUnit, uint16(i), uint16(i)); err != nil {
 			t.Fatal(err)
 		}
@@ -551,7 +551,7 @@ func TestE2E_Client_ConnectionPool(t *testing.T) {
 	dev.setHook(gate.hook)
 	var wg sync.WaitGroup
 	errs := make(chan error, callers)
-	for i := 0; i < callers; i++ {
+	for i := range callers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -599,12 +599,10 @@ func TestE2E_Client_ConnectionPool(t *testing.T) {
 	// A caller waiting for a free connection gives up when its context ends.
 	gate = e2eNewGate()
 	dev.setHook(gate.hook)
-	for i := 0; i < maxConns; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range maxConns {
+		wg.Go(func() {
 			_, _ = c.ReadCoil(ctx, e2eUnit, 0)
-		}()
+		})
 	}
 	gate.waitEntered(t, maxConns)
 	short, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
@@ -672,11 +670,11 @@ func TestE2E_Client_SingleConnectionSerialises(t *testing.T) {
 			}
 
 			var wg sync.WaitGroup
-			for i := 0; i < 4; i++ {
+			for i := range 4 {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
-					for j := 0; j < 3; j++ {
+					for j := range 3 {
 						addr := uint16(i*10 + j)
 						if err := p.client.WriteRegister(context.Background(), e2eUnit, addr, addr); err != nil {
 							t.Errorf("WriteRegister: %v", err)
@@ -913,7 +911,7 @@ func TestE2E_Client_RetryWithPool(t *testing.T) {
 	}
 	e2eEventually(t, "the dropped connection to be gone", func() bool { return p.conns() == 2 })
 	// The pool grows back on demand.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := p.client.WriteRegister(ctx, e2eUnit, 5, uint16(i)); err != nil {
 			t.Fatal(err)
 		}
@@ -984,7 +982,7 @@ func TestE2E_Client_PoolAfterServerRestart(t *testing.T) {
 			t.Errorf("retries=%d: %d requests failed after the restart", retries, failures)
 		}
 		// From here on the pool is healthy again.
-		for i := 0; i < 2*conns; i++ {
+		for i := range 2 * conns {
 			if _, err := c.ReadHoldingRegister(ctx, e2eUnit, 1); err != nil {
 				t.Errorf("retries=%d: request %d on the recovered pool: %v", retries, i, err)
 			}

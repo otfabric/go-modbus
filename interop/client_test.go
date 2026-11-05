@@ -528,8 +528,7 @@ func TestClientQuantityLimits(t *testing.T) {
 
 		refused := func(what string, err error) {
 			t.Helper()
-			var pe *modbus.ParameterError
-			if !errors.As(err, &pe) {
+			if _, ok := errors.AsType[*modbus.ParameterError](err); !ok {
 				t.Errorf("%s: got %v, want a *ParameterError", what, err)
 			}
 		}
@@ -913,7 +912,7 @@ func TestClientManyRequests(t *testing.T) {
 		u := fx.unit()
 
 		const total = 2000
-		for i := 0; i < total; i++ {
+		for i := range total {
 			if err := readAndCheck(ctx, c, fx, u, i); err != nil {
 				t.Fatalf("request %d: %v", i, err)
 			}
@@ -1012,11 +1011,9 @@ func TestClientConcurrentConnections(t *testing.T) {
 		var wg sync.WaitGroup
 		errs := make(chan error, clients)
 		for i, c := range conns {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				reg, coil := uint16(64+i*8), uint16(1000+i*8)
-				for r := 0; r < rounds; r++ {
+				for r := range rounds {
 					values := make([]uint16, 8)
 					bits := make([]bool, 8)
 					for k := range values {
@@ -1057,7 +1054,7 @@ func TestClientConcurrentConnections(t *testing.T) {
 						copy(coils[coil:], bits)
 					}
 				}
-			}()
+			})
 		}
 		wg.Wait()
 		close(errs)
@@ -1081,18 +1078,16 @@ func TestClientConcurrentConnections(t *testing.T) {
 		const poolSize, workers, each = 8, 32, 25
 		pool := newClient(t, srv, func(c *modbus.Config) { c.MaxConns = poolSize })
 		errs = make(chan error, workers)
-		for w := 0; w < workers; w++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for i := 0; i < each; i++ {
+		for w := range workers {
+			wg.Go(func() {
+				for i := range each {
 					// Only the tables nobody wrote to.
 					if err := readAndCheck(ctx, pool, fx, u, (w*each+i)*2+1); err != nil {
 						errs <- fmt.Errorf("pool worker %d request %d: %w", w, i, err)
 						return
 					}
 				}
-			}()
+			})
 		}
 		wg.Wait()
 		close(errs)

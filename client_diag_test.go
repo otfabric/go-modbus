@@ -16,7 +16,7 @@ func diagEchoResponder(dataLen int) mockResponder {
 			return exceptionFrame(txid, unitID, fc, byte(exIllegalFunction))
 		}
 		data := append([]byte{payload[0], payload[1]}, make([]byte, dataLen)...)
-		for i := 0; i < dataLen; i++ {
+		for i := range dataLen {
 			data[2+i] = byte(0x10 + i)
 		}
 		return normalFrame(txid, unitID, fc, data)
@@ -146,7 +146,6 @@ func TestClient_GetCommEventLog_Branches(t *testing.T) {
 		{"ok", []byte{0x06, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x14}, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			client, cleanup := startMockServer(t, func(txid []byte, unitID, fc byte, _ []byte) []byte {
 				return normalFrame(txid, unitID, fc, tc.payload)
@@ -176,7 +175,6 @@ func TestClient_ReportServerID_Branches(t *testing.T) {
 		{"ok with run indicator", []byte{0x02, 0x11, 0xFF}, false, true},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			client, cleanup := startMockServer(t, func(txid []byte, unitID, fc byte, _ []byte) []byte {
 				return normalFrame(txid, unitID, fc, tc.payload)

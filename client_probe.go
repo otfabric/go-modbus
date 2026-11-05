@@ -42,8 +42,7 @@ func (mc *Client) runOneProbe(ctx context.Context, unitID uint8, p protocol.Dete
 			errors.Is(err, ErrGWTargetFailedToRespond) {
 			return false, nil
 		}
-		var excErr *ExceptionError
-		if errors.As(err, &excErr) {
+		if _, ok := errors.AsType[*ExceptionError](err); ok {
 			return false, nil
 		}
 		return false, err
@@ -179,8 +178,7 @@ func (mc *Client) ProbeFunction(ctx context.Context, unitID uint8, fc FunctionCo
 		if errors.Is(err, ErrRequestTimedOut) || errors.Is(err, ErrGWTargetFailedToRespond) {
 			return ProbeResult{Outcome: ProbeTimeout, Err: err, Reason: "request timed out"}, nil
 		}
-		var excErr *ExceptionError
-		if errors.As(err, &excErr) {
+		if excErr, ok := errors.AsType[*ExceptionError](err); ok {
 			return ProbeResult{Outcome: ProbeException, ExceptionCode: excErr.ExceptionCode,
 				Reason: fmt.Sprintf("exception 0x%02X", excErr.ExceptionCode)}, nil
 		}

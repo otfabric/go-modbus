@@ -437,7 +437,7 @@ func TestPool_ExhaustedWaiterGetsReleasedConnection(t *testing.T) {
 	// below hold either way, this only makes the hand-over path the likely one.
 	time.Sleep(20 * time.Millisecond)
 	close(unblock)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		select {
 		case err := <-errs:
 			if err != nil {

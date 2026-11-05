@@ -35,9 +35,9 @@ func TestE2E_EveryClientFunctionIsServed(t *testing.T) {
 		name, _, _ := strings.Cut(op.name, "/")
 		listed[name] = true
 	}
-	ct := reflect.TypeOf(&Client{})
-	for i := 0; i < ct.NumMethod(); i++ {
-		m := ct.Method(i).Name
+	ct := reflect.TypeFor[*Client]()
+	for method := range ct.Methods() {
+		m := method.Name
 		if !e2eNonRequestMethods[m] && !listed[m] {
 			t.Errorf("Client.%s is not in e2eAllOps: add it, and serve its function code", m)
 		}
@@ -369,7 +369,7 @@ func TestE2E_ServerFunctions_Parallel(t *testing.T) {
 		dev := e2eNewDevice()
 		dev.mu.Lock()
 		dev.files[10] = map[uint16]uint16{}
-		for i := 0; i < clients; i++ {
+		for i := range clients {
 			dev.files[10][uint16(i)] = 0
 		}
 		dev.mu.Unlock()
@@ -387,7 +387,7 @@ func TestE2E_ServerFunctions_Parallel(t *testing.T) {
 		busy := func(err error) bool { return errors.Is(err, ErrServerDeviceBusy) }
 		var wg sync.WaitGroup
 		errs := make(chan error, clients*rounds*5)
-		for i := 0; i < clients; i++ {
+		for i := range clients {
 			c := p.newClient(nil)
 			if err := c.Open(); err != nil {
 				t.Fatalf("Open: %v", err)

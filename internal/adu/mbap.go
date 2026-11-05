@@ -22,7 +22,7 @@ var (
 
 // AssembleMBAP builds an MBAP frame: transaction ID, protocol 0x0000, length, unit ID, function code, payload.
 func AssembleMBAP(txnID uint16, unitID uint8, fc byte, payload []byte) []byte {
-	length := uint16(2 + len(payload)) // unit_id + function_code + payload
+	length := Uint16(2 + len(payload)) // unit_id + function_code + payload
 	out := Uint16ToBytes(BigEndian, txnID)
 	out = append(out, 0x00, 0x00) // protocol identifier
 	out = append(out, Uint16ToBytes(BigEndian, length)...)

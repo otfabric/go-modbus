@@ -169,7 +169,7 @@ func TestReadInt32(t *testing.T) {
 		t.Fatalf("ReadRegisters: %v", err)
 	}
 	var i32s []int32
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		v, decErr := codec.DecodeRegisters(regs[i*2:(i+1)*2], enc)
 		if decErr != nil {
 			t.Fatalf("DecodeRegisters: %v", decErr)
@@ -214,7 +214,7 @@ func TestReadInt64(t *testing.T) {
 		t.Fatalf("ReadRegisters: %v", err)
 	}
 	var i64s []int64
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		v, decErr := codec.DecodeRegisters(regs[i*4:(i+1)*4], enc)
 		if decErr != nil {
 			t.Fatalf("DecodeRegisters: %v", decErr)
@@ -257,7 +257,7 @@ func TestReadUint48(t *testing.T) {
 		t.Fatalf("ReadRegisters: %v", err)
 	}
 	var u48s []uint64
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		v, decErr := codec.DecodeRegisters(regs[i*3:(i+1)*3], enc)
 		if decErr != nil {
 			t.Fatalf("DecodeRegisters: %v", decErr)
@@ -300,14 +300,14 @@ func TestReadInt48(t *testing.T) {
 		t.Fatalf("ReadRegisters: %v", err)
 	}
 	var i48s []int64
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		v, decErr := codec.DecodeRegisters(regs[i*3:(i+1)*3], enc)
 		if decErr != nil {
 			t.Fatalf("DecodeRegisters: %v", decErr)
 		}
 		i48s = append(i48s, v)
 	}
-	const minInt48 = -140737488355328
+	const minInt48 int64 = -140737488355328
 	if len(i48s) != 2 || i48s[0] != -1 || i48s[1] != minInt48 {
 		t.Errorf("DecodeRegisters int48: expected [-1, %v], got %v", minInt48, i48s)
 	}
@@ -1199,7 +1199,7 @@ func TestClose_WhileGoroutinesActive(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	wg.Add(3)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		go func() {
 			defer wg.Done()
 			_, _ = client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
@@ -1830,10 +1830,8 @@ func TestConcurrentClientRequests(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 20)
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 20 {
+		wg.Go(func() {
 			val, readErr := client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
 			if readErr != nil {
 				errs <- readErr
@@ -1842,7 +1840,7 @@ func TestConcurrentClientRequests(t *testing.T) {
 			if val != 0x0042 {
 				errs <- errors.New("unexpected value")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -1880,11 +1878,9 @@ func TestCloseDuringInFlightRequest(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_, _ = client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
-	}()
+	})
 
 	time.Sleep(10 * time.Millisecond)
 	_ = client.Close()
@@ -1916,13 +1912,11 @@ func TestConcurrentOpenClose(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			_ = client.Open()
 			_ = client.Close()
-		}()
+		})
 	}
 	wg.Wait()
 }

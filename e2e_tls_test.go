@@ -175,8 +175,7 @@ func TestE2E_TLS_ServerCertNotTrusted(t *testing.T) {
 	if err == nil {
 		t.Fatal("Open succeeded although the server certificate is not trusted")
 	}
-	var unknown x509.UnknownAuthorityError
-	if !errors.As(err, &unknown) {
+	if _, ok := errors.AsType[x509.UnknownAuthorityError](err); !ok {
 		t.Errorf("Open: %v, want x509.UnknownAuthorityError", err)
 	}
 	if wary.Info().IsOpen {

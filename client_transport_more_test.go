@@ -353,7 +353,7 @@ func TestClientOpen_IsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := c.Open(); err != nil {
 			t.Fatalf("Open #%d: %v", i, err)
 		}
@@ -387,14 +387,14 @@ func TestClientOpen_ConcurrentCallsDoNotLeakConnections(t *testing.T) {
 	const n = 16
 	start := make(chan struct{})
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		go func() {
 			<-start
 			errs <- c.Open()
 		}()
 	}
 	close(start)
-	for i := 0; i < n; i++ {
+	for range n {
 		if err := <-errs; err != nil {
 			t.Fatalf("Open: %v", err)
 		}

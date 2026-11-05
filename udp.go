@@ -19,9 +19,13 @@ const maxTCPFrameLength = 260
 // Limitations:
 //   - Modbus/UDP is non-standard; this wrapper is best-effort.
 //   - The wrapper treats datagrams as a byte stream by buffering leftovers
-//     from partially consumed datagrams. This only works correctly when each
-//     request/response maps cleanly to a single datagram with no loss,
-//     reordering, or multiplexing.
+//     from partially consumed datagrams, within one exchange: bytes left over
+//     when the next request is written (trailing bytes, a second copy of the
+//     answer, the cut-off part of a datagram longer than maxTCPFrameLength,
+//     which the socket discards) are dropped, so one exchange never reads the
+//     answer to another. This only works correctly when each request/response
+//     maps cleanly to a single datagram with no loss, reordering, or
+//     multiplexing.
 //   - It is not recommended for high-reliability production use unless
 //     specifically validated against the target device(s).
 //   - There is no concurrency protection; the transport layer serializes access.
@@ -84,7 +88,10 @@ func (usw *udpSockWrapper) Close() (err error) {
 	return
 }
 
+// Write sends buf as one datagram. A request starts a new exchange: anything
+// left over from the previous answer is dropped.
 func (usw *udpSockWrapper) Write(buf []byte) (wlen int, err error) {
+	usw.leftoverCount = 0
 	wlen, err = usw.sock.Write(buf)
 
 	return

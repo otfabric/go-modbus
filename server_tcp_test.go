@@ -233,7 +233,7 @@ func TestTCPServerCoilsAndDiscreteInputs(t *testing.T) {
 	if err != nil {
 		t.Errorf("client.ReadCoils() should have succeeded, got: %v", err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if coils[i] != false {
 			t.Errorf("expected coil at addr 0x%04x to be false", i)
 		}
@@ -243,7 +243,7 @@ func TestTCPServerCoilsAndDiscreteInputs(t *testing.T) {
 	if err != nil {
 		t.Errorf("client.ReadDiscreteInputs() should have succeeded, got: %v", err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if dis[i] != false {
 			t.Errorf("expected discrete input at addr 0x%04x to be false", i)
 		}
@@ -290,7 +290,7 @@ func TestTCPServerCoilsAndDiscreteInputs(t *testing.T) {
 	if err != nil {
 		t.Errorf("client.ReadCoils() should have succeeded, got: %v", err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if coils[i] != false {
 			t.Errorf("expected coil at addr 0x%04x to be false", i)
 		}
@@ -396,7 +396,7 @@ func TestTCPServerHoldingAndInputRegisters(t *testing.T) {
 	if err != nil {
 		t.Errorf("client.ReadRegisters() should have succeeded, got: %v", err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if regs[i] != 0x0000 {
 			t.Errorf("expected 0x0000 at position %v, got: 0x%04x", i, regs[i])
 		}
@@ -411,7 +411,7 @@ func TestTCPServerHoldingAndInputRegisters(t *testing.T) {
 	if err != nil {
 		t.Errorf("client.ReadRegisters() should have succeeded, got: %v", err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if regs[i] != 0xa710+uint16(i) {
 			t.Errorf("expected 0x%04x at position %v, got: 0x%04x",
 				0xa710+uint16(i), i, regs[i])
@@ -442,7 +442,7 @@ func TestTCPServerHoldingAndInputRegisters(t *testing.T) {
 	if err != nil {
 		t.Errorf("client.ReadRegisters() should have succeeded, got: %v", err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if regs[i] != 0x0000 {
 			t.Errorf("expected 0x0000 at position %v, got: 0x%04x", i, regs[i])
 		}
@@ -459,7 +459,7 @@ func TestTCPServerHoldingAndInputRegisters(t *testing.T) {
 	if err != nil {
 		t.Errorf("client.ReadRegisters() should have succeeded, got: %v", err)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if i != 2 && regs[i] != 0x0000 {
 			t.Errorf("expected 0x0000 at position %v, got: 0x%04x", i, regs[i])
 		}
@@ -469,7 +469,7 @@ func TestTCPServerHoldingAndInputRegisters(t *testing.T) {
 	}
 
 	// check values in the handler as well
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if i != 7 && th.holding[i] != 0x0000 {
 			t.Errorf("expected 0x0000 at handler index %v, got: 0x%04x", i, regs[i])
 		}
@@ -499,7 +499,7 @@ func TestTCPServerHoldingAndInputRegisters(t *testing.T) {
 	if err != nil {
 		t.Errorf("client.ReadRegisters() should have succeeded, got: %v", err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if regs[i] != 0x0c00+uint16(0x11*i) {
 			t.Errorf("expected ox%04x at position %v, got: 0x%04x",
 				0x0c00+uint16(0x11*i), i, regs[i])
@@ -507,7 +507,7 @@ func TestTCPServerHoldingAndInputRegisters(t *testing.T) {
 	}
 
 	// check values in the handler as well
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if th.holding[i] != 0x0c00+uint16(0x11*i) {
 			t.Errorf("expected 0xfea1 at handler index %v, got: 0x%04x", i, regs[i])
 		}

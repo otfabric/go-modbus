@@ -330,7 +330,6 @@ func TestAllowedFunctionCodes_NothingOnTheWire_RTUOverTCP(t *testing.T) {
 // A nil or empty list means no restriction.
 func TestAllowedFunctionCodes_NilAndEmptyAreUnrestricted(t *testing.T) {
 	for name, list := range map[string][]FunctionCode{"nil": nil, "empty": {}} {
-		list := list
 		t.Run(name, func(t *testing.T) {
 			dev := e2eNewDevice()
 			p := e2eStart(t, "tcp", dev, e2eOpts{client: func(c *Config) { c.AllowedFunctionCodes = list }})

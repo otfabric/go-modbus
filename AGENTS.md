@@ -26,7 +26,7 @@ This repository follows **otfabric/engineering policy 1.2**, profile **protocol-
 2. Never invent protocol semantics: cite the specification or INTEROPERABILITY.md.
 3. Never claim interoperability, conformance or certification beyond recorded evidence.
 4. The module is v1 and other OT Fabric repositories depend on it: exported API is semver-binding, and it stays on v1.
-5. The code must build and pass on Go 1.23 (`go.mod`): no newer language or standard-library features.
+5. The code must build and pass on Go 1.26 (`go.mod`): no newer language or standard-library features.
 6. The reference images in the `Makefile` stay in step with `interop/harness.go` and `.github/workflows/interop.yml`.
 
 ## Commands

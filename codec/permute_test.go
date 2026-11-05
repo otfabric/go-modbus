@@ -64,7 +64,7 @@ func TestPermuteBytes_RoundTrip(t *testing.T) {
 	for _, layout := range layouts {
 		byteCount := layout.RegisterCount() * 2
 		canonical := make([]byte, byteCount)
-		for i := uint16(0); i < byteCount; i++ {
+		for i := range byteCount {
 			canonical[i] = byte(0xA0 + i)
 		}
 		raw, err := PermuteBytesEncode(canonical, layout)

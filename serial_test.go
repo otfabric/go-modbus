@@ -46,7 +46,6 @@ func TestSerialWrapper_UnsupportedParams(t *testing.T) {
 		{"parity", &serialPortConfig{Device: "/dev/x", DataBits: 8, StopBits: 1, Parity: Parity(99)}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			spw := newSerialPortWrapper(tc.conf)
 			if err := spw.Open(); err == nil {

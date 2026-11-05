@@ -148,10 +148,8 @@ func TestChaosFaultMatrix(t *testing.T) {
 	// timeout; the cases run in parallel, so the timeouts do not add up.
 	const timeout = 150 * time.Millisecond
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModeSingleRetry, chaosModePool} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			for i, fc := range chaosFaultCases(timeout) {
-				fc := fc
 				seed := int64(i)
 				t.Run(fc.name, func(t *testing.T) {
 					t.Parallel()
@@ -229,7 +227,7 @@ func chaosRunFaultCase(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout 
 	if mode.retry == nil && fc.fault&(chaosRSTAfter|chaosFINAfter) != 0 {
 		allowance = 1
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		addr := 200 + 20*i
 		// A healthy link answers in a few milliseconds; the bound is for loaded machines.
 		wd.guard("follow-up call", time.Duration(mode.attempts())*followUp+2*time.Second, func() {
@@ -253,7 +251,6 @@ func chaosRunFaultCase(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout 
 // every possible byte boundary; every call must succeed with the right data.
 func TestChaosFragmentEveryBoundary(t *testing.T) {
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModePool} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			rig := chaosNewRig(t, "tcp", 1, nil, nil)
 			client := rig.open(mode, 5*time.Second)
@@ -327,7 +324,7 @@ func chaosCheckRawResponse(conn net.Conn, txn uint16, addr, qty int) error {
 	if len(res.Payload) != 1+2*qty || int(res.Payload[0]) != 2*qty {
 		return fmt.Errorf("response to txn %d has a %d-byte payload, want %d", txn, len(res.Payload), 1+2*qty)
 	}
-	for i := 0; i < qty; i++ {
+	for i := range qty {
 		if got := binary.BigEndian.Uint16(res.Payload[1+2*i:]); got != chaosInputValue(addr+i) {
 			return fmt.Errorf("response to txn %d: register %d = 0x%04x, want 0x%04x", txn, addr+i, got, chaosInputValue(addr+i))
 		}
@@ -350,13 +347,13 @@ func TestChaosServerCoalescedAndFragmentedRequests(t *testing.T) {
 	// Twenty requests in one write.
 	const batch = 20
 	var all []byte
-	for i := 0; i < batch; i++ {
+	for i := range batch {
 		all = append(all, chaosRawRequest(uint16(100+i), 3*i, 1+i)...)
 	}
 	if _, err := conn.Write(all); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	for i := 0; i < batch; i++ {
+	for i := range batch {
 		if err := chaosCheckRawResponse(conn, uint16(100+i), 3*i, 1+i); err != nil {
 			t.Fatalf("coalesced batch: %v", err)
 		}
@@ -364,7 +361,7 @@ func TestChaosServerCoalescedAndFragmentedRequests(t *testing.T) {
 
 	// Three coalesced requests, cut in two writes at every boundary.
 	var three []byte
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		three = append(three, chaosRawRequest(uint16(200+i), 7*i, 2+i)...)
 	}
 	for k := 1; k < len(three); k++ {
@@ -375,7 +372,7 @@ func TestChaosServerCoalescedAndFragmentedRequests(t *testing.T) {
 		if _, err := conn.Write(three[k:]); err != nil {
 			t.Fatalf("split at %d: write: %v", k, err)
 		}
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			if err := chaosCheckRawResponse(conn, uint16(200+i), 7*i, 2+i); err != nil {
 				t.Fatalf("split at %d: %v", k, err)
 			}

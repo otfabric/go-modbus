@@ -6,12 +6,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
+	"math"
+	"strconv"
 	"time"
 
 	"github.com/otfabric/go-modbus"
 	"github.com/otfabric/go-modbus/codec"
 )
+
+// layoutName16 returns the 16-bit layout name for CLI codec selection (e.g. "21").
+func layoutName16(e modbus.Endianness) string {
+	if e == modbus.LittleEndian {
+		return "12"
+	}
+	return "21"
+}
 
 // layoutName32 returns the 32-bit layout name for CLI codec selection (e.g. "4321").
 func layoutName32(e modbus.Endianness, w modbus.WordOrder) string {
@@ -36,9 +46,51 @@ func layoutName64(e modbus.Endianness, w modbus.WordOrder) string {
 		return "21436587"
 	}
 	if e == modbus.LittleEndian && w == modbus.HighWordFirst {
-		return "43218765"
+		return "78563412"
 	}
-	return "65872143"
+	return "12345678"
+}
+
+// layoutName returns the layout name for a value regs registers wide.
+func layoutName(e modbus.Endianness, w modbus.WordOrder, regs uint16) string {
+	switch regs {
+	case 1:
+		return layoutName16(e)
+	case 2:
+		return layoutName32(e, w)
+	default:
+		return layoutName64(e, w)
+	}
+}
+
+// numericType describes how a typed register read or write is decoded and
+// printed.
+type numericType struct {
+	name string
+	// hexCodec is the unsigned codec of the same width used to print the
+	// hex representation of a signed value; empty for unsigned values
+	// (printed directly) and floats (no hex).
+	hexCodec string
+	isFloat  bool
+}
+
+var numericTypes = map[operationKind]numericType{
+	readUint16:   {name: "uint16"},
+	readInt16:    {name: "int16", hexCodec: "uint16"},
+	readUint32:   {name: "uint32"},
+	readInt32:    {name: "int32", hexCodec: "uint32"},
+	readFloat32:  {name: "float32", isFloat: true},
+	readUint64:   {name: "uint64"},
+	readInt64:    {name: "int64", hexCodec: "uint64"},
+	readFloat64:  {name: "float64", isFloat: true},
+	writeUint16:  {name: "uint16"},
+	writeInt16:   {name: "int16"},
+	writeUint32:  {name: "uint32"},
+	writeInt32:   {name: "int32"},
+	writeFloat32: {name: "float32", isFloat: true},
+	writeUint64:  {name: "uint64"},
+	writeInt64:   {name: "int64"},
+	writeFloat64: {name: "float64", isFloat: true},
 }
 
 func regType(isHolding bool) modbus.RegType {
@@ -48,17 +100,30 @@ func regType(isHolding bool) modbus.RegType {
 	return modbus.InputRegister
 }
 
-// readRuntimeValues reads count multi-register values using the given codec ID,
-// returning the decoded values. regsPerValue is 2 for 32-bit, 4 for 64-bit.
-func readRuntimeValues(ctx context.Context, client *modbus.Client, unitID uint8, addr, count uint16,
-	isHoldingReg bool, codecID string, regsPerValue uint16) ([]any, error) {
-
+func runtimeCodec(codecID string) (codec.RuntimeCodec, error) {
 	rc, ok, err := codec.RuntimeCodecByID(codecID)
 	if err != nil {
 		return nil, fmt.Errorf("codec %s: %w", codecID, err)
 	}
 	if !ok {
 		return nil, fmt.Errorf("unknown codec %q", codecID)
+	}
+	return rc, nil
+}
+
+// readRuntimeValues reads count values of regsPerValue registers each and
+// decodes every value with each of the given codecs: values[i][j] is value i
+// decoded with codecIDs[j].
+func readRuntimeValues(ctx context.Context, client *modbus.Client, unitID uint8, addr, count uint16,
+	isHoldingReg bool, regsPerValue uint16, codecIDs ...string) ([][]any, error) {
+
+	codecs := make([]codec.RuntimeCodec, 0, len(codecIDs))
+	for _, id := range codecIDs {
+		rc, err := runtimeCodec(id)
+		if err != nil {
+			return nil, err
+		}
+		codecs = append(codecs, rc)
 	}
 
 	totalRegs := regsPerValue * count
@@ -67,56 +132,102 @@ func readRuntimeValues(ctx context.Context, client *modbus.Client, unitID uint8,
 		return nil, err
 	}
 
-	values := make([]any, 0, count)
-	for idx := uint16(0); idx < count; idx++ {
+	values := make([][]any, 0, count)
+	for idx := range count {
 		slice := regs[idx*regsPerValue : (idx+1)*regsPerValue]
-		decoded, decErr := codec.DecodeRegistersAny(slice, rc)
-		if decErr != nil {
-			return nil, fmt.Errorf("decode error at 0x%04x: %w", addr+idx*regsPerValue, decErr)
+		decoded := make([]any, 0, len(codecs))
+		for _, rc := range codecs {
+			v, decErr := codec.DecodeRegistersAny(slice, rc)
+			if decErr != nil {
+				return nil, fmt.Errorf("decode error at 0x%04x: %w", addr+idx*regsPerValue, decErr)
+			}
+			decoded = append(decoded, v)
 		}
 		values = append(values, decoded)
 	}
 	return values, nil
 }
 
-// writeRuntimeValue encodes value with the given codec and writes it.
+// writeRuntimeValue encodes value with the given codec and writes it: with
+// FC06 when it fits into a single register, with FC16 otherwise.
 func writeRuntimeValue(ctx context.Context, client *modbus.Client, unitID uint8, addr uint16,
 	value any, codecID string) error {
 
-	rc, ok, err := codec.RuntimeCodecByID(codecID)
+	rc, err := runtimeCodec(codecID)
 	if err != nil {
-		return fmt.Errorf("codec %s: %w", codecID, err)
+		return err
 	}
-	if !ok {
-		return fmt.Errorf("unknown codec %q", codecID)
+	regs, err := codec.EncodeRegistersAny(value, rc)
+	if err != nil {
+		return err
 	}
-	return codec.WriteRuntimeToClient(client, ctx, unitID, addr, value, rc)
+	if len(regs) == 1 {
+		return client.WriteRegister(ctx, unitID, addr, regs[0])
+	}
+	return client.WriteRegisters(ctx, unitID, addr, regs)
 }
 
 // cliResult is a structured result for JSON output mode.
 type cliResult struct {
-	Op    string `json:"op"`
-	Addr  uint16 `json:"addr,omitempty"`
-	Type  string `json:"type,omitempty"`
-	Value any    `json:"value,omitempty"`
-	Hex   string `json:"hex,omitempty"`
-	Error string `json:"error,omitempty"`
+	Op    string  `json:"op"`
+	Addr  *uint16 `json:"addr,omitempty"`
+	Type  string  `json:"type,omitempty"`
+	Value any     `json:"value,omitempty"`
+	Hex   string  `json:"hex,omitempty"`
+	Error string  `json:"error,omitempty"`
 }
 
-var jsonEncoder *json.Encoder
+// at returns a pointer to addr, for cliResult.Addr: a plain uint16 with
+// omitempty would drop address 0.
+func at(addr uint16) *uint16 {
+	return &addr
+}
 
-func emitJSON(r cliResult) {
-	if jsonEncoder == nil {
-		jsonEncoder = json.NewEncoder(os.Stdout)
+// output writes operation results either as text or as line-delimited JSON.
+type output struct {
+	w    io.Writer
+	json bool
+	enc  *json.Encoder
+}
+
+func newOutput(w io.Writer, jsonOutput bool) *output {
+	return &output{w: w, json: jsonOutput, enc: json.NewEncoder(w)}
+}
+
+func (out *output) printf(format string, args ...any) {
+	_, _ = fmt.Fprintf(out.w, format, args...)
+}
+
+func (out *output) emit(r cliResult) {
+	r.Value = jsonValue(r.Value)
+	_ = out.enc.Encode(r)
+}
+
+// jsonValue replaces the float values JSON cannot represent (NaN, ±Inf),
+// which would make encoding fail and the record disappear, with their
+// names as strings.
+func jsonValue(v any) any {
+	var f float64
+	switch x := v.(type) {
+	case float32:
+		f = float64(x)
+	case float64:
+		f = x
+	default:
+		return v
 	}
-	_ = jsonEncoder.Encode(r)
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	return v
 }
 
 func executeOperations(ctx context.Context, client *modbus.Client, runList []operation,
 	initialUnitID uint8, endianness modbus.Endianness, wordOrder modbus.WordOrder,
-	jsonOutput bool, failFast bool) (hadErrors bool) {
+	out *output, failFast bool) (hadErrors bool) {
 
 	currentUnitID := initialUnitID
+	jsonOutput := out.json
 	var err error
 
 	trackErr := func(e error) {
@@ -145,201 +256,85 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 			trackErr(err)
 			if err != nil {
 				if jsonOutput {
-					emitJSON(cliResult{Op: "readBools", Addr: o.addr, Error: err.Error()})
+					out.emit(cliResult{Op: "readBools", Addr: at(o.addr), Error: err.Error()})
 				} else {
-					fmt.Printf("failed to read coils/discrete inputs: %v\n", err)
+					out.printf("failed to read coils/discrete inputs: %v\n", err)
 				}
 			} else {
 				for idx := range res {
 					a := o.addr + uint16(idx)
 					if jsonOutput {
-						emitJSON(cliResult{Op: "readBool", Addr: a, Type: "bool", Value: res[idx]})
+						out.emit(cliResult{Op: "readBool", Addr: at(a), Type: "bool", Value: res[idx]})
 					} else {
-						fmt.Printf("0x%04x\t%-5v : %v\n", a, a, res[idx])
+						out.printf("0x%04x\t%-5v : %v\n", a, a, res[idx])
 					}
 				}
 			}
 
-		case readUint16, readInt16:
-			var res []uint16
-
-			if o.isHoldingReg {
-				res, err = client.ReadRegisters(ctx, currentUnitID, o.addr, o.count, modbus.HoldingRegister)
-			} else {
-				res, err = client.ReadRegisters(ctx, currentUnitID, o.addr, o.count, modbus.InputRegister)
+		case readUint16, readInt16, readUint32, readInt32, readFloat32,
+			readUint64, readInt64, readFloat64:
+			t := numericTypes[o.op]
+			regs := registersPerValue(o.op)
+			layout := layoutName(endianness, wordOrder, regs)
+			codecIDs := []string{t.name + "/layout:" + layout}
+			if t.hexCodec != "" {
+				codecIDs = append(codecIDs, t.hexCodec+"/layout:"+layout)
 			}
-			trackErr(err)
-			if err != nil {
-				typeName := "uint16"
-				if o.op == readInt16 {
-					typeName = "int16"
-				}
-				if jsonOutput {
-					emitJSON(cliResult{Op: "read", Addr: o.addr, Type: typeName, Error: err.Error()})
-				} else {
-					fmt.Printf("failed to read holding/input registers: %v\n", err)
-				}
-			} else {
-				for idx := range res {
-					a := o.addr + uint16(idx)
-					if o.op == readUint16 {
-						if jsonOutput {
-							emitJSON(cliResult{Op: "read", Addr: a, Type: "uint16", Value: res[idx], Hex: fmt.Sprintf("0x%04x", res[idx])})
-						} else {
-							fmt.Printf("0x%04x\t%-5v : 0x%04x\t%v\n", a, a, res[idx], res[idx])
-						}
-					} else {
-						if jsonOutput {
-							emitJSON(cliResult{Op: "read", Addr: a, Type: "int16", Value: int16(res[idx]), Hex: fmt.Sprintf("0x%04x", res[idx])})
-						} else {
-							fmt.Printf("0x%04x\t%-5v : 0x%04x\t%v\n", a, a, res[idx], int16(res[idx]))
-						}
-					}
-				}
-			}
-
-		case readUint32, readInt32:
-			layout := layoutName32(endianness, wordOrder)
-			typeName := "uint32"
-			if o.op == readInt32 {
-				typeName = "int32"
-			}
-			vals, readErr := readRuntimeValues(ctx, client, currentUnitID, o.addr, o.count, o.isHoldingReg, typeName+"/layout:"+layout, 2)
+			vals, readErr := readRuntimeValues(ctx, client, currentUnitID, o.addr, o.count, o.isHoldingReg, regs, codecIDs...)
 			trackErr(readErr)
 			if readErr != nil {
 				if jsonOutput {
-					emitJSON(cliResult{Op: "read", Addr: o.addr, Type: typeName, Error: readErr.Error()})
+					out.emit(cliResult{Op: "read", Addr: at(o.addr), Type: t.name, Error: readErr.Error()})
 				} else {
-					fmt.Printf("failed to read %s registers: %v\n", typeName, readErr)
+					out.printf("failed to read %s registers: %v\n", t.name, readErr)
 				}
-			} else {
-				for idx, v := range vals {
-					a := o.addr + uint16(idx)*2
-					if o.op == readUint32 {
-						u := v.(uint32)
-						if jsonOutput {
-							emitJSON(cliResult{Op: "read", Addr: a, Type: "uint32", Value: u, Hex: fmt.Sprintf("0x%08x", u)})
-						} else {
-							fmt.Printf("0x%04x\t%-5v : 0x%08x\t%v\n", a, a, u, u)
-						}
-					} else {
-						s := v.(int32)
-						if jsonOutput {
-							emitJSON(cliResult{Op: "read", Addr: a, Type: "int32", Value: s, Hex: fmt.Sprintf("0x%08x", uint32(s))})
-						} else {
-							fmt.Printf("0x%04x\t%-5v : 0x%08x\t%v\n", a, a, uint32(s), s)
-						}
-					}
-				}
+				break
 			}
-
-		case readFloat32:
-			layout := layoutName32(endianness, wordOrder)
-			vals, readErr := readRuntimeValues(ctx, client, currentUnitID, o.addr, o.count, o.isHoldingReg, "float32/layout:"+layout, 2)
-			trackErr(readErr)
-			if readErr != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "read", Addr: o.addr, Type: "float32", Error: readErr.Error()})
-				} else {
-					fmt.Printf("failed to read float32 registers: %v\n", readErr)
-				}
-			} else {
-				for idx, v := range vals {
-					a := o.addr + uint16(idx)*2
+			for idx, v := range vals {
+				a := o.addr + uint16(idx)*regs
+				if t.isFloat {
 					if jsonOutput {
-						emitJSON(cliResult{Op: "read", Addr: a, Type: "float32", Value: v.(float32)})
+						out.emit(cliResult{Op: "read", Addr: at(a), Type: t.name, Value: v[0]})
 					} else {
-						fmt.Printf("0x%04x\t%-5v : %f\n", a, a, v.(float32))
+						out.printf("0x%04x\t%-5v : %f\n", a, a, v[0])
 					}
+					continue
 				}
-			}
-
-		case readUint64, readInt64:
-			layout := layoutName64(endianness, wordOrder)
-			typeName := "uint64"
-			if o.op == readInt64 {
-				typeName = "int64"
-			}
-			vals, readErr := readRuntimeValues(ctx, client, currentUnitID, o.addr, o.count, o.isHoldingReg, typeName+"/layout:"+layout, 4)
-			trackErr(readErr)
-			if readErr != nil {
+				raw := v[len(v)-1] // the unsigned representation
+				hex := fmt.Sprintf("0x%0*x", 4*int(regs), raw)
 				if jsonOutput {
-					emitJSON(cliResult{Op: "read", Addr: o.addr, Type: typeName, Error: readErr.Error()})
+					out.emit(cliResult{Op: "read", Addr: at(a), Type: t.name, Value: v[0], Hex: hex})
 				} else {
-					fmt.Printf("failed to read %s registers: %v\n", typeName, readErr)
-				}
-			} else {
-				for idx, v := range vals {
-					a := o.addr + uint16(idx)*4
-					if o.op == readUint64 {
-						u := v.(uint64)
-						if jsonOutput {
-							emitJSON(cliResult{Op: "read", Addr: a, Type: "uint64", Value: u, Hex: fmt.Sprintf("0x%016x", u)})
-						} else {
-							fmt.Printf("0x%04x\t%-5v : 0x%016x\t%v\n", a, a, u, u)
-						}
-					} else {
-						s := v.(int64)
-						if jsonOutput {
-							emitJSON(cliResult{Op: "read", Addr: a, Type: "int64", Value: s, Hex: fmt.Sprintf("0x%016x", uint64(s))})
-						} else {
-							fmt.Printf("0x%04x\t%-5v : 0x%016x\t%v\n", a, a, uint64(s), s)
-						}
-					}
-				}
-			}
-
-		case readFloat64:
-			layout := layoutName64(endianness, wordOrder)
-			vals, readErr := readRuntimeValues(ctx, client, currentUnitID, o.addr, o.count, o.isHoldingReg, "float64/layout:"+layout, 4)
-			trackErr(readErr)
-			if readErr != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "read", Addr: o.addr, Type: "float64", Error: readErr.Error()})
-				} else {
-					fmt.Printf("failed to read float64 registers: %v\n", readErr)
-				}
-			} else {
-				for idx, v := range vals {
-					a := o.addr + uint16(idx)*4
-					if jsonOutput {
-						emitJSON(cliResult{Op: "read", Addr: a, Type: "float64", Value: v.(float64)})
-					} else {
-						fmt.Printf("0x%04x\t%-5v : %f\n", a, a, v.(float64))
-					}
+					out.printf("0x%04x\t%-5v : %s\t%v\n", a, a, hex, v[0])
 				}
 			}
 
 		case readBytes:
 			var res []byte
-			if o.isHoldingReg {
-				res, err = client.ReadRegisterBytes(ctx, currentUnitID, o.addr, o.count, modbus.HoldingRegister)
-			} else {
-				res, err = client.ReadRegisterBytes(ctx, currentUnitID, o.addr, o.count, modbus.InputRegister)
-			}
+			res, err = client.ReadRegisterBytes(ctx, currentUnitID, o.addr, o.count, regType(o.isHoldingReg))
 			trackErr(err)
 			if err != nil {
 				if jsonOutput {
-					emitJSON(cliResult{Op: "read", Addr: o.addr, Type: "bytes", Error: err.Error()})
+					out.emit(cliResult{Op: "read", Addr: at(o.addr), Type: "bytes", Error: err.Error()})
 				} else {
-					fmt.Printf("failed to read holding/input registers: %v\n", err)
+					out.printf("failed to read holding/input registers: %v\n", err)
 				}
 			} else {
 				if jsonOutput {
-					emitJSON(cliResult{Op: "read", Addr: o.addr, Type: "bytes", Value: fmt.Sprintf("%x", res)})
+					out.emit(cliResult{Op: "read", Addr: at(o.addr), Type: "bytes", Value: fmt.Sprintf("%x", res)})
 				} else {
 					for idx := range res {
 						if (idx % 16) == 0 {
-							fmt.Printf("0x%04x\t%-5v : ",
+							out.printf("0x%04x\t%-5v : ",
 								o.addr+(uint16(idx/2)), o.addr+(uint16(idx/2)))
 						}
-						fmt.Printf("%02x", res[idx])
+						out.printf("%02x", res[idx])
 
 						if (idx%16) == 15 || idx == len(res)-1 {
-							fmt.Printf(" <%s>\n",
+							out.printf(" <%s>\n",
 								decodeString(res[(idx/16*16):(idx/16*16)+(idx%16)+1]))
 						} else if (idx % 16) == 7 {
-							fmt.Printf(" ")
+							out.printf(" ")
 						}
 					}
 				}
@@ -350,158 +345,47 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 			trackErr(err)
 			if err != nil {
 				if jsonOutput {
-					emitJSON(cliResult{Op: "writeCoil", Addr: o.addr, Value: o.coil, Error: err.Error()})
+					out.emit(cliResult{Op: "writeCoil", Addr: at(o.addr), Value: o.coil, Error: err.Error()})
 				} else {
-					fmt.Printf("failed to write %v at coil address 0x%04x: %v\n",
+					out.printf("failed to write %v at coil address 0x%04x: %v\n",
 						o.coil, o.addr, err)
 				}
 			} else {
 				if jsonOutput {
-					emitJSON(cliResult{Op: "writeCoil", Addr: o.addr, Value: o.coil})
+					out.emit(cliResult{Op: "writeCoil", Addr: at(o.addr), Value: o.coil})
 				} else {
-					fmt.Printf("wrote %v at coil address 0x%04x\n",
+					out.printf("wrote %v at coil address 0x%04x\n",
 						o.coil, o.addr)
 				}
 			}
 
-		case writeUint16:
-			err = client.WriteRegister(ctx, currentUnitID, o.addr, o.u16)
+		case writeUint16, writeInt16, writeUint32, writeInt32, writeFloat32,
+			writeUint64, writeInt64, writeFloat64:
+			t := numericTypes[o.op]
+			regs := registersPerValue(o.op)
+			err = writeRuntimeValue(ctx, client, currentUnitID, o.addr, o.value,
+				t.name+"/layout:"+layoutName(endianness, wordOrder, regs))
 			trackErr(err)
-			if err != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "uint16", Value: o.u16, Error: err.Error()})
-				} else {
-					fmt.Printf("failed to write %v at register address 0x%04x: %v\n",
-						o.u16, o.addr, err)
+			if jsonOutput {
+				r := cliResult{Op: "write", Addr: at(o.addr), Type: t.name, Value: o.value}
+				if err != nil {
+					r.Error = err.Error()
 				}
-			} else {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "uint16", Value: o.u16})
-				} else {
-					fmt.Printf("wrote %v at register address 0x%04x\n",
-						o.u16, o.addr)
-				}
+				out.emit(r)
+				break
 			}
-
-		case writeInt16:
-			err = client.WriteRegister(ctx, currentUnitID, o.addr, o.u16)
-			trackErr(err)
-			if err != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "int16", Value: int16(o.u16), Error: err.Error()})
-				} else {
-					fmt.Printf("failed to write %v at register address 0x%04x: %v\n",
-						int16(o.u16), o.addr, err)
-				}
-			} else {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "int16", Value: int16(o.u16)})
-				} else {
-					fmt.Printf("wrote %v at register address 0x%04x\n",
-						int16(o.u16), o.addr)
-				}
+			verb := "%v"
+			if t.isFloat {
+				verb = "%f"
 			}
-
-		case writeUint32:
-			err = writeRuntimeValue(ctx, client, currentUnitID, o.addr, o.u32, "uint32/layout:"+layoutName32(endianness, wordOrder))
-			trackErr(err)
-			if err != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "uint32", Value: o.u32, Error: err.Error()})
-				} else {
-					fmt.Printf("failed to write %v at address 0x%04x: %v\n", o.u32, o.addr, err)
-				}
-			} else {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "uint32", Value: o.u32})
-				} else {
-					fmt.Printf("wrote %v at address 0x%04x\n", o.u32, o.addr)
-				}
+			where := "address"
+			if regs == 1 {
+				where = "register address"
 			}
-
-		case writeInt32:
-			err = writeRuntimeValue(ctx, client, currentUnitID, o.addr, int32(o.u32), "int32/layout:"+layoutName32(endianness, wordOrder))
-			trackErr(err)
 			if err != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "int32", Value: int32(o.u32), Error: err.Error()})
-				} else {
-					fmt.Printf("failed to write %v at address 0x%04x: %v\n", int32(o.u32), o.addr, err)
-				}
+				out.printf("failed to write "+verb+" at "+where+" 0x%04x: %v\n", o.value, o.addr, err)
 			} else {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "int32", Value: int32(o.u32)})
-				} else {
-					fmt.Printf("wrote %v at address 0x%04x\n", int32(o.u32), o.addr)
-				}
-			}
-
-		case writeFloat32:
-			err = writeRuntimeValue(ctx, client, currentUnitID, o.addr, o.f32, "float32/layout:"+layoutName32(endianness, wordOrder))
-			trackErr(err)
-			if err != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "float32", Value: o.f32, Error: err.Error()})
-				} else {
-					fmt.Printf("failed to write %f at address 0x%04x: %v\n", o.f32, o.addr, err)
-				}
-			} else {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "float32", Value: o.f32})
-				} else {
-					fmt.Printf("wrote %f at address 0x%04x\n", o.f32, o.addr)
-				}
-			}
-
-		case writeUint64:
-			err = writeRuntimeValue(ctx, client, currentUnitID, o.addr, o.u64, "uint64/layout:"+layoutName64(endianness, wordOrder))
-			trackErr(err)
-			if err != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "uint64", Value: o.u64, Error: err.Error()})
-				} else {
-					fmt.Printf("failed to write %v at address 0x%04x: %v\n", o.u64, o.addr, err)
-				}
-			} else {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "uint64", Value: o.u64})
-				} else {
-					fmt.Printf("wrote %v at address 0x%04x\n", o.u64, o.addr)
-				}
-			}
-
-		case writeInt64:
-			err = writeRuntimeValue(ctx, client, currentUnitID, o.addr, int64(o.u64), "int64/layout:"+layoutName64(endianness, wordOrder))
-			trackErr(err)
-			if err != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "int64", Value: int64(o.u64), Error: err.Error()})
-				} else {
-					fmt.Printf("failed to write %v at address 0x%04x: %v\n", int64(o.u64), o.addr, err)
-				}
-			} else {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "int64", Value: int64(o.u64)})
-				} else {
-					fmt.Printf("wrote %v at address 0x%04x\n", int64(o.u64), o.addr)
-				}
-			}
-
-		case writeFloat64:
-			err = writeRuntimeValue(ctx, client, currentUnitID, o.addr, o.f64, "float64/layout:"+layoutName64(endianness, wordOrder))
-			trackErr(err)
-			if err != nil {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "float64", Value: o.f64, Error: err.Error()})
-				} else {
-					fmt.Printf("failed to write %f at address 0x%04x: %v\n", o.f64, o.addr, err)
-				}
-			} else {
-				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "float64", Value: o.f64})
-				} else {
-					fmt.Printf("wrote %f at address 0x%04x\n", o.f64, o.addr)
-				}
+				out.printf("wrote "+verb+" at "+where+" 0x%04x\n", o.value, o.addr)
 			}
 
 		case writeBytes:
@@ -509,16 +393,16 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 			trackErr(err)
 			if err != nil {
 				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "bytes", Value: fmt.Sprintf("%x", o.bytes), Error: err.Error()})
+					out.emit(cliResult{Op: "write", Addr: at(o.addr), Type: "bytes", Value: fmt.Sprintf("%x", o.bytes), Error: err.Error()})
 				} else {
-					fmt.Printf("failed to write %v at address 0x%04x: %v\n",
+					out.printf("failed to write %v at address 0x%04x: %v\n",
 						o.bytes, o.addr, err)
 				}
 			} else {
 				if jsonOutput {
-					emitJSON(cliResult{Op: "write", Addr: o.addr, Type: "bytes", Value: fmt.Sprintf("%x", o.bytes)})
+					out.emit(cliResult{Op: "write", Addr: at(o.addr), Type: "bytes", Value: fmt.Sprintf("%x", o.bytes)})
 				} else {
-					fmt.Printf("wrote %v bytes at address 0x%04x\n",
+					out.printf("wrote %v bytes at address 0x%04x\n",
 						len(o.bytes), o.addr)
 				}
 			}
@@ -527,6 +411,7 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 			select {
 			case <-time.After(o.duration):
 			case <-ctx.Done():
+				hadErrors = true
 				return
 			}
 
@@ -539,26 +424,22 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 		case date:
 			now := time.Now().Format(time.RFC3339)
 			if jsonOutput {
-				emitJSON(cliResult{Op: "date", Value: now})
+				out.emit(cliResult{Op: "date", Value: now})
 			} else {
-				fmt.Printf("%s\n", now)
+				out.printf("%s\n", now)
 			}
 
 		case scanBools:
-			performBoolScan(ctx, client, currentUnitID, o.isCoil, jsonOutput)
+			performBoolScan(ctx, client, currentUnitID, o.isCoil, out)
 
 		case scanRegisters:
-			performRegisterScan(ctx, client, currentUnitID, o.isHoldingReg, jsonOutput)
+			performRegisterScan(ctx, client, currentUnitID, o.isHoldingReg, out)
 
 		case scanUnitID:
-			performUnitIDScan(ctx, client, jsonOutput)
+			performUnitIDScan(ctx, client, out)
 
 		case ping:
-			performPing(ctx, client, currentUnitID, o.count, o.duration, jsonOutput)
-
-		default:
-			fmt.Printf("unknown operation %v\n", o)
-			os.Exit(100)
+			performPing(ctx, client, currentUnitID, o.count, o.duration, out)
 		}
 
 		if failFast && hadErrors {

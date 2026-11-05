@@ -217,7 +217,7 @@ func (mc *Client) WriteFileRecords(ctx context.Context, unitID uint8, records []
 		req.Payload = append(req.Payload, 0x06)
 		req.Payload = append(req.Payload, uint16ToBytes(BigEndian, r.FileNumber)...)
 		req.Payload = append(req.Payload, uint16ToBytes(BigEndian, r.RecordNumber)...)
-		req.Payload = append(req.Payload, uint16ToBytes(BigEndian, uint16(len(r.Data)))...)
+		req.Payload = append(req.Payload, uint16ToBytes(BigEndian, adu.Uint16(len(r.Data)))...)
 		for _, v := range r.Data {
 			req.Payload = append(req.Payload, uint16ToBytes(BigEndian, v)...)
 		}

@@ -216,6 +216,22 @@ func TestSerialCharTime(t *testing.T) {
 	}
 }
 
+// A rate that does not fit in a time.Duration must not wrap to a negative
+// character time: before the fix, SerialCharTime(^uint(0)) was -11s on 64-bit.
+func TestSerialCharTimeHugeRate(t *testing.T) {
+	maxRate := ^uint(0)
+	want := time.Duration(uint64(11*time.Second) / uint64(maxRate))
+	if got := SerialCharTime(maxRate); got != want {
+		t.Errorf("SerialCharTime(%d) = %v, want %v", maxRate, got, want)
+	}
+	if over := uint64(11*time.Second) + 1; uint64(maxRate) >= over {
+		rate := uint(over)
+		if got := SerialCharTime(rate); got != 0 {
+			t.Errorf("SerialCharTime(%d) = %v, want 0", rate, got)
+		}
+	}
+}
+
 func TestRTUReadFrame(t *testing.T) {
 	p1, p2 := net.Pipe()
 	txchan := make(chan []byte, 4)
@@ -226,7 +242,7 @@ func TestRTUReadFrame(t *testing.T) {
 	_ = p2.SetDeadline(time.Now().Add(100 * time.Millisecond))
 
 	txchan <- []byte{0x31, 0x82, 0x02, 0xc1, 0x6e}
-	res, err := rt.readRTUFrame()
+	res, err := rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatalf("readRTUFrame: %v", err)
 	}
@@ -238,13 +254,13 @@ func TestRTUReadFrame(t *testing.T) {
 	}
 
 	txchan <- []byte{0x30, 0x82, 0x12, 0xc0, 0xa2}
-	_, err = rt.readRTUFrame()
+	_, err = rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if err != protocol.ErrBadCRC {
 		t.Errorf("want ErrBadCRC, got %v", err)
 	}
 
 	txchan <- []byte{0x31, 0x03, 0x04, 0x11, 0x22, 0x33, 0x44, 0x7b, 0xc5}
-	res, err = rt.readRTUFrame()
+	res, err = rt.readRTUFrame(context.Background(), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatalf("readRTUFrame: %v", err)
 	}

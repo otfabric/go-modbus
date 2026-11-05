@@ -40,7 +40,7 @@ func TestB2B_Property_ReadWriteDifferential(t *testing.T) {
 		model := newShadowModel()
 
 		const iterations = 300
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			switch rng.Intn(6) {
 			case 0: // FC05 write single coil
 				addr := rng.Intn(refSpace)
@@ -140,7 +140,7 @@ func TestB2B_Property_DeviceIDReassembly(t *testing.T) {
 	rng := rand.New(rand.NewSource(propSeed))
 	t.Logf("devid seed = %d", propSeed)
 
-	for trial := 0; trial < 20; trial++ {
+	for trial := range 20 {
 		objs := randomDeviceIDObjects(rng)
 		dev := newRefDevice()
 		dev.devObjects = objs
@@ -173,10 +173,7 @@ func TestB2B_Property_DeviceIDReassembly(t *testing.T) {
 // randWindow returns a random (addr, qty) with qty in [1, maxQty] such that
 // addr+qty <= refSpace.
 func randWindow(rng *rand.Rand, maxQty int) (addr, qty int) {
-	qty = 1 + rng.Intn(maxQty)
-	if qty > refSpace {
-		qty = refSpace
-	}
+	qty = min(1+rng.Intn(maxQty), refSpace)
 	addr = rng.Intn(refSpace - qty + 1)
 	return addr, qty
 }
@@ -192,7 +189,7 @@ func randomDeviceIDObjects(rng *rand.Rand) []DeviceIdentificationObject {
 	}
 	used := map[int]bool{0x00: true, 0x01: true, 0x02: true}
 	extra := rng.Intn(8)
-	for i := 0; i < extra; i++ {
+	for range extra {
 		id := 0x03 + rng.Intn(0xFD) // 0x03..0xFF
 		if used[id] {
 			continue

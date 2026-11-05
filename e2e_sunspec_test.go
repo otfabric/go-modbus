@@ -30,7 +30,7 @@ func e2eSunSpecMap(base uint16, models []e2eSunSpecModel) ([]uint16, []sunspec.M
 	addr := uint32(base) + 2
 	add := func(id, length uint16) {
 		regs = append(regs, id, length)
-		for i := uint16(0); i < length; i++ {
+		for i := range length {
 			regs = append(regs, 0xB000+i)
 		}
 		end := addr + 2 + uint32(length)

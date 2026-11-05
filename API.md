@@ -227,8 +227,13 @@ well-formed Modbus exception response does not affect the connection. The
 serial-framed transports (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`,
 `asciiovertcp`) and `udp` keep their link across timeouts and bad frames — a
 unit that does not answer is routine on a bus — and replace it only when the
-link itself is down (EOF, reset, closed). A pooled connection (`MaxConns > 1`)
-is discarded after any error.
+link itself is down (EOF, reset, closed). After a failed exchange the serial
+framings discard what the link delivers for a short window (3 × t3.5 for RTU,
+20 ms for ASCII) before the next request, so a late answer is not taken as
+the next request's; `udp` and `rtuoverudp` drop the bytes left in a datagram
+when the next request is written. An answer later than that window can still
+be read as the next one: these framings carry no transaction ID. A pooled
+connection (`MaxConns > 1`) is discarded after any error.
 
 Without a `RetryPolicy` the request that hit the error still fails; it is the
 *following* request that runs on the new connection.
@@ -1017,7 +1022,9 @@ type ServerConfig struct {
     // Timeout is the idle session timeout: a connection on which no complete
     // request arrives for this long, while none is being served, is closed.
     // It does not limit how long a handler may run. Each response is written
-    // under a separate deadline of the same duration. Default: 120 s.
+    // under a separate deadline of the same duration; a response that cannot
+    // be written in full by then (a client that does not read) closes the
+    // connection. Default: 120 s.
     Timeout time.Duration
 
     // MaxClients limits concurrent client connections. Default: 10.
@@ -1110,7 +1117,10 @@ different client goroutines. Implementations must be safe for concurrent use
 (e.g. use `sync.Mutex` or other synchronization when accessing shared state).
 
 A panic inside any handler method is recovered and logged with a full stack
-trace; the client receives a `ServerDeviceFailure` exception response.
+trace; the client receives a `ServerDeviceFailure` exception response. A nil
+response pointer from `HandleCommEventCounter`, `HandleCommEventLog` or
+`HandleDeviceIdentification` is answered with `ServerDeviceFailure` as well,
+without a panic.
 
 An error returned by a handler method is sent to the client as the matching
 Modbus exception (`ErrIllegalDataAddress` → exception 2, and so on;

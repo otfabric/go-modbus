@@ -7,6 +7,7 @@ package interop
 import (
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -619,14 +620,10 @@ func normalizedFor(sc scenario, r *result) string {
 	// level itself is checked by identificationIs.
 	c := *r
 	c.raw = map[string]any{}
-	for k, v := range r.raw {
-		c.raw[k] = v
-	}
+	maps.Copy(c.raw, r.raw)
 	if resp, ok := r.raw["response"].(map[string]any); ok {
 		cp := map[string]any{}
-		for k, v := range resp {
-			cp[k] = v
-		}
+		maps.Copy(cp, resp)
 		if level, ok := cp["conformityLevel"].(float64); ok {
 			cp["conformityLevel"] = int(level) &^ 0x80
 		}

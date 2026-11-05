@@ -285,8 +285,7 @@ func TestProbeFunction_UnsupportedFC(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported FC")
 	}
-	var pe *ParameterError
-	if !errors.As(err, &pe) {
+	if _, ok := errors.AsType[*ParameterError](err); !ok {
 		t.Errorf("expected *ParameterError, got %T", err)
 	}
 }

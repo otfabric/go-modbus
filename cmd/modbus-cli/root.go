@@ -3,10 +3,10 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,56 +19,62 @@ import (
 
 var errOperationFailed = errors.New("operation failed")
 
-var (
-	flagTarget     string
-	flagSpeed      uint
-	flagDataBits   uint
-	flagParity     string
-	flagStopBits   uint
-	flagTimeout    string
-	flagUnitID     uint
-	flagCertPath   string
-	flagKeyPath    string
-	flagCAPath     string
-	flagEndianness string
-	flagWordOrder  string
-	flagJSON       bool
-	flagFailFast   bool
-)
+// options holds the values of the global flags.
+type options struct {
+	target     string
+	speed      uint
+	dataBits   uint
+	parity     string
+	stopBits   uint
+	timeout    string
+	unitID     uint
+	certPath   string
+	keyPath    string
+	caPath     string
+	endianness string
+	wordOrder  string
+	json       bool
+	failFast   bool
+}
 
-var rootCmd = &cobra.Command{
-	Use:   "modbus-cli [flags] operation [operation...]",
-	Short: "Modbus command line interface client for probing and troubleshooting",
-	Long: `A modbus command line interface client for quick interaction with modbus
+// newRootCmd builds the command tree with a fresh set of flags.
+func newRootCmd() *cobra.Command {
+	opts := &options{}
+
+	rootCmd := &cobra.Command{
+		Use:   "modbus-cli [flags] operation [operation...]",
+		Short: "Modbus command line interface client for probing and troubleshooting",
+		Long: `A modbus command line interface client for quick interaction with modbus
 devices (e.g. for probing or troubleshooting).
 
 Operations are given as trailing arguments using a colon-separated DSL.
 
 ` + operationsHelp,
-	Example:           operationsExamples,
-	Args:              cobra.ArbitraryArgs,
-	RunE:              runRoot,
-	SilenceUsage:      true,
-	SilenceErrors:     true,
-	ValidArgsFunction: completeOperations,
-}
+		Example: operationsExamples,
+		Args:    cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRoot(cmd, opts, args)
+		},
+		SilenceUsage:      true,
+		SilenceErrors:     true,
+		ValidArgsFunction: completeOperations,
+	}
 
-func init() {
 	f := rootCmd.PersistentFlags()
-	f.StringVar(&flagTarget, "target", "", "target device to connect to (e.g. tcp://somehost:502)")
-	f.UintVar(&flagSpeed, "speed", 19200, "serial bus speed in bps (rtu, ascii)")
-	f.UintVar(&flagDataBits, "data-bits", 0, "data bits per character: 0 (auto: 8 for rtu, 7 for ascii), 5-8")
-	f.StringVar(&flagParity, "parity", "none", "parity bit: none, even, odd (rtu, ascii)")
-	f.UintVar(&flagStopBits, "stop-bits", 0, "stop bits: 0 (auto), 1, 2 (rtu, ascii)")
-	f.StringVar(&flagTimeout, "timeout", "3s", "request timeout (e.g. 3s, 500ms)")
-	f.StringVar(&flagEndianness, "endianness", "big", "register endianness: big, little")
-	f.StringVar(&flagWordOrder, "word-order", "highfirst", "word order: highfirst|hf, lowfirst|lf")
-	f.UintVar(&flagUnitID, "unit-id", 1, "unit/slave ID (0-255)")
-	f.StringVar(&flagCertPath, "cert", "", "TLS client certificate path")
-	f.StringVar(&flagKeyPath, "key", "", "TLS client key path")
-	f.StringVar(&flagCAPath, "ca", "", "TLS CA/server certificate path")
-	f.BoolVar(&flagJSON, "json", false, "output as line-delimited JSON")
-	f.BoolVar(&flagFailFast, "fail-fast", false, "stop on first operation error")
+	f.StringVar(&opts.target, "target", "", "target device to connect to (e.g. tcp://somehost:502)")
+	f.UintVar(&opts.speed, "speed", 19200, "serial bus speed in bps (rtu, ascii)")
+	f.UintVar(&opts.dataBits, "data-bits", 0, "data bits per character: 0 (auto: 8 for rtu, 7 for ascii), 5-8")
+	f.StringVar(&opts.parity, "parity", "none", "parity bit: none, even, odd (rtu, ascii)")
+	f.UintVar(&opts.stopBits, "stop-bits", 0, "stop bits: 0 (auto), 1, 2 (rtu, ascii)")
+	f.StringVar(&opts.timeout, "timeout", "3s", "request timeout (e.g. 3s, 500ms)")
+	f.StringVar(&opts.endianness, "endianness", "big", "register endianness: big, little")
+	f.StringVar(&opts.wordOrder, "word-order", "highfirst", "word order: highfirst|hf, lowfirst|lf")
+	f.UintVar(&opts.unitID, "unit-id", 1, "unit/slave ID (0-255)")
+	f.StringVar(&opts.certPath, "cert", "", "TLS client certificate path")
+	f.StringVar(&opts.keyPath, "key", "", "TLS client key path")
+	f.StringVar(&opts.caPath, "ca", "", "TLS CA/server certificate path")
+	f.BoolVar(&opts.json, "json", false, "output as line-delimited JSON")
+	f.BoolVar(&opts.failFast, "fail-fast", false, "stop on first operation error")
 
 	_ = rootCmd.RegisterFlagCompletionFunc("parity", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return []string{"none", "even", "odd"}, cobra.ShellCompDirectiveNoFileComp
@@ -85,7 +91,25 @@ func init() {
 		}, cobra.ShellCompDirectiveNoFileComp
 	})
 
-	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(newVersionCmd())
+
+	return rootCmd
+}
+
+// run executes the command line args and returns the process exit code.
+func run(args []string, stdout, stderr io.Writer) int {
+	rootCmd := newRootCmd()
+	rootCmd.SetArgs(args)
+	rootCmd.SetOut(stdout)
+	rootCmd.SetErr(stderr)
+
+	if err := rootCmd.Execute(); err != nil {
+		if !errors.Is(err, errOperationFailed) {
+			_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+		}
+		return 1
+	}
+	return 0
 }
 
 func completeOperations(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
@@ -106,23 +130,23 @@ func completeOperations(_ *cobra.Command, _ []string, _ string) ([]string, cobra
 	}, cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
 }
 
-func runRoot(cmd *cobra.Command, args []string) error {
+func runRoot(cmd *cobra.Command, opts *options, args []string) error {
 	if len(args) == 0 {
 		return cmd.Help()
 	}
 
-	if flagTarget == "" {
+	if opts.target == "" {
 		return fmt.Errorf("no target specified, use --target")
 	}
 
 	config := modbus.Config{
-		URL:      flagTarget,
-		Speed:    flagSpeed,
-		DataBits: flagDataBits,
-		StopBits: flagStopBits,
+		URL:      opts.target,
+		Speed:    opts.speed,
+		DataBits: opts.dataBits,
+		StopBits: opts.stopBits,
 	}
 
-	switch flagParity {
+	switch opts.parity {
 	case "none":
 		config.Parity = modbus.ParityNone
 	case "odd":
@@ -130,45 +154,44 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	case "even":
 		config.Parity = modbus.ParityEven
 	default:
-		return fmt.Errorf("unknown parity setting '%s' (should be none, even, or odd)", flagParity)
+		return fmt.Errorf("unknown parity setting %q (should be none, even, or odd)", opts.parity)
+	}
+
+	switch opts.dataBits {
+	case 0, 5, 6, 7, 8:
+	default:
+		return fmt.Errorf("data bits %d out of range (0 for auto, or 5-8)", opts.dataBits)
+	}
+
+	switch opts.stopBits {
+	case 0, 1, 2:
+	default:
+		return fmt.Errorf("stop bits %d out of range (0 for auto, 1 or 2)", opts.stopBits)
 	}
 
 	var err error
-	config.Timeout, err = time.ParseDuration(flagTimeout)
+	config.Timeout, err = time.ParseDuration(opts.timeout)
 	if err != nil {
-		return fmt.Errorf("failed to parse timeout '%s': %w", flagTimeout, err)
+		return fmt.Errorf("failed to parse timeout %q: %w", opts.timeout, err)
+	}
+	// the library replaces a zero timeout with its default and a negative
+	// one fails every request: neither is what was asked for
+	if config.Timeout <= 0 {
+		return fmt.Errorf("timeout %q must be greater than 0", opts.timeout)
 	}
 
-	cEndianness, err := parseEndianness(flagEndianness)
+	if opts.unitID > 0xff {
+		return fmt.Errorf("unit ID %d out of range (0-255)", opts.unitID)
+	}
+	unitID := uint8(opts.unitID)
+
+	cEndianness, err := parseEndianness(opts.endianness)
 	if err != nil {
 		return err
 	}
-	cWordOrder, err := parseWordOrder(flagWordOrder)
+	cWordOrder, err := parseWordOrder(opts.wordOrder)
 	if err != nil {
 		return err
-	}
-
-	if strings.HasPrefix(flagTarget, "tcp+tls://") {
-		if flagCertPath == "" {
-			return fmt.Errorf("TLS requested but no client certificate given, use --cert")
-		}
-		if flagKeyPath == "" {
-			return fmt.Errorf("TLS requested but no client key given, use --key")
-		}
-		if flagCAPath == "" {
-			return fmt.Errorf("TLS requested but no CA/server cert given, use --ca")
-		}
-
-		clientKeyPair, tlsErr := tls.LoadX509KeyPair(flagCertPath, flagKeyPath)
-		if tlsErr != nil {
-			return fmt.Errorf("failed to load client TLS key pair: %w", tlsErr)
-		}
-		config.TLSClientCert = &clientKeyPair
-
-		config.TLSRootCAs, err = modbus.LoadCertPool(flagCAPath)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS CA/server certificate: %w", err)
-		}
 	}
 
 	runList, err := parseOperations(args)
@@ -176,13 +199,32 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if strings.HasPrefix(opts.target, "tcp+tls://") {
+		if opts.certPath == "" {
+			return fmt.Errorf("TLS requested but no client certificate given, use --cert")
+		}
+		if opts.keyPath == "" {
+			return fmt.Errorf("TLS requested but no client key given, use --key")
+		}
+		if opts.caPath == "" {
+			return fmt.Errorf("TLS requested but no CA/server cert given, use --ca")
+		}
+
+		clientKeyPair, tlsErr := tls.LoadX509KeyPair(opts.certPath, opts.keyPath)
+		if tlsErr != nil {
+			return fmt.Errorf("failed to load client TLS key pair: %w", tlsErr)
+		}
+		config.TLSClientCert = &clientKeyPair
+
+		config.TLSRootCAs, err = modbus.LoadCertPool(opts.caPath)
+		if err != nil {
+			return fmt.Errorf("failed to load TLS CA/server certificate: %w", err)
+		}
+	}
+
 	client, err := modbus.New(config)
 	if err != nil {
 		return fmt.Errorf("failed to create client: %w", err)
-	}
-
-	if flagUnitID > 0xff {
-		return fmt.Errorf("unit ID %d out of range (0-255)", flagUnitID)
 	}
 
 	if err := client.Open(); err != nil {
@@ -190,10 +232,11 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if executeOperations(ctx, client, runList, uint8(flagUnitID), cEndianness, cWordOrder, flagJSON, flagFailFast) {
+	out := newOutput(cmd.OutOrStdout(), opts.json)
+	if executeOperations(ctx, client, runList, unitID, cEndianness, cWordOrder, out, opts.failFast) {
 		return errOperationFailed
 	}
 	return nil

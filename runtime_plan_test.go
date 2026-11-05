@@ -132,8 +132,7 @@ func TestExecuteRuntimeDecodePlanOffline_ValidatesPlan(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for plan with no items")
 	}
-	var e *RuntimePlanValidationError
-	if !errors.As(err, &e) {
+	if _, ok := errors.AsType[*RuntimePlanValidationError](err); !ok {
 		t.Errorf("expected *RuntimePlanValidationError, got %T", err)
 	}
 }

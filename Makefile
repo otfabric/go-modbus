@@ -126,6 +126,11 @@ fuzz: ## Run back-to-back fuzz targets for FUZZTIME each (default 30s)
 	@go test -run='^$$' -fuzz='^FuzzClientResponseParse$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzServerFunctions$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzCompile$$' -fuzztime=$(FUZZTIME) ./batch
+	@go test -run='^$$' -fuzz='^FuzzHostileRuntimeDecode$$' -fuzztime=$(FUZZTIME) ./codec
+	@go test -run='^$$' -fuzz='^FuzzHostileTCPResponse$$' -fuzztime=$(FUZZTIME) ./internal/transport
+	@go test -run='^$$' -fuzz='^FuzzHostileRTUResponse$$' -fuzztime=$(FUZZTIME) ./internal/transport
+	@go test -run='^$$' -fuzz='^FuzzHostileASCIIResponse$$' -fuzztime=$(FUZZTIME) ./internal/transport
+	@go test -run='^$$' -fuzz='^FuzzHostileDiscover$$' -fuzztime=$(FUZZTIME) ./sunspec
 
 # Duration the chaos and the stress tests each keep looping in soak mode. Override with
 # SOAKTIME=... (e.g. SOAKTIME=30m). A failing chaos run logs its seed; replay it with
