@@ -25,7 +25,8 @@ go test -c -race -o "${bin}" .
 burners=()
 stop() { [[ ${#burners[@]} -eq 0 ]] || kill "${burners[@]}" 2>/dev/null || true; }
 trap stop EXIT
-for ((i = 0; i < cores * 2; i++)); do
+burn=$((cores * 2))
+for ((i = 0; i < burn; i++)); do
 	(while :; do :; done) &
 	burners+=("$!")
 done
