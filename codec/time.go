@@ -168,23 +168,19 @@ func (c dateTimeYMDhmsCodec) EncodeRegisters(t time.Time) ([]uint16, error) {
 		return nil, &CodecValueError{Codec: c.ID(), Reason: "location must not be nil"}
 	}
 	t = t.In(c.loc)
-	year := t.Year()
-	if year < 0 || year > 65535 {
-		return nil, &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("year %d out of range 0-65535", year)}
+	// Month, day, hour, minute and second are bounded by time.Time; only the
+	// year can leave the register range. Every field is checked before its
+	// conversion so that none can wrap.
+	fields := [6]int{t.Year(), int(t.Month()), t.Day(), t.Hour(), t.Minute(), t.Second()}
+	names := [6]string{"year", "month", "day", "hour", "minute", "second"}
+	out := make([]uint16, len(fields))
+	for i, f := range fields {
+		if f < 0 || f > math.MaxUint16 {
+			return nil, &CodecValueError{Codec: c.ID(), Reason: fmt.Sprintf("%s %d out of range 0-65535", names[i], f)}
+		}
+		out[i] = uint16(f)
 	}
-	month := int(t.Month())
-	day := t.Day()
-	hour := t.Hour()
-	min := t.Minute()
-	sec := t.Second()
-	return []uint16{
-		uint16(year),
-		uint16(month),
-		uint16(day),
-		uint16(hour),
-		uint16(min),
-		uint16(sec),
-	}, nil
+	return out, nil
 }
 
 // NewDateTimeYMDhmsUTCCodec returns a codec for 6-register YMDhms interpreted as UTC.
@@ -263,8 +259,8 @@ func encodeCP56Time2a(t time.Time, loc *time.Location) ([]byte, error) {
 		return nil, fmt.Errorf("modbus: CP56Time2a milliseconds %d out of range 0-59999", ms)
 	}
 	b := make([]byte, 7)
-	b[0] = byte(ms)
-	b[1] = byte(ms >> 8)
+	b[0] = byte(ms & 0xFF)
+	b[1] = byte(ms >> 8 & 0xFF)
 	b[2] = byte(t.Minute() & 0x3F)
 	b[3] = byte(t.Hour() & 0x1F)
 	day := t.Day()
@@ -272,7 +268,7 @@ func encodeCP56Time2a(t time.Time, loc *time.Location) ([]byte, error) {
 	if dow == 0 {
 		dow = 7
 	}
-	b[4] = byte(day&0x1F | (dow&0x07)<<5)
+	b[4] = byte(day&0x1F) | byte(dow&0x07)<<5
 	b[5] = byte(int(t.Month()) & 0x0F)
 	b[6] = byte(year - 2000)
 	return b, nil

@@ -18,7 +18,7 @@ func PermuteBytesDecode(raw []byte, layout RegisterLayout) ([]byte, error) {
 	for j := range byteCount {
 		logicalPos := byteCount - j // j=0 -> MSB (position byteCount), j=byteCount-1 -> LSB (position 1)
 		for i := 0; i < int(byteCount); i++ {
-			if pos[i] == uint8(logicalPos) {
+			if uint16(pos[i]) == logicalPos {
 				canonical[j] = raw[i]
 				break
 			}

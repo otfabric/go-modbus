@@ -115,7 +115,7 @@ func decodeIntM10k(regs []uint16, order DecimalLimbOrder, codecID string) (int64
 		unsignedPart += uint64(lowerLimbs[i]) * factor
 		factor *= m10kBase
 	}
-	ms := int16(regs[msIndex])
+	ms := uint16ToInt16(regs[msIndex])
 	if ms < m10kSignedMSMin || ms > m10kSignedMSMax {
 		return 0, &CodecValueError{
 			Codec:  codecID,
@@ -154,9 +154,10 @@ func encodeIntM10k(value int64, registerCount uint16, order DecimalLimbOrder, co
 	}
 	out := make([]uint16, registerCount)
 	for i := 0; i < n-1; i++ {
-		out[i] = uint16(limbs[i])
+		// limbs[i] is already in 0..9999; the modulo makes that bound visible to the conversion.
+		out[i] = uint16(int64ToUint64(limbs[i]) % m10kBase)
 	}
-	out[n-1] = uint16(int16(msLimb))
+	out[n-1] = int16ToUint16(int16(msLimb))
 
 	if order == DecimalLimbHighToLow {
 		for i, j := 0, n-1; i < j; i, j = i+1, j-1 {
