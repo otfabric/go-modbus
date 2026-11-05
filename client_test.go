@@ -307,7 +307,7 @@ func TestReadInt48(t *testing.T) {
 		}
 		i48s = append(i48s, v)
 	}
-	const minInt48 = -140737488355328
+	const minInt48 int64 = -140737488355328
 	if len(i48s) != 2 || i48s[0] != -1 || i48s[1] != minInt48 {
 		t.Errorf("DecodeRegisters int48: expected [-1, %v], got %v", minInt48, i48s)
 	}
