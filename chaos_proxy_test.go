@@ -98,7 +98,7 @@ func (f chaosFault) String() string {
 		return "none"
 	}
 	var parts []string
-	for i := 0; i < chaosFaultKinds; i++ {
+	for i := range chaosFaultKinds {
 		if f&(1<<i) != 0 {
 			parts = append(parts, chaosFaultNames[i])
 		}
@@ -299,8 +299,8 @@ func (p *chaosProxy) stop() {
 // injectedTotal returns the number of faults injected so far.
 func (p *chaosProxy) injectedTotal() int64 {
 	var n int64
-	for d := 0; d < 2; d++ {
-		for i := 0; i < chaosFaultKinds; i++ {
+	for d := range 2 {
+		for i := range chaosFaultKinds {
 			n += p.injected[d][i].Load()
 		}
 	}
@@ -313,7 +313,7 @@ func (p *chaosProxy) summary() string {
 	fmt.Fprintf(&sb, "proxy seed=%d accepted=%d peak=%d frames(c2s=%d s2c=%d) faults:",
 		p.seed, p.accepted.Load(), p.peak.Load(), p.frames[chaosC2S].Load(), p.frames[chaosS2C].Load())
 	for d := chaosC2S; d <= chaosS2C; d++ {
-		for i := 0; i < chaosFaultKinds; i++ {
+		for i := range chaosFaultKinds {
 			if n := p.injected[d][i].Load(); n > 0 {
 				fmt.Fprintf(&sb, " %s/%s=%d", d, chaosFaultNames[i], n)
 			}
@@ -376,12 +376,10 @@ func (p *chaosProxy) adopt(client, server net.Conn) {
 
 	if server == nil {
 		c.poisoned.Store(true)
-		p.wg.Add(1)
-		go func() {
-			defer p.wg.Done()
+		p.wg.Go(func() {
 			_, _ = io.Copy(io.Discard, client)
 			c.close(false)
-		}()
+		})
 		return
 	}
 	p.wg.Add(2)
@@ -514,7 +512,7 @@ func (c *chaosConn) pump(dir chaosDir, src, dst net.Conn) {
 		pl := c.p.plan.Load()
 		fault := c.pick(pl, dir, index, frame, rng)
 		if fault != 0 {
-			for i := 0; i < chaosFaultKinds; i++ {
+			for i := range chaosFaultKinds {
 				if fault&(1<<i) != 0 {
 					c.p.injected[dir][i].Add(1)
 				}
@@ -632,7 +630,7 @@ func (c *chaosConn) pick(pl *chaosPlan, dir chaosDir, index int, frame []byte, r
 		return 0
 	}
 	var enabled []chaosFault
-	for i := 0; i < chaosFaultKinds; i++ {
+	for i := range chaosFaultKinds {
 		if mask&(1<<i) != 0 {
 			enabled = append(enabled, 1<<i)
 		}
@@ -643,10 +641,7 @@ func (c *chaosConn) pick(pl *chaosPlan, dir chaosDir, index int, frame []byte, r
 // fragment forwards b in several small writes.
 func (c *chaosConn) fragment(pl *chaosPlan, dir chaosDir, index int, dst net.Conn, b []byte, rng *rand.Rand) bool {
 	if pl.splitAt != nil {
-		k := pl.splitAt(chaosFrame{dir: dir, conn: c.id, index: index, data: b})
-		if k < 1 {
-			k = 1
-		}
+		k := max(pl.splitAt(chaosFrame{dir: dir, conn: c.id, index: index, data: b}), 1)
 		if k >= len(b) {
 			k = len(b) - 1
 		}
@@ -656,10 +651,7 @@ func (c *chaosConn) fragment(pl *chaosPlan, dir chaosDir, index int, dst net.Con
 		return c.write(dir, dst, b[:k]) && c.sleep(pl.fragmentGap) && c.write(dir, dst, b[k:])
 	}
 	for len(b) > 0 {
-		n := 1 + rng.Intn(3)
-		if n > len(b) {
-			n = len(b)
-		}
+		n := min(1+rng.Intn(3), len(b))
 		if !c.write(dir, dst, b[:n]) {
 			return false
 		}

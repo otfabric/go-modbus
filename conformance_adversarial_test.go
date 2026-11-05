@@ -137,7 +137,6 @@ func TestB2B_Adversarial_ServerBranches(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			res, closed := rawExchange(t, addr, tc.unitID, tc.fc, tc.payload)
 			if tc.wantClose {

@@ -146,7 +146,7 @@ func Start(tb testing.TB, h modbus.RequestHandler, configure ...func(*modbus.Con
 	)
 	// The port is picked and released before the server binds it: retry
 	// when something else took it in between.
-	for attempt := 0; attempt < 10; attempt++ {
+	for range 10 {
 		url = "tcp://" + freeAddr(tb)
 		srv, err = modbus.NewServer(&modbus.ServerConfig{
 			URL: url, MaxClients: 64, Timeout: time.Minute, Logger: modbus.NopLogger(),
@@ -218,19 +218,19 @@ type ReadSet struct {
 //   - mixed: holding registers, coils and input registers on two unit IDs.
 func ReadSets() []ReadSet {
 	var contiguous, gapped, mixed []Read
-	for i := uint16(0); i < 32; i++ {
+	for i := range uint16(32) {
 		contiguous = append(contiguous, Read{UnitID: 1, FC: modbus.FCReadHoldingRegisters, Addr: 100 + 2*i, Count: 2})
 	}
-	for i := uint16(0); i < 16; i++ {
+	for i := range uint16(16) {
 		gapped = append(gapped, Read{UnitID: 1, FC: modbus.FCReadHoldingRegisters, Addr: 1000 + 4*i, Count: 2})
 	}
-	for i := uint16(0); i < 10; i++ {
+	for i := range uint16(10) {
 		mixed = append(mixed, Read{UnitID: 1, FC: modbus.FCReadHoldingRegisters, Addr: 200 + 2*i, Count: 2})
 	}
-	for i := uint16(0); i < 4; i++ {
+	for i := range uint16(4) {
 		mixed = append(mixed, Read{UnitID: 1, FC: modbus.FCReadCoils, Addr: 8 * i, Count: 8})
 	}
-	for i := uint16(0); i < 8; i++ {
+	for i := range uint16(8) {
 		mixed = append(mixed, Read{UnitID: 2, FC: modbus.FCReadInputRegisters, Addr: 300 + i, Count: 1})
 	}
 	return []ReadSet{

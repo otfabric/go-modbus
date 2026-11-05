@@ -233,7 +233,6 @@ var transports = []string{"tcp", "tcp+tls"}
 func forEachTransport(t *testing.T, run func(t *testing.T, kind string)) {
 	t.Helper()
 	for _, kind := range transports {
-		kind := kind
 		t.Run(kind, func(t *testing.T) {
 			run(t, kind)
 		})

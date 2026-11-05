@@ -110,7 +110,7 @@ func TestE2E_Bits_ReadPackingAndLimits(t *testing.T) {
 		}
 
 		// Single-bit helpers.
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			got, err := c.ReadCoil(ctx, e2eUnit, uint16(base+i))
 			if err != nil || got != coils[i] {
 				t.Errorf("ReadCoil(%d) = %v, %v; want %v", base+i, got, err, coils[i])

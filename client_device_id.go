@@ -132,7 +132,7 @@ func (mc *Client) ReadDeviceIdentification(ctx context.Context, unitID uint8, ca
 	}
 	defer func() { reportOutcome(m, unitID, FCEncapsulatedInterface, start, err) }()
 
-	for page := 0; page < maxPages; page++ {
+	for page := range maxPages {
 		requested[nextObjID] = true
 		req = &adu.Request{
 			UnitID:       unitID,

@@ -51,7 +51,6 @@ func TestNewClient_ConfigErrors(t *testing.T) {
 		{"tls missing root cas", Config{URL: "tcp+tls://localhost:502", TLSClientCert: tlsCfg.TLSClientCert}},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := New(tc.conf); err == nil {
 				t.Fatalf("New(%q): expected error, got nil", tc.conf.URL)

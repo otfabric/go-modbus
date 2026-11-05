@@ -211,7 +211,7 @@ func TestE2E_DeviceIdentification_Pagination(t *testing.T) {
 		dev := e2eNewDevice()
 		// 60 objects of 2+98 bytes: two objects per 246-byte page, 30 pages.
 		var objs []DeviceIdentificationObject
-		for i := 0; i < 60; i++ {
+		for i := range 60 {
 			id := DeviceIDObjectID(i)
 			if i >= 7 {
 				id = DeviceIDObjectID(0x80 + i)
@@ -274,7 +274,7 @@ func TestE2E_DeviceIdentification_ManyPages(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, kind string) {
 		dev := e2eNewDevice()
 		var objs []DeviceIdentificationObject
-		for i := 0; i < 200; i++ {
+		for i := range 200 {
 			objs = append(objs, DeviceIdentificationObject{ID: DeviceIDObjectID(i), Value: strings.Repeat("y", 40)})
 		}
 		dev.objects = objs

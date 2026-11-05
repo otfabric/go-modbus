@@ -161,8 +161,7 @@ func (e *Engine) Execute(ctx context.Context, req *adu.Request) (*adu.Response, 
 	for attempt := 0; ; attempt++ {
 		attemptStart := time.Now()
 		res, err := e.executeOnce(ctx, req, pool, attempt)
-		var redial *redialError
-		if errors.As(err, &redial) {
+		if redial, ok := errors.AsType[*redialError](err); ok {
 			// The single connection could not be re-established. That ends this
 			// request (the failed attempts before it, if any, are reported with
 			// it), but not the engine: the next request dials again.

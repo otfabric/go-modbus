@@ -58,9 +58,7 @@ func TestStressSlowLoris(t *testing.T) {
 		var stop atomic.Bool
 		var served atomic.Int64
 		var goodWG sync.WaitGroup
-		goodWG.Add(1)
-		go func() {
-			defer goodWG.Done()
+		goodWG.Go(func() {
 			for i := 0; !stop.Load(); i++ {
 				start := time.Now()
 				ok, err := chaosReadInputs(context.Background(), good, i%256, 8)
@@ -74,7 +72,7 @@ func TestStressSlowLoris(t *testing.T) {
 				served.Add(1)
 				time.Sleep(time.Millisecond)
 			}
-		}()
+		})
 
 		// Three stalling peers take the remaining slots.
 		type loris struct {
@@ -102,14 +100,11 @@ func TestStressSlowLoris(t *testing.T) {
 		}
 		var wg sync.WaitGroup
 		for _, l := range lorises {
-			l := l
 			conn, err := net.DialTimeout("tcp", srv.addr, 2*time.Second)
 			if err != nil {
 				t.Fatalf("%s: dial: %v", l.name, err)
 			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				defer func() { _ = conn.Close() }()
 				go l.feed(conn)
 				elapsed, received, closed := stressAwaitClose(conn, serverTimeout+2*time.Second)
@@ -122,7 +117,7 @@ func TestStressSlowLoris(t *testing.T) {
 				if received != 0 {
 					t.Errorf("%s: the server sent %d byte(s) to a peer that never completed a request", l.name, received)
 				}
-			}()
+			})
 		}
 		if !chaosEventually(2*time.Second, func() bool { return srv.conns() == maxClients }) {
 			t.Fatalf("server holds %d connections, want %d", srv.conns(), maxClients)
@@ -201,11 +196,8 @@ func TestStressInvalidMBAPHeader(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	for _, tc := range cases {
-		tc := tc
-		for rep := 0; rep < 4; rep++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 4 {
+			wg.Go(func() {
 				conn, err := net.DialTimeout("tcp", srv.addr, 2*time.Second)
 				if err != nil {
 					t.Errorf("%s: dial: %v", tc.name, err)
@@ -223,7 +215,7 @@ func TestStressInvalidMBAPHeader(t *testing.T) {
 				if received != 0 {
 					t.Errorf("%s: the server answered an invalid header with %d byte(s)", tc.name, received)
 				}
-			}()
+			})
 		}
 	}
 	chaosWait(t, &wg, 30*time.Second, "invalid headers")
@@ -250,7 +242,7 @@ func TestStressSlowLorisTLSHandshake(t *testing.T) {
 	defer srv.stop()
 
 	var wg sync.WaitGroup
-	for i := 0; i < maxClients; i++ {
+	for i := range maxClients {
 		conn, err := net.DialTimeout("tcp", srv.addr, 2*time.Second)
 		if err != nil {
 			t.Fatalf("dial: %v", err)

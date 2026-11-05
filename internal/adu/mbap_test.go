@@ -32,7 +32,7 @@ func TestAssembleMBAP(t *testing.T) {
 		t.Errorf("fc: got %02x", frame[7])
 	}
 	payloadWant := []byte{0x00, 0x00, 0x00, 0x0a}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if frame[8+i] != payloadWant[i] {
 			t.Errorf("payload[%d]: got %02x want %02x", i, frame[8+i], payloadWant[i])
 		}

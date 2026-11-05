@@ -94,8 +94,7 @@ func TestRuntimeCodecAdapter_EncodeRegistersAny_ValidatesDynamicType(t *testing.
 	if err == nil {
 		t.Fatal("expected error for wrong type (int32)")
 	}
-	var ce *CodecValueError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*CodecValueError](err); !ok {
 		t.Errorf("expected *CodecValueError, got %T", err)
 	}
 }

@@ -135,8 +135,7 @@ func IsRetryable(err error, retryTimeout bool) bool {
 		errors.Is(err, protocol.ErrUnexpectedParameters) {
 		return false
 	}
-	var excErr *protocol.ExceptionError
-	if errors.As(err, &excErr) {
+	if _, ok := errors.AsType[*protocol.ExceptionError](err); ok {
 		return false
 	}
 	if errors.Is(err, protocol.ErrRequestTimedOut) {

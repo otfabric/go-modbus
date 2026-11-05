@@ -19,7 +19,7 @@ Thank you for your interest in contributing to `go-modbus`! This document covers
 
 ### Prerequisites
 
-- Go 1.23+ (see [go.mod](go.mod)); the code must build and pass on Go 1.23, so do not use newer language or standard-library features
+- Go 1.26+ (see [go.mod](go.mod)); the code must build and pass on Go 1.26, so do not use newer language or standard-library features
 - [staticcheck](https://staticcheck.dev/), [golangci-lint](https://golangci-lint.run/) and [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) for the checks
 - No hardware: tests use in-process servers, scripted transports and pseudo-terminals
 
@@ -85,7 +85,7 @@ Examples:
 
 - Add tests for new functionality in the appropriate `_test.go` file; the repository uses only the standard `testing` package
 - Assert behaviour: returned values, the specific error, bytes on the wire and metrics callbacks, not just that the code ran
-- Keep tests fast, deterministic and race-clean; CI runs them with `-race` on every Go version from 1.23 and a 120 s per-package timeout
+- Keep tests fast, deterministic and race-clean; CI runs them with `-race` on Go 1.26 and 1.27 and a 120 s per-package timeout
 - Serial transports are tested on a pseudo-terminal (Linux and macOS; those tests skip elsewhere), so no serial adapter is needed
 - Library coverage is above 90% and enforced by Codecov; new code should come with tests
 - If your change affects what is sent to or accepted from a device, verify against real hardware when possible and say which device in the pull request

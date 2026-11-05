@@ -105,7 +105,7 @@ func TestIPAddrCodec_AcceptParseIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := net.IP{192, 168, 1, 10}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if got[i] != want[i] {
 			t.Errorf("got[%d] = %d, want %d", i, got[i], want[i])
 		}

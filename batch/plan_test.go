@@ -50,21 +50,21 @@ func gotWindows(p *batch.Plan) []win {
 func TestCompile_Windows(t *testing.T) {
 	var contiguous, gapped, single []batch.Item
 	var contiguousNames, gappedNames []string
-	for i := uint16(0); i < 32; i++ {
+	for i := range uint16(32) {
 		it := item("c"+itoa(i), 1, fc03, 100+2*i, 2)
 		contiguous = append(contiguous, it)
 		contiguousNames = append(contiguousNames, it.Name)
 	}
-	for i := uint16(0); i < 16; i++ {
+	for i := range uint16(16) {
 		it := item("g"+itoa(i), 1, fc03, 1000+4*i, 2)
 		gapped = append(gapped, it)
 		gappedNames = append(gappedNames, it.Name)
 	}
-	for i := uint16(0); i < 126; i++ {
+	for i := range uint16(126) {
 		single = append(single, item("s"+itoa(i), 1, fc03, i, 1))
 	}
 	var singleFirst []string
-	for i := uint16(0); i < 125; i++ {
+	for i := range uint16(125) {
 		singleFirst = append(singleFirst, "s"+itoa(i))
 	}
 

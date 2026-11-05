@@ -151,7 +151,7 @@ func chaosAllStacks() string {
 // chaosGoroutines returns the stack of every live goroutine, keyed by goroutine ID.
 func chaosGoroutines() map[string]string {
 	out := make(map[string]string)
-	for _, g := range strings.Split(chaosAllStacks(), "\n\n") {
+	for g := range strings.SplitSeq(chaosAllStacks(), "\n\n") {
 		fields := strings.Fields(g)
 		if len(fields) < 2 || fields[0] != "goroutine" {
 			continue
@@ -492,7 +492,7 @@ func chaosNewDevice(seed int64) *chaosDevice {
 		rng:       rand.New(rand.NewSource(seed ^ 0x5eed)),
 		applied:   make(map[uint32]int),
 	}
-	for a := 0; a < refSpace; a++ {
+	for a := range refSpace {
 		d.input[a] = chaosInputValue(a)
 		d.discreteInputs[a] = chaosDiscreteValue(a)
 	}
@@ -756,7 +756,7 @@ func chaosStartServer(t *testing.T, kind string, handler RequestHandler, mod fun
 		mod(&cs.conf)
 	}
 	var lastErr error
-	for try := 0; try < 10; try++ {
+	for range 10 {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("listen: %v", err)
@@ -1043,7 +1043,7 @@ func chaosNewWorkload(t *testing.T, wd *chaosWatchdog, dev *chaosDevice, workers
 		allowed:   map[string]bool{},
 	}
 	wl.clean.Store(true)
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		wl.workers = append(wl.workers, &chaosWorker{
 			wl:        wl,
 			id:        i,
@@ -1233,7 +1233,7 @@ func (w *chaosWorker) step(c *Client) {
 				break
 			}
 			var pattern, single uint16
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				if got[i] {
 					pattern |= 1 << i
 				}

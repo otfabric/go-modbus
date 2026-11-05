@@ -112,8 +112,7 @@ func TestExecuteRuntimeDecodePlanOffline_LengthDoesNotWrap(t *testing.T) {
 		Items:  []RuntimeDecodeItem{{Name: "a", Codec: codec.MustRuntimeCodecByID("uint16/layout:21")}},
 	}
 	_, err := ExecuteRuntimeDecodePlanOffline(make([]uint16, 2+1<<16), plan)
-	var ve *RuntimePlanValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*RuntimePlanValidationError](err); !ok {
 		t.Fatalf("2+65536 registers for a 2-register window: got %v, want *RuntimePlanValidationError", err)
 	}
 }

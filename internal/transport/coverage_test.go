@@ -346,7 +346,7 @@ func TestTCPReadResponse_UnknownProtocolIDLoop(t *testing.T) {
 
 	// Send frames with wrong protocol ID (0x0001 instead of 0x0000).
 	// Body must have valid length so discardBytes works correctly.
-	for i := 0; i < maxAnomalies; i++ {
+	for range maxAnomalies {
 		// MBAP header: txnID=0x0001, protocolID=0x0001 (wrong), length=0x0004
 		frame := []byte{0x00, 0x01, 0x00, 0x01, 0x00, 0x04, 0x31, 0x06, 0x12, 0x34}
 		txchan <- frame

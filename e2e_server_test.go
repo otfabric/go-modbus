@@ -439,7 +439,7 @@ func TestE2E_Server_HandlerContext_ClientDisconnect(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, c := range []*Client{p.client, other} {
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				if _, err := c.ReadCoil(bg, e2eUnit, 0); err != nil {
 					t.Fatal(err)
 				}
@@ -703,7 +703,7 @@ func TestE2E_Server_RestartSameInstance(t *testing.T) {
 	if err := server.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		if err := server.Start(); err != nil {
 			t.Fatalf("restart %d: %v", i, err)
 		}
@@ -841,7 +841,7 @@ func TestE2E_Server_IdleTimeoutDoesNotCutResponses(t *testing.T) {
 
 		// The request has to arrive within the idle timeout of the connect;
 		// try again on a slow machine where it does not.
-		for attempt := 0; attempt < 20; attempt++ {
+		for range 20 {
 			_ = p.client.Close()
 			if err := p.client.Open(); err != nil {
 				continue

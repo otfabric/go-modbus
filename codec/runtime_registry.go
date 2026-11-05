@@ -175,8 +175,8 @@ func buildRuntimeCodecFromDescriptor(desc CodecDescriptor) (RuntimeCodec, error)
 	}
 
 	// Decimal limb (M10k) codecs: uint32_m10k/order:low_to_high, etc.
-	if strings.HasPrefix(id, "uint32_m10k/order:") {
-		orderStr := strings.TrimPrefix(id, "uint32_m10k/order:")
+	if after, ok := strings.CutPrefix(id, "uint32_m10k/order:"); ok {
+		orderStr := after
 		order, err := decimalLimbOrderFromID(orderStr)
 		if err != nil {
 			return nil, err
@@ -187,8 +187,8 @@ func buildRuntimeCodecFromDescriptor(desc CodecDescriptor) (RuntimeCodec, error)
 		}
 		return AsRuntimeCodec(c, kind), nil
 	}
-	if strings.HasPrefix(id, "uint48_m10k/order:") {
-		orderStr := strings.TrimPrefix(id, "uint48_m10k/order:")
+	if after, ok := strings.CutPrefix(id, "uint48_m10k/order:"); ok {
+		orderStr := after
 		order, err := decimalLimbOrderFromID(orderStr)
 		if err != nil {
 			return nil, err
@@ -199,8 +199,8 @@ func buildRuntimeCodecFromDescriptor(desc CodecDescriptor) (RuntimeCodec, error)
 		}
 		return AsRuntimeCodec(c, kind), nil
 	}
-	if strings.HasPrefix(id, "uint64_m10k/order:") {
-		orderStr := strings.TrimPrefix(id, "uint64_m10k/order:")
+	if after, ok := strings.CutPrefix(id, "uint64_m10k/order:"); ok {
+		orderStr := after
 		order, err := decimalLimbOrderFromID(orderStr)
 		if err != nil {
 			return nil, err
@@ -211,8 +211,8 @@ func buildRuntimeCodecFromDescriptor(desc CodecDescriptor) (RuntimeCodec, error)
 		}
 		return AsRuntimeCodec(c, kind), nil
 	}
-	if strings.HasPrefix(id, "int32_m10k/order:") {
-		orderStr := strings.TrimPrefix(id, "int32_m10k/order:")
+	if after, ok := strings.CutPrefix(id, "int32_m10k/order:"); ok {
+		orderStr := after
 		order, err := decimalLimbOrderFromID(orderStr)
 		if err != nil {
 			return nil, err
@@ -223,8 +223,8 @@ func buildRuntimeCodecFromDescriptor(desc CodecDescriptor) (RuntimeCodec, error)
 		}
 		return AsRuntimeCodec(c, kind), nil
 	}
-	if strings.HasPrefix(id, "int48_m10k/order:") {
-		orderStr := strings.TrimPrefix(id, "int48_m10k/order:")
+	if after, ok := strings.CutPrefix(id, "int48_m10k/order:"); ok {
+		orderStr := after
 		order, err := decimalLimbOrderFromID(orderStr)
 		if err != nil {
 			return nil, err
@@ -235,8 +235,8 @@ func buildRuntimeCodecFromDescriptor(desc CodecDescriptor) (RuntimeCodec, error)
 		}
 		return AsRuntimeCodec(c, kind), nil
 	}
-	if strings.HasPrefix(id, "int64_m10k/order:") {
-		orderStr := strings.TrimPrefix(id, "int64_m10k/order:")
+	if after, ok := strings.CutPrefix(id, "int64_m10k/order:"); ok {
+		orderStr := after
 		order, err := decimalLimbOrderFromID(orderStr)
 		if err != nil {
 			return nil, err

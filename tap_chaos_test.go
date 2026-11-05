@@ -86,7 +86,7 @@ func (c *chaosTap) inspect(ex PDUExchange) {
 			return
 		}
 		c.checked.Add(1)
-		for i := 0; i < qty; i++ {
+		for i := range qty {
 			got := binary.BigEndian.Uint16(ex.Response[2+2*i:])
 			if want := chaosInputValue(addr + i); got != want {
 				c.failf("FC04 %d x%d: register %d reported as 0x%04X, holds 0x%04X: response of another request",
@@ -101,7 +101,7 @@ func (c *chaosTap) inspect(ex PDUExchange) {
 			return
 		}
 		c.checked.Add(1)
-		for i := 0; i < qty; i++ {
+		for i := range qty {
 			got := ex.Response[2+i/8]&(1<<(i%8)) != 0
 			if want := chaosDiscreteValue(addr + i); got != want {
 				c.failf("FC02 %d x%d: input %d reported as %v, holds %v: response of another request",
@@ -218,13 +218,10 @@ func tapRunConcurrentCallers(t *testing.T, kind string, mode chaosMode, seed int
 	}
 	calls := make([][]call, workers)
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		w := w
+	for w := range workers {
 		calls[w] = make([]call, ops)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < ops; i++ {
+		wg.Go(func() {
+			for i := range ops {
 				// Distinct ranges per call, so that a response of another
 				// call never looks like the right one.
 				addr := uint16((w*ops + i) % (refSpace - 16))
@@ -244,7 +241,7 @@ func tapRunConcurrentCallers(t *testing.T, kind string, mode chaosMode, seed int
 					return
 				}
 			}
-		}()
+		})
 	}
 	chaosWait(t, &wg, 60*time.Second, "callers")
 
@@ -266,7 +263,7 @@ func tapRunConcurrentCallers(t *testing.T, kind string, mode chaosMode, seed int
 			addr := int(binary.BigEndian.Uint16(c.req[1:3]))
 			qty := int(binary.BigEndian.Uint16(c.req[3:5]))
 			want := []byte{byte(FCReadInputRegisters), byte(2 * qty)}
-			for k := 0; k < qty; k++ {
+			for k := range qty {
 				want = binary.BigEndian.AppendUint16(want, chaosInputValue(addr+k))
 			}
 			if string(ex.Response) != string(want) {
@@ -323,7 +320,7 @@ func TestPDUTapBlockingTapDoesNotHoldConnection(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("the tap was not called")
 		}
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			got, err := client.ReadRegisters(ctx, refUnitID, uint16(i), 2, InputRegister)
 			cancel()
@@ -360,7 +357,6 @@ func TestPDUTapBlockingTapDoesNotHoldConnection(t *testing.T) {
 // concurrent callers unaffected.
 func TestPDUTapPanicLeavesClientUsable(t *testing.T) {
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModePool} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			baseline := chaosGoroutines()
 			dev := chaosNewDevice(1)
@@ -378,12 +374,9 @@ func TestPDUTapPanicLeavesClientUsable(t *testing.T) {
 			const workers, ops = 8, 25
 			var panics, oks atomic.Int64
 			var wg sync.WaitGroup
-			for w := 0; w < workers; w++ {
-				w := w
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for i := 0; i < ops; i++ {
+			for w := range workers {
+				wg.Go(func() {
+					for i := range ops {
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 						if (w+i)%3 == 0 {
 							ctx = context.WithValue(ctx, tapCallKey{}, i)
@@ -406,7 +399,7 @@ func TestPDUTapPanicLeavesClientUsable(t *testing.T) {
 						}()
 						cancel()
 					}
-				}()
+				})
 			}
 			chaosWait(t, &wg, 30*time.Second, "callers")
 			if panics.Load() == 0 || oks.Load() == 0 {

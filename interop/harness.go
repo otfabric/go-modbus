@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,7 +95,7 @@ func adapters(t testing.TB) []adapter {
 	}
 	var out []adapter
 	for _, a := range all {
-		for _, want := range strings.Split(only, ",") {
+		for want := range strings.SplitSeq(only, ",") {
 			if strings.TrimSpace(want) == a.name {
 				out = append(out, a)
 			}
@@ -225,12 +226,7 @@ func (a adapter) need(t testing.TB, features ...string) {
 // something other than exception 1.
 func (a adapter) serves(t testing.TB, function int) bool {
 	t.Helper()
-	for _, f := range a.capabilities(t).ServerFunctions {
-		if f == function {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.capabilities(t).ServerFunctions, function)
 }
 
 var containerSeq atomic.Int64
@@ -418,7 +414,7 @@ func (s *refServer) events(t testing.TB) []event {
 		t.Fatalf("logs of %s server: %v", s.adapter.name, err)
 	}
 	var evs []event
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		if line == "" {
 			continue
 		}
@@ -471,8 +467,8 @@ func (s *refServer) requestsThrough(t testing.TB, what string, last func(event) 
 				reqs = append(reqs, e)
 			}
 		}
-		for i := len(reqs) - 1; i >= 0; i-- {
-			if last(reqs[i]) {
+		for i, req := range slices.Backward(reqs) {
+			if last(req) {
 				return reqs[:i+1]
 			}
 		}

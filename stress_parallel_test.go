@@ -143,7 +143,7 @@ func TestStressManyClients(t *testing.T) {
 				_ = c.Close()
 			}
 		}()
-		for i := 0; i < maxClients; i++ {
+		for i := range maxClients {
 			c := open()
 			clients = append(clients, c)
 			if ok, err := chaosProbe(c, 5*time.Second); err != nil || !ok {
@@ -155,10 +155,8 @@ func TestStressManyClients(t *testing.T) {
 		var stop atomic.Bool
 		var rejected, admitted atomic.Int64
 		var extras sync.WaitGroup
-		for i := 0; i < extra; i++ {
-			extras.Add(1)
-			go func() {
-				defer extras.Done()
+		for range extra {
+			extras.Go(func() {
 				for !stop.Load() {
 					c, err := New(conf)
 					if err != nil {
@@ -187,7 +185,7 @@ func TestStressManyClients(t *testing.T) {
 					_ = c.Close()
 					time.Sleep(time.Millisecond)
 				}
-			}()
+			})
 		}
 
 		wl := chaosNewWorkload(t, wd, dev, maxClients, seed)
@@ -208,13 +206,13 @@ func TestStressManyClients(t *testing.T) {
 		}
 
 		// Free half of the slots: new clients must get in.
-		for i := 0; i < extra; i++ {
+		for i := range extra {
 			_ = clients[i].Close()
 		}
 		if !chaosEventually(3*time.Second, func() bool { return srv.conns() <= maxClients-extra }) {
 			t.Fatalf("server still holds %d connections after %d clients left", srv.conns(), extra)
 		}
-		for i := 0; i < extra; i++ {
+		for i := range extra {
 			c := open()
 			clients[i] = c
 			if ok, err := chaosProbe(c, 5*time.Second); err != nil || !ok {
@@ -267,7 +265,7 @@ func TestStressPoolExhaustionCancelledWaiters(t *testing.T) {
 
 		// Two requests occupy both connections.
 		inFlight := make(chan error, maxConns)
-		for i := 0; i < maxConns; i++ {
+		for i := range maxConns {
 			go func(i int) {
 				ok, err := chaosReadInputs(context.Background(), client, 10*i, 4)
 				if err == nil && !ok {
@@ -276,7 +274,7 @@ func TestStressPoolExhaustionCancelledWaiters(t *testing.T) {
 				inFlight <- err
 			}(i)
 		}
-		for i := 0; i < maxConns; i++ {
+		for range maxConns {
 			select {
 			case <-entered:
 			case <-time.After(5 * time.Second):
@@ -291,7 +289,7 @@ func TestStressPoolExhaustionCancelledWaiters(t *testing.T) {
 			cancel  bool
 		}
 		results := make(chan result, waiters)
-		for i := 0; i < waiters; i++ {
+		for i := range waiters {
 			go func(i int) {
 				delay := time.Duration(5+i*3) * time.Millisecond
 				var ctx context.Context
@@ -310,7 +308,7 @@ func TestStressPoolExhaustionCancelledWaiters(t *testing.T) {
 				results <- result{err: err, elapsed: time.Since(start), cancel: byCancel}
 			}(i)
 		}
-		for i := 0; i < waiters; i++ {
+		for range waiters {
 			select {
 			case r := <-results:
 				want := chaosClassTimeout
@@ -330,7 +328,7 @@ func TestStressPoolExhaustionCancelledWaiters(t *testing.T) {
 
 		// The requests in flight were not disturbed and complete once released.
 		close(release)
-		for i := 0; i < maxConns; i++ {
+		for range maxConns {
 			select {
 			case err := <-inFlight:
 				if err != nil {
@@ -342,7 +340,7 @@ func TestStressPoolExhaustionCancelledWaiters(t *testing.T) {
 		}
 		// The pool still works, at full width.
 		var wg sync.WaitGroup
-		for i := 0; i < 4*maxConns; i++ {
+		for i := range 4 * maxConns {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()

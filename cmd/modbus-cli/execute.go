@@ -68,7 +68,7 @@ func readRuntimeValues(ctx context.Context, client *modbus.Client, unitID uint8,
 	}
 
 	values := make([]any, 0, count)
-	for idx := uint16(0); idx < count; idx++ {
+	for idx := range count {
 		slice := regs[idx*regsPerValue : (idx+1)*regsPerValue]
 		decoded, decErr := codec.DecodeRegistersAny(slice, rc)
 		if decErr != nil {

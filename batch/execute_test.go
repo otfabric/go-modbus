@@ -469,11 +469,11 @@ func TestExecute_Concurrent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 64)
-	for g := 0; g < 32; g++ {
+	for range 32 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 20; i++ {
+			for range 20 {
 				res, err := p.Execute(context.Background(), c)
 				if err != nil {
 					errs <- err
@@ -487,7 +487,7 @@ func TestExecute_Concurrent(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 20; i++ {
+			for range 20 {
 				// benchserver refuses writes: an exception, between batch requests.
 				if err := c.WriteRegister(context.Background(), 1, 0, 1); !errors.Is(err, modbus.ErrIllegalFunction) {
 					errs <- fmt.Errorf("WriteRegister: %w", err)
@@ -517,7 +517,7 @@ func TestExecute_NoGoroutines(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := runtime.NumGoroutine()
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		if _, err := p.Execute(context.Background(), c); err != nil {
 			t.Fatal(err)
 		}

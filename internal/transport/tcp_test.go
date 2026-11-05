@@ -42,7 +42,7 @@ func TestTCPTransactionIDMismatchExhausted(t *testing.T) {
 
 	// Send 10 responses with wrong transaction IDs (0x0002 through 0x000B)
 	// Each must be a valid MBAP frame so we don't hit ErrUnknownProtocolID path
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wrongTxn := uint16(0x0002 + i)
 		frame := adu.AssembleMBAP(wrongTxn, 0x31, 0x06, []byte{0x12, 0x34})
 		txchan <- frame

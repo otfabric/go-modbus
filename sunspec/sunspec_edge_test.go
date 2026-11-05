@@ -23,8 +23,7 @@ func invalidOptions() *Options {
 
 func wantParameterError(t *testing.T, err error) {
 	t.Helper()
-	var pe *protocol.ParameterError
-	if !errors.As(err, &pe) {
+	if _, ok := errors.AsType[*protocol.ParameterError](err); !ok {
 		t.Fatalf("want *protocol.ParameterError, got %T: %v", err, err)
 	}
 }

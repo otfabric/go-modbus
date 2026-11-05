@@ -302,7 +302,7 @@ func TestE2E_Registers_BitHelpers(t *testing.T) {
 			fc      FunctionCode
 			val     uint16
 		}{{HoldingRegister, FCReadHoldingRegisters, 0x8001}, {InputRegister, FCReadInputRegisters, 0x4002}} {
-			for bit := uint8(0); bit < 16; bit++ {
+			for bit := range uint8(16) {
 				got, err := c.ReadRegisterBit(ctx, e2eUnit, 10, bit, tb.regType)
 				want := tb.val>>bit&1 == 1
 				if err != nil || got != want {

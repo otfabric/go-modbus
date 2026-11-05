@@ -100,7 +100,7 @@ func (mc *Client) ReadRegisterBits(ctx context.Context, unitID uint8, addr uint1
 		return nil, err
 	}
 	out := make([]bool, count)
-	for i := uint8(0); i < count; i++ {
+	for i := range count {
 		out[i] = (reg>>(bitIndex+i))&1 != 0
 	}
 	return out, nil

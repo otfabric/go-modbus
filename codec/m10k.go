@@ -5,6 +5,7 @@ package codec
 import (
 	"fmt"
 	"math"
+	"slices"
 )
 
 // Decimal limb (M10k) codecs: each 16-bit register holds one base-10000 limb (0–9999).
@@ -19,7 +20,7 @@ func decodeUintM10k(regs []uint16, order DecimalLimbOrder, codecID string) (uint
 
 	switch order {
 	case DecimalLimbLowToHigh:
-		for i := 0; i < len(regs); i++ {
+		for i := range regs {
 			if regs[i] > 9999 {
 				return 0, &CodecValueError{
 					Codec:  codecID,
@@ -31,14 +32,14 @@ func decodeUintM10k(regs []uint16, order DecimalLimbOrder, codecID string) (uint
 		}
 		return value, nil
 	case DecimalLimbHighToLow:
-		for i := len(regs) - 1; i >= 0; i-- {
-			if regs[i] > 9999 {
+		for i, reg := range slices.Backward(regs) {
+			if reg > 9999 {
 				return 0, &CodecValueError{
 					Codec:  codecID,
-					Reason: fmt.Sprintf("register %d has value %d, must be in 0..9999", i, regs[i]),
+					Reason: fmt.Sprintf("register %d has value %d, must be in 0..9999", i, reg),
 				}
 			}
-			value += uint64(regs[i]) * factor
+			value += uint64(reg) * factor
 			factor *= m10kBase
 		}
 		return value, nil
@@ -49,7 +50,7 @@ func decodeUintM10k(regs []uint16, order DecimalLimbOrder, codecID string) (uint
 
 func encodeUintM10k(value uint64, registerCount uint16, order DecimalLimbOrder, codecID string) ([]uint16, error) {
 	max := uint64(1)
-	for i := uint16(0); i < registerCount; i++ {
+	for range registerCount {
 		max *= m10kBase
 	}
 	if value >= max {
@@ -61,7 +62,7 @@ func encodeUintM10k(value uint64, registerCount uint16, order DecimalLimbOrder, 
 
 	limbs := make([]uint16, registerCount)
 	v := value
-	for i := uint16(0); i < registerCount; i++ {
+	for i := range registerCount {
 		limbs[i] = uint16(v % m10kBase)
 		v /= m10kBase
 	}

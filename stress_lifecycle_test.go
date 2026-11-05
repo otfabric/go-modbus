@@ -27,7 +27,6 @@ var stressLifecycleModes = []chaosMode{chaosModeSingle, chaosModeSingleRetry, ch
 // holds no connection of that client and no goroutine is left.
 func TestStressClientOpenCloseRace(t *testing.T) {
 	for _, mode := range stressLifecycleModes {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			// A round opens a connection per Close (several with a pool).
 			pace := 500 * time.Millisecond
@@ -53,7 +52,7 @@ func TestStressClientOpenCloseRace(t *testing.T) {
 				const bound = 8 * time.Second
 				var closing sync.WaitGroup
 				var stop atomic.Bool
-				for g := 0; g < 6; g++ {
+				for g := range 6 {
 					wg.Add(1)
 					go func(g int) {
 						defer wg.Done()
@@ -81,7 +80,7 @@ func TestStressClientOpenCloseRace(t *testing.T) {
 						}
 					}(g)
 				}
-				for g := 0; g < 2; g++ {
+				for g := range 2 {
 					wg.Add(1)
 					closing.Add(1)
 					go func() {
@@ -137,7 +136,6 @@ func TestStressClientOpenCloseRace(t *testing.T) {
 // data), and the server ends up without connections.
 func TestStressCloseWithRequestsInFlight(t *testing.T) {
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModePool} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			const timeout = 300 * time.Millisecond
 			const calls = 6
@@ -152,7 +150,7 @@ func TestStressCloseWithRequestsInFlight(t *testing.T) {
 				inFlight = mode.maxConns
 			}
 			results := make(chan error, calls)
-			for i := 0; i < calls; i++ {
+			for range calls {
 				go func() {
 					_, err := chaosReadInputs(context.Background(), client, 0, 4)
 					results <- err
@@ -223,7 +221,7 @@ func TestStressCloseDuringRetryBackoff(t *testing.T) {
 		}
 		defer func() { _ = client.Close() }()
 
-		for round := 0; round < rounds; round++ {
+		for round := range rounds {
 			rig.proxy.heal()
 			if err := client.Open(); err != nil {
 				t.Fatalf("round %d: Open: %v", round, err)
@@ -291,7 +289,7 @@ func TestStressServerStopWithClients(t *testing.T) {
 			srv := chaosStartServer(t, "tcp", dev, nil)
 			var stop atomic.Bool
 			var wg sync.WaitGroup
-			for g := 0; g < 6; g++ {
+			for g := range 6 {
 				wg.Add(1)
 				mode := stressLifecycleModes[g%len(stressLifecycleModes)]
 				go func() {
@@ -303,7 +301,7 @@ func TestStressServerStopWithClients(t *testing.T) {
 							return
 						}
 						if err := c.Open(); err == nil {
-							for i := 0; i < 4; i++ {
+							for i := range 4 {
 								var ok bool
 								wd.guard("request during Stop", 6*time.Second, func() {
 									ok, err = chaosReadInputs(context.Background(), c, 8*i, 8)
@@ -361,18 +359,16 @@ func stressRestartSameObject(t *testing.T, rounds int) {
 	server := srv.server()
 	var stop atomic.Bool
 	var wg sync.WaitGroup
-	for g := 0; g < 4; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 4 {
+		wg.Go(func() {
 			for !stop.Load() {
 				if conn, err := net.DialTimeout("tcp", srv.addr, 200*time.Millisecond); err == nil {
 					_ = conn.Close()
 				}
 			}
-		}()
+		})
 	}
-	for i := 0; i < rounds; i++ {
+	for i := range rounds {
 		if err := server.Stop(); err != nil {
 			t.Errorf("round %d: Stop: %v", i, err)
 		}
@@ -405,7 +401,7 @@ func TestStressPoolCloseWithBusyConnections(t *testing.T) {
 		srv := chaosStartServer(t, "tcp", chaosNewDevice(seed), nil)
 		defer srv.stop()
 		conf := chaosClientConfig(t, "tcp", srv.port(), chaosModePool, time.Second, nil)
-		for round := 0; round < rounds; round++ {
+		for round := range rounds {
 			client, err := New(conf)
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -415,9 +411,7 @@ func TestStressPoolCloseWithBusyConnections(t *testing.T) {
 			}
 			var wg sync.WaitGroup
 			for g := 0; g < 2*chaosModePool.maxConns; g++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+				wg.Go(func() {
 					for {
 						ok, err := chaosReadInputs(context.Background(), client, 0, 2)
 						if err != nil {
@@ -431,7 +425,7 @@ func TestStressPoolCloseWithBusyConnections(t *testing.T) {
 							return
 						}
 					}
-				}()
+				})
 			}
 			time.Sleep(time.Duration(round%10) * 100 * time.Microsecond)
 			if err := client.Close(); err != nil {
@@ -451,7 +445,6 @@ func TestStressPoolCloseWithBusyConnections(t *testing.T) {
 // a timeout or cancellation error; afterwards the client still works.
 func TestStressContextCancellationStorm(t *testing.T) {
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModePool} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			stressSoak(t, 50, 700*time.Millisecond, func(t *testing.T, seed int64) {
 				const timeout = 100 * time.Millisecond
@@ -476,7 +469,7 @@ func TestStressContextCancellationStorm(t *testing.T) {
 
 				var wg sync.WaitGroup
 				var counts [3]atomic.Int64
-				for g := 0; g < workers; g++ {
+				for g := range workers {
 					wg.Add(1)
 					go func(g int) {
 						defer wg.Done()
@@ -595,7 +588,7 @@ func TestStressServerRestartNewObject(t *testing.T) {
 				}
 			}(g)
 		}
-		for i := 0; i < restarts; i++ {
+		for range restarts {
 			time.Sleep(2 * time.Millisecond)
 			if !srv.restart(time.Millisecond) {
 				stop.Store(true)
@@ -641,7 +634,6 @@ func TestStressServerRestartNewObject(t *testing.T) {
 // timeout, and no goroutine is left once the handlers return.
 func TestStressShutdownWithBusyHandlers(t *testing.T) {
 	for _, cooperative := range []bool{true, false} {
-		cooperative := cooperative
 		name := "handler ignores context"
 		if cooperative {
 			name = "handler honours context"
@@ -663,7 +655,7 @@ func TestStressShutdownWithBusyHandlers(t *testing.T) {
 			srv := chaosStartServer(t, "tcp", dev, nil)
 			results := make(chan error, clients)
 			var open []*Client
-			for i := 0; i < clients; i++ {
+			for range clients {
 				c, err := New(chaosClientConfig(t, "tcp", srv.port(), chaosModeSingle, 10*time.Second, nil))
 				if err != nil {
 					t.Fatalf("New: %v", err)
@@ -677,7 +669,7 @@ func TestStressShutdownWithBusyHandlers(t *testing.T) {
 					results <- err
 				}()
 			}
-			for i := 0; i < clients; i++ {
+			for range clients {
 				select {
 				case <-entered:
 				case <-time.After(5 * time.Second):
@@ -700,7 +692,7 @@ func TestStressShutdownWithBusyHandlers(t *testing.T) {
 				t.Errorf("Shutdown took %v", elapsed)
 			}
 			// Shutdown closed the sockets: the clients must notice at once.
-			for i := 0; i < clients; i++ {
+			for range clients {
 				select {
 				case err := <-results:
 					// A cancelled handler's error may still be answered (as an exception)

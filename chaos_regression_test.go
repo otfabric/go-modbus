@@ -78,7 +78,6 @@ func TestChaosRegressionNoStaleBytesAfterTimeout(t *testing.T) {
 // using the dead connection.)
 func TestChaosRegressionRecoversAfterServerOutage(t *testing.T) {
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModeSingleRetry} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			srv := chaosStartServer(t, "tcp", chaosNewDevice(1), nil)
 			client := chaosOpenClient(t, chaosClientConfig(t, "tcp", srv.port(), mode, 500*time.Millisecond, nil))
@@ -87,7 +86,7 @@ func TestChaosRegressionRecoversAfterServerOutage(t *testing.T) {
 			}
 
 			srv.stop()
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				_, err := chaosProbe(client, 2*time.Second)
 				if class := chaosClassify(err); class != chaosClassTransport {
 					t.Fatalf("request %d while the server is down: class %q (%v), want a transport error", i, class, err)
@@ -173,7 +172,7 @@ func TestChaosRegressionPoolWaitersWoken(t *testing.T) {
 	go call()
 
 	// The two requests in flight time out; then the two waiters run and time out too.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		select {
 		case err := <-results:
 			if !errors.Is(err, ErrRequestTimedOut) {
@@ -212,7 +211,6 @@ func chaosBlockingHook(entered, cancelled chan<- struct{}, release <-chan struct
 // expired, as a timeout.)
 func TestChaosRegressionCancelInFlight(t *testing.T) {
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModePool} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			const timeout = 5 * time.Second
 			dev := chaosNewDevice(1)
@@ -320,7 +318,7 @@ func TestChaosRegressionSlowHandlerResponseDelivered(t *testing.T) {
 		srv := chaosStartServer(t, kind, dev, func(c *ServerConfig) { c.Timeout = serverTimeout })
 		client := chaosOpenClient(t, chaosClientConfig(t, kind, srv.port(), chaosModeSingle, 5*time.Second, nil))
 
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			ok, err := chaosReadInputs(context.Background(), client, 8*i, 4)
 			if err != nil || !ok {
 				t.Fatalf("request %d to a handler slower than the idle timeout: ok=%v err=%v", i, ok, err)
@@ -343,7 +341,6 @@ func TestChaosRegressionSlowHandlerResponseDelivered(t *testing.T) {
 // forever.)
 func TestChaosRegressionHalfOpenConnectionReplaced(t *testing.T) {
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModeSingleRetry} {
-		mode := mode
 		t.Run(mode.name, func(t *testing.T) {
 			const timeout = 60 * time.Millisecond
 			rig := chaosNewRig(t, "tcp", 1, nil, nil)

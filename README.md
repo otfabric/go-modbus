@@ -1,6 +1,6 @@
 # go-modbus — Modbus TCP, RTU, ASCII & TLS Library for Go (Golang)
 
-[![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/otfabric/go-modbus.svg)](https://pkg.go.dev/github.com/otfabric/go-modbus)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI Status](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/go-modbus/actions/workflows/ci.yml)
@@ -183,7 +183,7 @@ Run against the same local server on the same machine; publish the benchmark cod
 go get github.com/otfabric/go-modbus
 ```
 
-Requires **Go 1.23** or later.
+Requires **Go 1.26** or later.
 
 ---
 

@@ -176,7 +176,7 @@ func performPing(ctx context.Context, client *modbus.Client, unitID uint8, count
 
 	startTs = time.Now()
 
-	for run := uint16(0); run < count; run++ {
+	for run := range count {
 		ts = time.Now()
 		_, err = client.ReadRegister(ctx, unitID, 0x0000, modbus.HoldingRegister)
 
