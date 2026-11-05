@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -523,8 +524,8 @@ func TestCLI_UnitIDAndMisc(t *testing.T) {
 	target := startServer(t, h)
 
 	stdout, _ := expectRun(t, 0, "--target", target, "--unit-id", "9", "rc:0", "suid:0x20", "rc:0", "sleep:1ms", "date")
-	if got := fmt.Sprint(h.seenUnitIDs()); got != "[9 32]" {
-		t.Errorf("unit IDs seen: %s", got)
+	if got := h.seenUnitIDs(); !slices.Equal(got, []uint8{9, 32}) {
+		t.Errorf("unit IDs seen: %v", got)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	if _, err := time.Parse(time.RFC3339, lines[len(lines)-1]); err != nil {

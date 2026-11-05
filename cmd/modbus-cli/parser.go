@@ -93,15 +93,13 @@ const (
 // given read or write operation occupies, or 0 for operations that do not
 // address registers by value.
 func registersPerValue(op operationKind) uint16 {
-	switch op {
-	case readUint16, readInt16, writeUint16, writeInt16:
-		return 1
-	case readUint32, readInt32, readFloat32, writeUint32, writeInt32, writeFloat32:
-		return 2
-	case readUint64, readInt64, readFloat64, writeUint64, writeInt64, writeFloat64:
-		return 4
-	}
-	return 0
+	return registerWidths[op]
+}
+
+var registerWidths = map[operationKind]uint16{
+	readUint16: 1, readInt16: 1, writeUint16: 1, writeInt16: 1,
+	readUint32: 2, readInt32: 2, readFloat32: 2, writeUint32: 2, writeInt32: 2, writeFloat32: 2,
+	readUint64: 4, readInt64: 4, readFloat64: 4, writeUint64: 4, writeInt64: 4, writeFloat64: 4,
 }
 
 // checkRange verifies that quantity items starting at addr fit both into a

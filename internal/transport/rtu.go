@@ -134,10 +134,10 @@ func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 		}
 	}
 	res, err := rt.readRTUFrame(ctx, deadline)
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		rt.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", res.UnitID, res.FunctionCode, res.Payload)
-	case err == protocol.ErrBadCRC || err == protocol.ErrProtocolError || err == protocol.ErrShortFrame:
+	case protocol.ErrBadCRC, protocol.ErrProtocolError, protocol.ErrShortFrame:
 		// Wait out the rest of the frame, but not past the request deadline.
 		_ = sleepCtx(ctx, min(time.Duration(adu.MaxRTUFrameLength)*rt.t1, time.Until(deadline)))
 		discardLink(rt.Link, rt.t35*3)
