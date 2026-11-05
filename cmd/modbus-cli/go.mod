@@ -3,7 +3,7 @@ module github.com/otfabric/go-modbus/cmd/modbus-cli
 go 1.26.0
 
 require (
-	github.com/otfabric/go-modbus v1.10.6
+	github.com/otfabric/go-modbus v1.11.0
 	github.com/spf13/cobra v1.10.2
 )
 

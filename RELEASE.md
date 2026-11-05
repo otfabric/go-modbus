@@ -1,5 +1,16 @@
 # go-modbus Releases
 
+## v1.11.1
+
+**Date:** 2026-11-05
+**Previous release:** v1.11.0
+
+### Changed
+
+- The bundled `modbus-cli` is built on v1.11.0, and so has its serial, UDP and server fixes. Library code is the same as v1.11.0.
+
+---
+
 ## v1.11.0
 
 **Date:** 2026-11-05
