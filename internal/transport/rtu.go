@@ -23,8 +23,13 @@ type RTULink interface {
 }
 
 // SerialCharTime returns the duration to send one byte at the given baud rate (11 bits per byte).
+// Rates above 11 Gbit/s round down to zero, as the integer division does.
 func SerialCharTime(rateBps uint) time.Duration {
-	return 11 * time.Second / time.Duration(rateBps)
+	rate := uint64(rateBps)
+	if rate > uint64(11*time.Second) {
+		return 0
+	}
+	return 11 * time.Second / time.Duration(rate)
 }
 
 // discardLink performs a best-effort flush of stale bytes on the link by

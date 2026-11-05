@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -15,8 +16,8 @@ func LoadCertPool(filePath string) (cp *x509.CertPool, err error) {
 	var buf []byte
 
 	// read the entire cert store, which may contain zero, one
-	// or more certificates
-	buf, err = os.ReadFile(filePath)
+	// or more certificates. The path is the caller's own configuration.
+	buf, err = os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
 		return
 	}

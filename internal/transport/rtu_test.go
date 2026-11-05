@@ -216,6 +216,22 @@ func TestSerialCharTime(t *testing.T) {
 	}
 }
 
+// A rate that does not fit in a time.Duration must not wrap to a negative
+// character time: before the fix, SerialCharTime(^uint(0)) was -11s on 64-bit.
+func TestSerialCharTimeHugeRate(t *testing.T) {
+	maxRate := ^uint(0)
+	want := time.Duration(uint64(11*time.Second) / uint64(maxRate))
+	if got := SerialCharTime(maxRate); got != want {
+		t.Errorf("SerialCharTime(%d) = %v, want %v", maxRate, got, want)
+	}
+	if over := uint64(11*time.Second) + 1; uint64(maxRate) >= over {
+		rate := uint(over)
+		if got := SerialCharTime(rate); got != 0 {
+			t.Errorf("SerialCharTime(%d) = %v, want 0", rate, got)
+		}
+	}
+}
+
 func TestRTUReadFrame(t *testing.T) {
 	p1, p2 := net.Pipe()
 	txchan := make(chan []byte, 4)

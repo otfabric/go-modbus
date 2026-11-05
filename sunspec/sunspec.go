@@ -187,11 +187,10 @@ func ReadModelHeaders(ctx context.Context, r Reader, opts *Options, baseAddress 
 		return nil, err
 	}
 	// The first model header takes two registers after the two of the marker.
-	start := uint32(baseAddress) + 2
-	if start+1 > 0xFFFF {
+	if baseAddress > 0xFFFF-3 {
 		return nil, protocol.ErrSunSpecModelChainInvalid
 	}
-	addr := uint16(start)
+	addr := baseAddress + 2
 
 	maxModels := o.MaxModels
 	if maxModels <= 0 {
@@ -227,7 +226,9 @@ func ReadModelHeaders(ctx context.Context, r Reader, opts *Options, baseAddress 
 		if endExclusive > 0x10000 {
 			return models, protocol.ErrSunSpecModelChainInvalid
 		}
-		endAddr := uint16(endExclusive)
+		// An end model that reaches register 0xFFFF has its next address
+		// wrap to 0, as uint16 arithmetic on the addresses would.
+		endAddr := uint16(endExclusive & 0xFFFF)
 		nextAddr := endAddr
 
 		h := ModelHeader{

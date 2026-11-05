@@ -82,11 +82,12 @@ func (mc *Client) WriteCoilRaw(ctx context.Context, unitID uint8, addr uint16, p
 func (mc *Client) WriteCoils(ctx context.Context, unitID uint8, addr uint16, values []bool) (err error) {
 	// Checked on the real length: converting to uint16 first would let 65537
 	// values pass as 1.
-	if len(values) > maxWriteCoils {
+	n := len(values)
+	if n > maxWriteCoils {
 		return newParameterError("WriteCoils", "quantity",
-			fmt.Sprintf("must be 1..%d, got %d", maxWriteCoils, len(values)))
+			fmt.Sprintf("must be 1..%d, got %d", maxWriteCoils, n))
 	}
-	quantity := uint16(len(values))
+	quantity := uint16(n)
 	if err = validateWriteBitsRange(addr, quantity); err != nil {
 		return
 	}
@@ -99,7 +100,7 @@ func (mc *Client) WriteCoils(ctx context.Context, unitID uint8, addr uint16, val
 	}
 	req.Payload = uint16ToBytes(BigEndian, addr)
 	req.Payload = append(req.Payload, uint16ToBytes(BigEndian, quantity)...)
-	req.Payload = append(req.Payload, byte(len(encodedValues)))
+	req.Payload = append(req.Payload, adu.Uint8(len(encodedValues)))
 	req.Payload = append(req.Payload, encodedValues...)
 
 	m := mc.getMetrics()

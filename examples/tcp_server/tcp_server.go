@@ -215,11 +215,11 @@ func (eh *exampleHandler) HandleHoldingRegisters(ctx context.Context, req *modbu
 			if req.IsWrite {
 				// cast the 16-bit unsigned integer passed by the server
 				// to a 16-bit signed integer when writing
-				eh.holdingReg3 = int16(req.Args[i])
+				eh.holdingReg3 = uint16ToInt16(req.Args[i])
 			}
 			// cast the 16-bit signed integer from the handler to a 16-bit unsigned
 			// integer so that we can append it to `res`.
-			res = append(res, uint16(eh.holdingReg3))
+			res = append(res, int16ToUint16(eh.holdingReg3))
 
 		// expose the 16 most-significant bits of eh.holdingReg4 in register 200
 		case 200:
@@ -280,7 +280,7 @@ func (eh *exampleHandler) HandleInputRegisters(ctx context.Context, req *modbus.
 			// return the static value -1 at address 101, as a signed 16-bit
 			// integer
 			// (read it with modbus-cli --target tcp://localhost:5502 ri:int16:101)
-			res = append(res, uint16(minusOne))
+			res = append(res, int16ToUint16(minusOne))
 
 		// expose our uptime counter, encoded as a 32-bit unsigned integer in
 		// input registers 200-201
@@ -360,4 +360,20 @@ func (eh *exampleHandler) HandleDeviceIdentification(ctx context.Context, req *m
 			{ID: 0x80, Name: "Private", Value: "example-private-data"},
 		},
 	}, nil
+}
+
+// uint16ToInt16 reads a register as a two's complement signed integer.
+func uint16ToInt16(u uint16) int16 {
+	if u > math.MaxInt16 {
+		return int16(u&math.MaxInt16) + math.MinInt16
+	}
+	return int16(u)
+}
+
+// int16ToUint16 writes a signed integer to a register as two's complement.
+func int16ToUint16(v int16) uint16 {
+	if v < 0 {
+		return uint16(v&math.MaxInt16) | 1<<15
+	}
+	return uint16(v)
 }

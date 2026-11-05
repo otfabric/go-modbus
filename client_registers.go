@@ -253,12 +253,13 @@ func (mc *Client) WriteRegisterBytes(ctx context.Context, unitID uint8, addr uin
 func (mc *Client) ReadWriteMultipleRegisters(ctx context.Context, unitID uint8, readAddr, readQty, writeAddr uint16, writeValues []uint16) (values []uint16, err error) {
 	// Checked on the real length: converting to uint16 first would let 65537
 	// values pass as 1.
-	if len(writeValues) > maxRWWriteRegs {
+	n := len(writeValues)
+	if n > maxRWWriteRegs {
 		err = newParameterError("ReadWriteMultipleRegisters", "writeValues",
-			fmt.Sprintf("length must be 1..%d, got %d", maxRWWriteRegs, len(writeValues)))
+			fmt.Sprintf("length must be 1..%d, got %d", maxRWWriteRegs, n))
 		return
 	}
-	writeQty := uint16(len(writeValues))
+	writeQty := uint16(n)
 
 	if readQty == 0 || readQty > maxRWReadRegs {
 		err = newParameterError("ReadWriteMultipleRegisters", "readQty",
@@ -472,11 +473,12 @@ func (mc *Client) writeRegisterPayload(ctx context.Context, unitID uint8, addr u
 	}
 	// Checked on the real length: converting to uint16 first would let 32769
 	// registers pass as 1.
-	if len(values)/2 > maxWriteRegisters {
+	n := len(values)
+	if n/2 > maxWriteRegisters {
 		return newParameterError("WriteRegisters", "quantity",
-			fmt.Sprintf("must be 1..%d, got %d", maxWriteRegisters, len(values)/2))
+			fmt.Sprintf("must be 1..%d, got %d", maxWriteRegisters, n/2))
 	}
-	payloadLength := uint16(len(values))
+	payloadLength := uint16(n)
 	quantity := payloadLength / 2
 
 	if err = validateWriteRegsRange(addr, quantity); err != nil {

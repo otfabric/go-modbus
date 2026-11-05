@@ -4,6 +4,7 @@ package modbus
 
 import (
 	"context"
+	"math"
 	"sort"
 
 	"github.com/otfabric/go-modbus/internal/adu"
@@ -121,7 +122,10 @@ func (ms *Server) buildIndividualDeviceIDResponse(req *adu.Request, txnID uint16
 	for i := range objects {
 		if objects[i].ID == objectID {
 			payload := deviceIDResponseHeader(category, conformity, 0x00, 0x00, 1)
-			payload = appendDeviceIDObject(payload, objects[i])
+			payload, err := appendDeviceIDObject(payload, objects[i])
+			if err != nil {
+				return nil, err
+			}
 			return newSuccessResponse(req, txnID, payload), nil
 		}
 	}
@@ -178,9 +182,12 @@ func (ms *Server) buildStreamDeviceIDResponse(req *adu.Request, txnID uint16, ca
 		nextObjID = byte(filtered[nextIdx].ID)
 	}
 
-	payload := deviceIDResponseHeader(category, conformity, moreFollows, nextObjID, uint8(len(packed)))
+	payload := deviceIDResponseHeader(category, conformity, moreFollows, nextObjID, adu.Uint8(len(packed)))
 	for i := range packed {
-		payload = appendDeviceIDObject(payload, packed[i])
+		var err error
+		if payload, err = appendDeviceIDObject(payload, packed[i]); err != nil {
+			return nil, err
+		}
 	}
 
 	return newSuccessResponse(req, txnID, payload), nil
@@ -199,11 +206,18 @@ func deviceIDResponseHeader(category DeviceIDCategory, conformity, moreFollows, 
 	}
 }
 
-// appendDeviceIDObject appends one object (ID, length, value) to payload.
-func appendDeviceIDObject(payload []byte, obj DeviceIdentificationObject) []byte {
-	payload = append(payload, byte(obj.ID), byte(len(obj.Value)))
+// appendDeviceIDObject appends one object (ID, length, value) to payload. A
+// value longer than its one-byte length field can count cannot be sent:
+// Server Device Failure. Shorter values that still overflow the frame are
+// caught by the response size check in serveRequest.
+func appendDeviceIDObject(payload []byte, obj DeviceIdentificationObject) ([]byte, error) {
+	n := len(obj.Value)
+	if n > math.MaxUint8 {
+		return nil, ErrServerDeviceFailure
+	}
+	payload = append(payload, byte(obj.ID), byte(n))
 	payload = append(payload, []byte(obj.Value)...)
-	return payload
+	return payload, nil
 }
 
 // filterDeviceIDObjectsByCategory returns the objects visible at the requested
