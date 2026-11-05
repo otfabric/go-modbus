@@ -53,11 +53,7 @@ type operation struct {
 	isHoldingReg bool
 	count        uint16
 	coil         bool
-	u16          uint16
-	u32          uint32
-	f32          float32
-	u64          uint64
-	f64          float64
+	value        any // typed register value for writeUint16 ... writeFloat64
 	bytes        []byte
 	duration     time.Duration
 	unitID       uint8
@@ -85,9 +81,48 @@ func parseWordOrder(s string) (modbus.WordOrder, error) {
 	}
 }
 
+// Protocol limits per request (Modbus Application Protocol V1.1b3, 6.1-6.4
+// and 6.12).
+const (
+	maxReadBits      = 2000 // FC01, FC02
+	maxReadRegisters = 125  // FC03, FC04
+	maxWriteRegs     = 123  // FC16
+)
+
+// registersPerValue returns the number of 16-bit registers one value of the
+// given read or write operation occupies, or 0 for operations that do not
+// address registers by value.
+func registersPerValue(op operationKind) uint16 {
+	switch op {
+	case readUint16, readInt16, writeUint16, writeInt16:
+		return 1
+	case readUint32, readInt32, readFloat32, writeUint32, writeInt32, writeFloat32:
+		return 2
+	case readUint64, readInt64, readFloat64, writeUint64, writeInt64, writeFloat64:
+		return 4
+	}
+	return 0
+}
+
+// checkRange verifies that quantity items starting at addr fit both into a
+// single request (at most limit items) and into the 16-bit address space.
+func checkRange(addr uint16, quantity, limit uint32, unit string) error {
+	if quantity == 0 {
+		return fmt.Errorf("quantity must be at least 1 %s", unit)
+	}
+	if quantity > limit {
+		return fmt.Errorf("quantity %d exceeds the limit of %d %s per request", quantity, limit, unit)
+	}
+	if uint32(addr)+quantity-1 > 0xffff {
+		return fmt.Errorf("range 0x%04x+%d runs past the end of the address space (0xffff)", addr, quantity)
+	}
+	return nil
+}
+
 func parseOperations(args []string) ([]operation, error) {
 	var runList []operation
 	var err error
+	var hasWork bool
 
 	for _, arg := range args {
 		var splitArgs []string
@@ -96,7 +131,7 @@ func parseOperations(args []string) ([]operation, error) {
 		verbAndRest := strings.SplitN(arg, ":", 2)
 		verb := verbAndRest[0]
 		if len(verbAndRest) < 2 && verb != "repeat" && verb != "date" {
-			return nil, fmt.Errorf("illegal command format (should be command:arg1:arg2..., e.g. rh:uint32:0x1000+5)")
+			return nil, fmt.Errorf("illegal command format %q (should be command:arg1:arg2..., e.g. rh:uint32:0x1000+5)", arg)
 		}
 
 		if verb == "wr" || verb == "writeRegister" {
@@ -118,12 +153,10 @@ func parseOperations(args []string) ([]operation, error) {
 			}
 
 			o.op = readBools
-			var extra uint16
-			o.addr, extra, err = parseAddressAndQuantity(splitArgs[1])
+			o.addr, o.count, err = parseAddressAndCount(splitArgs[1], 1, maxReadBits, "coils/discrete inputs")
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse address ('%v'): %w", splitArgs[1], err)
+				return nil, fmt.Errorf("failed to parse address (%q): %w", splitArgs[1], err)
 			}
-			o.count = extra + 1
 
 		case "rh", "readHoldingRegister", "readHoldingRegisters",
 			"ri", "readInputRegister", "readInputRegisters":
@@ -157,15 +190,20 @@ func parseOperations(args []string) ([]operation, error) {
 			case "bytes":
 				o.op = readBytes
 			default:
-				return nil, fmt.Errorf("unknown register type '%v' (should be one of uint16, int16, uint32, int32, float32, uint64, int64, float64, bytes)", splitArgs[1])
+				return nil, fmt.Errorf("unknown register type %q (should be one of uint16, int16, uint32, int32, float32, uint64, int64, float64, bytes)", splitArgs[1])
 			}
 
-			var extra uint16
-			o.addr, extra, err = parseAddressAndQuantity(splitArgs[2])
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse address ('%v'): %w", splitArgs[2], err)
+			if o.op == readBytes {
+				// the quantity is a byte count, two bytes per register
+				o.addr, o.count, err = parseAddressAndBytes(splitArgs[2])
+			} else {
+				perValue := registersPerValue(o.op)
+				o.addr, o.count, err = parseAddressAndCount(splitArgs[2], perValue,
+					maxReadRegisters/uint32(perValue), splitArgs[1]+" values")
 			}
-			o.count = extra + 1
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse address (%q): %w", splitArgs[2], err)
+			}
 
 		case "wc", "writeCoil":
 			if len(splitArgs) != 3 {
@@ -175,7 +213,7 @@ func parseOperations(args []string) ([]operation, error) {
 			o.op = writeCoil
 			o.addr, err = parseUint16(splitArgs[1])
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse address ('%v'): %w", splitArgs[1], err)
+				return nil, fmt.Errorf("failed to parse address (%q): %w", splitArgs[1], err)
 			}
 
 			switch splitArgs[2] {
@@ -184,7 +222,7 @@ func parseOperations(args []string) ([]operation, error) {
 			case "false":
 				o.coil = false
 			default:
-				return nil, fmt.Errorf("failed to parse coil value '%v' (should be true or false)", splitArgs[2])
+				return nil, fmt.Errorf("failed to parse coil value %q (should be true or false)", splitArgs[2])
 			}
 
 		case "wr", "writeRegister":
@@ -194,41 +232,41 @@ func parseOperations(args []string) ([]operation, error) {
 
 			o.addr, err = parseUint16(splitArgs[2])
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse address ('%v'): %w", splitArgs[2], err)
+				return nil, fmt.Errorf("failed to parse address (%q): %w", splitArgs[2], err)
 			}
 
 			switch splitArgs[1] {
 			case "uint16":
 				o.op = writeUint16
-				o.u16, err = parseUint16(splitArgs[3])
+				o.value, err = parseUint16(splitArgs[3])
 
 			case "int16":
 				o.op = writeInt16
-				o.u16, err = parseInt16(splitArgs[3])
+				o.value, err = parseInt16(splitArgs[3])
 
 			case "uint32":
 				o.op = writeUint32
-				o.u32, err = parseUint32(splitArgs[3])
+				o.value, err = parseUint32(splitArgs[3])
 
 			case "int32":
 				o.op = writeInt32
-				o.u32, err = parseInt32(splitArgs[3])
+				o.value, err = parseInt32(splitArgs[3])
 
 			case "float32":
 				o.op = writeFloat32
-				o.f32, err = parseFloat32(splitArgs[3])
+				o.value, err = parseFloat32(splitArgs[3])
 
 			case "uint64":
 				o.op = writeUint64
-				o.u64, err = parseUint64(splitArgs[3])
+				o.value, err = parseUint64(splitArgs[3])
 
 			case "int64":
 				o.op = writeInt64
-				o.u64, err = parseInt64(splitArgs[3])
+				o.value, err = parseInt64(splitArgs[3])
 
 			case "float64":
 				o.op = writeFloat64
-				o.f64, err = parseFloat64(splitArgs[3])
+				o.value, err = parseFloat64(splitArgs[3])
 
 			case "bytes":
 				o.op = writeBytes
@@ -239,11 +277,30 @@ func parseOperations(args []string) ([]operation, error) {
 				o.bytes = []byte(splitArgs[3])
 
 			default:
-				return nil, fmt.Errorf("unknown register type '%v' (should be one of uint16, int16, uint32, int32, float32, uint64, int64, float64, bytes, string)", splitArgs[1])
+				return nil, fmt.Errorf("unknown register type %q (should be one of uint16, int16, uint32, int32, float32, uint64, int64, float64, bytes, string)", splitArgs[1])
 			}
 
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse '%s' as %s: %w", splitArgs[3], splitArgs[1], err)
+				return nil, fmt.Errorf("failed to parse %q as %s: %w", splitArgs[3], splitArgs[1], err)
+			}
+
+			var regs uint32
+			if o.op == writeBytes {
+				n := len(o.bytes)
+				if n == 0 {
+					return nil, fmt.Errorf("nothing to write: empty %s value", splitArgs[1])
+				}
+				if n > 2*maxWriteRegs {
+					return nil, fmt.Errorf("%s value is %d bytes long, at most %d bytes fit into one request",
+						splitArgs[1], n, 2*maxWriteRegs)
+				}
+				// one register per two bytes, an odd last byte is padded
+				regs = (uint32(n) + 1) / 2
+			} else {
+				regs = uint32(registersPerValue(o.op))
+			}
+			if err = checkRange(o.addr, regs, maxWriteRegs, "registers"); err != nil {
+				return nil, fmt.Errorf("cannot write %s at address 0x%04x: %w", splitArgs[1], o.addr, err)
 			}
 
 		case "sleep":
@@ -252,9 +309,9 @@ func parseOperations(args []string) ([]operation, error) {
 			}
 
 			o.op = sleep
-			o.duration, err = time.ParseDuration(splitArgs[1])
+			o.duration, err = parseDuration(splitArgs[1])
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse '%s' as duration: %w", splitArgs[1], err)
+				return nil, fmt.Errorf("failed to parse %q as duration: %w", splitArgs[1], err)
 			}
 
 		case "suid", "setUnitId", "sid":
@@ -265,12 +322,18 @@ func parseOperations(args []string) ([]operation, error) {
 			o.op = setUnitID
 			o.unitID, err = parseUnitID(splitArgs[1])
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse '%s' as unit id: %w", splitArgs[1], err)
+				return nil, fmt.Errorf("failed to parse %q as unit id: %w", splitArgs[1], err)
 			}
 
 		case "repeat":
 			if len(splitArgs) != 1 {
 				return nil, fmt.Errorf("repeat takes no arguments, got %v", len(splitArgs)-1)
+			}
+
+			// without any operation before it, repeat would spin forever
+			// without doing anything
+			if !hasWork {
+				return nil, errors.New("repeat needs at least one operation before it (other than suid or repeat)")
 			}
 
 			o.op = repeat
@@ -303,7 +366,7 @@ func parseOperations(args []string) ([]operation, error) {
 			case "s", "sid":
 				o.op = scanUnitID
 			default:
-				return nil, fmt.Errorf("unknown scan/register type '%s' (valid options: coils, di, hr, ir, s)", splitArgs[1])
+				return nil, fmt.Errorf("unknown scan/register type %q (valid options: coils, di, hr, ir, s)", splitArgs[1])
 			}
 
 		case "ping":
@@ -314,7 +377,7 @@ func parseOperations(args []string) ([]operation, error) {
 			o.op = ping
 			o.count, err = parseUint16(splitArgs[1])
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse ping count ('%v'): %w", splitArgs[1], err)
+				return nil, fmt.Errorf("failed to parse ping count (%q): %w", splitArgs[1], err)
 			}
 
 			if o.count == 0 {
@@ -322,14 +385,18 @@ func parseOperations(args []string) ([]operation, error) {
 			}
 
 			if len(splitArgs) == 3 {
-				o.duration, err = time.ParseDuration(splitArgs[2])
+				o.duration, err = parseDuration(splitArgs[2])
 				if err != nil {
-					return nil, fmt.Errorf("failed to parse '%s' as duration: %w", splitArgs[2], err)
+					return nil, fmt.Errorf("failed to parse %q as duration: %w", splitArgs[2], err)
 				}
 			}
 
 		default:
-			return nil, fmt.Errorf("unsupported command '%v'", splitArgs[0])
+			return nil, fmt.Errorf("unsupported command %q", splitArgs[0])
+		}
+
+		if o.op != setUnitID && o.op != repeat {
+			hasWork = true
 		}
 
 		runList = append(runList, o)
@@ -337,6 +404,16 @@ func parseOperations(args []string) ([]operation, error) {
 	}
 
 	return runList, nil
+}
+
+// parseDuration parses a non-negative duration.
+func parseDuration(in string) (d time.Duration, err error) {
+	d, err = time.ParseDuration(in)
+	if err == nil && d < 0 {
+		err = errors.New("duration must not be negative")
+	}
+
+	return
 }
 
 func parseUint16(in string) (u16 uint16, err error) {
@@ -351,12 +428,12 @@ func parseUint16(in string) (u16 uint16, err error) {
 	return
 }
 
-func parseInt16(in string) (u16 uint16, err error) {
+func parseInt16(in string) (i16 int16, err error) {
 	var val int64
 
 	val, err = strconv.ParseInt(in, 0, 16)
 	if err == nil {
-		u16 = uint16(int16(val))
+		i16 = int16(val)
 	}
 
 	return
@@ -374,12 +451,12 @@ func parseUint32(in string) (u32 uint32, err error) {
 	return
 }
 
-func parseInt32(in string) (u32 uint32, err error) {
+func parseInt32(in string) (i32 int32, err error) {
 	var val int64
 
 	val, err = strconv.ParseInt(in, 0, 32)
 	if err == nil {
-		u32 = uint32(int32(val))
+		i32 = int32(val)
 	}
 
 	return
@@ -397,39 +474,20 @@ func parseFloat32(in string) (f32 float32, err error) {
 }
 
 func parseUint64(in string) (u64 uint64, err error) {
-	var val uint64
-
-	val, err = strconv.ParseUint(in, 0, 64)
-	if err == nil {
-		u64 = val
-	}
-
-	return
+	return strconv.ParseUint(in, 0, 64)
 }
 
-func parseInt64(in string) (u64 uint64, err error) {
-	var val int64
-
-	val, err = strconv.ParseInt(in, 0, 64)
-	if err == nil {
-		u64 = uint64(val)
-	}
-
-	return
+func parseInt64(in string) (i64 int64, err error) {
+	return strconv.ParseInt(in, 0, 64)
 }
 
 func parseFloat64(in string) (f64 float64, err error) {
-	var val float64
-
-	val, err = strconv.ParseFloat(in, 64)
-	if err == nil {
-		f64 = val
-	}
-
-	return
+	return strconv.ParseFloat(in, 64)
 }
 
-func parseAddressAndQuantity(in string) (addr uint16, quantity uint16, err error) {
+// parseAddressAndQuantity parses <addr>[+<extra>] and returns the address
+// and the number of additional items after the first one.
+func parseAddressAndQuantity(in string) (addr uint16, extra uint16, err error) {
 	var split = strings.Split(in, "+")
 
 	switch {
@@ -441,10 +499,57 @@ func parseAddressAndQuantity(in string) (addr uint16, quantity uint16, err error
 		if err != nil {
 			return
 		}
-		quantity, err = parseUint16(split[1])
+		extra, err = parseUint16(split[1])
 	default:
 		err = errors.New("illegal format")
 	}
+
+	return
+}
+
+// parseAddressAndCount parses <addr>[+<extra>] for a read of values that are
+// regsPerValue registers (or bits) wide each, and rejects requests that
+// exceed limit values (limit < 65536) or run past the end of the address
+// space.
+func parseAddressAndCount(in string, regsPerValue uint16, limit uint32, unit string) (addr uint16, count uint16, err error) {
+	var extra uint16
+
+	addr, extra, err = parseAddressAndQuantity(in)
+	if err != nil {
+		return
+	}
+	// computed in 32 bits: extra + 1 wraps to 0 in 16 bits for +65535
+	quantity := uint32(extra) + 1
+	if quantity > limit {
+		err = fmt.Errorf("quantity %d exceeds the limit of %d %s per request", quantity, limit, unit)
+		return
+	}
+	if err = checkRange(addr, quantity*uint32(regsPerValue), 0xffff, unit); err != nil {
+		return
+	}
+	// extra < limit <= 0xffff: no wrap
+	count = extra + 1
+
+	return
+}
+
+// parseAddressAndBytes parses <addr>[+<extra>] for a raw byte read.
+func parseAddressAndBytes(in string) (addr uint16, count uint16, err error) {
+	var extra uint16
+
+	addr, extra, err = parseAddressAndQuantity(in)
+	if err != nil {
+		return
+	}
+	quantity := uint32(extra) + 1
+	if quantity > 2*maxReadRegisters {
+		err = fmt.Errorf("quantity %d exceeds the limit of %d bytes per request", quantity, 2*maxReadRegisters)
+		return
+	}
+	if err = checkRange(addr, (quantity+1)/2, maxReadRegisters, "registers"); err != nil {
+		return
+	}
+	count = extra + 1
 
 	return
 }
@@ -460,7 +565,11 @@ func parseUnitID(in string) (addr uint8, err error) {
 	return
 }
 
+// parseHexBytes decodes a hex string, with an optional 0x prefix.
 func parseHexBytes(in string) (out []byte, err error) {
+	if strings.HasPrefix(in, "0x") || strings.HasPrefix(in, "0X") {
+		in = in[2:]
+	}
 	out, err = hex.DecodeString(in)
 
 	return

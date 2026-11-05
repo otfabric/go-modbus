@@ -21,6 +21,12 @@ Register types (rh/ri/wr):
   uint16, int16, uint32, int32, float32, uint64, int64, float64, bytes
   (wr also accepts: string)
 
+  +qty reads qty values after the first one (bytes: qty bytes). One
+  request reads at most 2000 coils/discrete inputs or 125 registers
+  (62 32-bit values, 31 64-bit values, 250 bytes) and writes at most
+  123 registers (246 bytes); ranges past address 0xffff are rejected.
+  wr:bytes takes a hex string, with or without a 0x prefix.
+
 Scan targets:
   c/coils, di/discreteInputs, h/hr/holding/holdingRegisters,
   i/ir/input/inputRegisters, s/sid
@@ -36,7 +42,8 @@ Supported transports:
   udp://host:port                 Modbus TCP over UDP
 
 Register endianness and word order:
-  Use --endianness <big|little> (default: big, per Modbus spec).
+  Use --endianness <big|little> (default: big, per Modbus spec); it applies
+  to all typed values, 16-bit ones included, but not to bytes.
   For multi-register values (32/64-bit), use --word-order <highfirst|lowfirst>
   (default: highfirst, i.e. most significant word first).`
 

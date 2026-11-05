@@ -21,14 +21,17 @@ var (
 	buildDate = "unknown"
 )
 
-var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Print build version information",
-	Args:  cobra.NoArgs,
-	Run: func(_ *cobra.Command, _ []string) {
-		fmt.Printf("modbus-cli %s\n", version)
-		fmt.Printf("  tag:        %s\n", tag)
-		fmt.Printf("  commit:     %s\n", commit)
-		fmt.Printf("  built:      %s\n", buildDate)
-	},
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print build version information",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			w := cmd.OutOrStdout()
+			_, _ = fmt.Fprintf(w, "modbus-cli %s\n", version)
+			_, _ = fmt.Fprintf(w, "  tag:        %s\n", tag)
+			_, _ = fmt.Fprintf(w, "  commit:     %s\n", commit)
+			_, _ = fmt.Fprintf(w, "  built:      %s\n", buildDate)
+		},
+	}
 }

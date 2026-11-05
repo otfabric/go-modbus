@@ -28,13 +28,14 @@ jobs:
       go-versions: '["1.26", "1.27"]'
     secrets: inherit
 
-  # The CLI is a nested module (ADR-0009). It has no tests; this job keeps
-  # tidy, vet, lint and the matrix build on it.
+  # The CLI is a nested module (ADR-0009): tidy, vet, lint, the matrix build
+  # and its tests with their own coverage floor.
   cli:
     uses: otfabric/.github/.github/workflows/go-ci.yml@v3.3.1
     with:
       module-dir: cmd/modbus-cli
       test-exclude-regex: "/example(s)?($|/)"
+      coverage-min: "95"
       run-codecov: false
       go-versions: '["1.26", "1.27"]'
     secrets: inherit
