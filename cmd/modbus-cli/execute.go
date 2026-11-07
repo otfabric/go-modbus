@@ -188,6 +188,8 @@ type output struct {
 	w    io.Writer
 	json bool
 	enc  *json.Encoder
+	// err is the first write error; once set, nothing more is written.
+	err error
 }
 
 func newOutput(w io.Writer, jsonOutput bool) *output {
@@ -195,12 +197,18 @@ func newOutput(w io.Writer, jsonOutput bool) *output {
 }
 
 func (out *output) printf(format string, args ...any) {
-	_, _ = fmt.Fprintf(out.w, format, args...)
+	if out.err != nil {
+		return
+	}
+	_, out.err = fmt.Fprintf(out.w, format, args...)
 }
 
 func (out *output) emit(r cliResult) {
+	if out.err != nil {
+		return
+	}
 	r.Value = jsonValue(r.Value)
-	_ = out.enc.Encode(r)
+	out.err = out.enc.Encode(r)
 }
 
 // jsonValue replaces the float values JSON cannot represent (NaN, ±Inf),
@@ -224,22 +232,38 @@ func jsonValue(v any) any {
 
 func executeOperations(ctx context.Context, client *modbus.Client, runList []operation,
 	initialUnitID uint8, endianness modbus.Endianness, wordOrder modbus.WordOrder,
-	out *output, failFast bool) (hadErrors bool) {
+	out *output, failFast bool) error {
 
 	currentUnitID := initialUnitID
 	jsonOutput := out.json
 	var err error
 
+	// the read and write operations count as succeeded or failed; scans,
+	// ping and the control operations do not
+	var opErr operationsError
 	trackErr := func(e error) {
-		if e != nil {
-			hadErrors = true
+		if e == nil {
+			opErr.succeeded++
+			return
 		}
+		if opErr.failed == 0 {
+			opErr.first = e
+		}
+		opErr.failed++
+	}
+	result := func() error {
+		if ctx.Err() != nil {
+			return errInterrupted
+		}
+		if opErr.failed > 0 {
+			return &opErr
+		}
+		return nil
 	}
 
 	for opIdx := 0; opIdx < len(runList); opIdx++ {
-		if ctx.Err() != nil {
-			hadErrors = true
-			return
+		if ctx.Err() != nil || out.err != nil {
+			return result()
 		}
 
 		var o = &runList[opIdx]
@@ -411,8 +435,7 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 			select {
 			case <-time.After(o.duration):
 			case <-ctx.Done():
-				hadErrors = true
-				return
+				return result()
 			}
 
 		case setUnitID:
@@ -442,9 +465,9 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 			performPing(ctx, client, currentUnitID, o.count, o.duration, out)
 		}
 
-		if failFast && hadErrors {
-			return
+		if failFast && opErr.failed > 0 {
+			return result()
 		}
 	}
-	return
+	return result()
 }

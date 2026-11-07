@@ -25,7 +25,12 @@ func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print build version information",
-		Args:  cobra.NoArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.NoArgs(cmd, args); err != nil {
+				return usageError(err)
+			}
+			return nil
+		},
 		Run: func(cmd *cobra.Command, _ []string) {
 			w := cmd.OutOrStdout()
 			_, _ = fmt.Fprintf(w, "modbus-cli %s\n", version)

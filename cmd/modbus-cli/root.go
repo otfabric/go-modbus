@@ -3,21 +3,16 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/otfabric/go-modbus"
 	"github.com/spf13/cobra"
 )
-
-var errOperationFailed = errors.New("operation failed")
 
 // options holds the values of the global flags.
 type options struct {
@@ -91,25 +86,30 @@ Operations are given as trailing arguments using a colon-separated DSL.
 		}, cobra.ShellCompDirectiveNoFileComp
 	})
 
+	rootCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError(err) })
 	rootCmd.AddCommand(newVersionCmd())
 
 	return rootCmd
 }
 
-// run executes the command line args and returns the process exit code.
-func run(args []string, stdout, stderr io.Writer) int {
+// Run executes the command line args and returns the process exit code (one
+// of the Exit… constants). ctx is the root context: cancelling it interrupts
+// the run, which then exits with ExitInterrupted.
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	rootCmd := newRootCmd()
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(stdout)
 	rootCmd.SetErr(stderr)
 
-	if err := rootCmd.Execute(); err != nil {
-		if !errors.Is(err, errOperationFailed) {
-			_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
-		}
-		return 1
+	err := rootCmd.ExecuteContext(ctx)
+	if err == nil {
+		return ExitOK
 	}
-	return 0
+	_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+	if ctx.Err() != nil {
+		return ExitInterrupted
+	}
+	return exitCode(err)
 }
 
 func completeOperations(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
@@ -136,7 +136,7 @@ func runRoot(cmd *cobra.Command, opts *options, args []string) error {
 	}
 
 	if opts.target == "" {
-		return fmt.Errorf("no target specified, use --target")
+		return usagef("no target specified, use --target")
 	}
 
 	config := modbus.Config{
@@ -154,90 +154,92 @@ func runRoot(cmd *cobra.Command, opts *options, args []string) error {
 	case "even":
 		config.Parity = modbus.ParityEven
 	default:
-		return fmt.Errorf("unknown parity setting %q (should be none, even, or odd)", opts.parity)
+		return usagef("unknown parity setting %q (should be none, even, or odd)", opts.parity)
 	}
 
 	switch opts.dataBits {
 	case 0, 5, 6, 7, 8:
 	default:
-		return fmt.Errorf("data bits %d out of range (0 for auto, or 5-8)", opts.dataBits)
+		return usagef("data bits %d out of range (0 for auto, or 5-8)", opts.dataBits)
 	}
 
 	switch opts.stopBits {
 	case 0, 1, 2:
 	default:
-		return fmt.Errorf("stop bits %d out of range (0 for auto, 1 or 2)", opts.stopBits)
+		return usagef("stop bits %d out of range (0 for auto, 1 or 2)", opts.stopBits)
 	}
 
 	var err error
 	config.Timeout, err = time.ParseDuration(opts.timeout)
 	if err != nil {
-		return fmt.Errorf("failed to parse timeout %q: %w", opts.timeout, err)
+		return usagef("failed to parse timeout %q: %w", opts.timeout, err)
 	}
 	// the library replaces a zero timeout with its default and a negative
 	// one fails every request: neither is what was asked for
 	if config.Timeout <= 0 {
-		return fmt.Errorf("timeout %q must be greater than 0", opts.timeout)
+		return usagef("timeout %q must be greater than 0", opts.timeout)
 	}
 
 	if opts.unitID > 0xff {
-		return fmt.Errorf("unit ID %d out of range (0-255)", opts.unitID)
+		return usagef("unit ID %d out of range (0-255)", opts.unitID)
 	}
 	unitID := uint8(opts.unitID)
 
 	cEndianness, err := parseEndianness(opts.endianness)
 	if err != nil {
-		return err
+		return usageError(err)
 	}
 	cWordOrder, err := parseWordOrder(opts.wordOrder)
 	if err != nil {
-		return err
+		return usageError(err)
 	}
 
 	runList, err := parseOperations(args)
 	if err != nil {
-		return err
+		return usageError(err)
 	}
 
 	if strings.HasPrefix(opts.target, "tcp+tls://") {
 		if opts.certPath == "" {
-			return fmt.Errorf("TLS requested but no client certificate given, use --cert")
+			return usagef("TLS requested but no client certificate given, use --cert")
 		}
 		if opts.keyPath == "" {
-			return fmt.Errorf("TLS requested but no client key given, use --key")
+			return usagef("TLS requested but no client key given, use --key")
 		}
 		if opts.caPath == "" {
-			return fmt.Errorf("TLS requested but no CA/server cert given, use --ca")
+			return usagef("TLS requested but no CA/server cert given, use --ca")
 		}
 
 		clientKeyPair, tlsErr := tls.LoadX509KeyPair(opts.certPath, opts.keyPath)
 		if tlsErr != nil {
-			return fmt.Errorf("failed to load client TLS key pair: %w", tlsErr)
+			return inputError(fmt.Errorf("failed to load client TLS key pair: %w", tlsErr))
 		}
 		config.TLSClientCert = &clientKeyPair
 
 		config.TLSRootCAs, err = modbus.LoadCertPool(opts.caPath)
 		if err != nil {
-			return fmt.Errorf("failed to load TLS CA/server certificate: %w", err)
+			return inputError(fmt.Errorf("failed to load TLS CA/server certificate: %w", err))
 		}
 	}
 
 	client, err := modbus.New(config)
 	if err != nil {
-		return fmt.Errorf("failed to create client: %w", err)
+		return usageError(fmt.Errorf("failed to create client: %w", err))
 	}
 
 	if err := client.Open(); err != nil {
-		return fmt.Errorf("failed to open client: %w", err)
+		return &transportError{fmt.Errorf("failed to open client: %w", err)}
 	}
 	defer func() { _ = client.Close() }()
 
-	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
+	ctx := cmd.Context()
 	out := newOutput(cmd.OutOrStdout(), opts.json)
-	if executeOperations(ctx, client, runList, unitID, cEndianness, cWordOrder, out, opts.failFast) {
-		return errOperationFailed
+	opErr := executeOperations(ctx, client, runList, unitID, cEndianness, cWordOrder, out, opts.failFast)
+	switch {
+	case ctx.Err() != nil:
+		return errInterrupted
+	case out.err != nil:
+		return outputError(fmt.Errorf("failed to write results: %w", out.err))
 	}
-	return nil
+	return opErr
 }

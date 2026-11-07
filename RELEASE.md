@@ -1,5 +1,20 @@
 # go-modbus Releases
 
+## v1.12.0
+
+**Date:** unreleased
+**Previous release:** v1.11.1
+
+### Breaking
+
+- `modbus-cli` exit codes follow the organisation table (`cmd/modbus-cli/docs/exitcodes.md`). Every failure used to exit 1; now: invalid flags, arguments or operations 1 → 2; unreadable or invalid TLS files 1 → 3; connection failure 1 → 4; every operation timed out 1 → 5; every operation failed with a Modbus exception or protocol error 1 → 6; some operations succeeded and some failed 1 → 7; results cannot be written 1 → 10; interrupted (SIGINT/SIGTERM) 1 → 130. Library code is the same as v1.11.1.
+
+### Changed
+
+- `modbus-cli`: a run with failed operations prints one `Error:` summary line on standard error (the failures themselves stay on standard output). The interrupt handler is installed before the command runs, so an interrupt while connecting is reported as interrupted too.
+
+---
+
 ## v1.11.1
 
 **Date:** 2026-11-05
