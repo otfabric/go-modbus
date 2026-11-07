@@ -8,8 +8,10 @@ run-name: "Interop (${{ github.event_name }}) on ${{ github.ref_name }} by @${{ 
 on:
   push:
     branches: ["**"]
+    paths-ignore: ["**/*.md"]
   pull_request:
     branches: ["**"]
+    paths-ignore: ["**/*.md"]
   workflow_dispatch:
     inputs:
       libmodbus_image:
