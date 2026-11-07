@@ -2,7 +2,7 @@
 # This will output the help for each task
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
-.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak stress-load check clean interop test-interop coverage-check cross e2e coverage-pkg-check
+.PHONY: help all build build-cmd build-examples fmt fmt-check lint lint-ci vet vuln test coverage cover fuzz bench soak stress-load check clean interop test-interop coverage-check cross e2e coverage-pkg-check docs-check
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
@@ -26,6 +26,9 @@ INTEROP_TAGS := interop
 PKGS := $(shell go list -tags=$(INTEROP_TAGS) ./... | grep -v '/examples$$' | sed 's,^github.com/otfabric/go-modbus,.,')
 # Core library + subpackages: tests and coverage (exclude examples and the interop suite)
 TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/interop' | sed 's,^github.com/otfabric/go-modbus,.,')
+
+# docsync release of docs-check (DOC-008).
+DOCSYNC_VERSION := v0.2.0
 
 # Reference implementations for 'make interop': otfabric/modbus-interop v0.3.3
 # (libmodbus v3.2.0, PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83,
@@ -180,7 +183,11 @@ coverage-pkg-check: coverage ## Fail when a package is below COVER_PKG_MIN
 	END { for (k in n) { p = k; sub(/\/[^\/]*$$/, "", p); s[p] += n[k]; if (k in h) c[p] += n[k] } \
 	for (p in s) { v = 100 * c[p] / s[p]; if (v < m) { printf "%s: %.1f%% < %s%%\n", p, v, m; bad = 1 } } exit bad }' coverage.out
 
-check: fmt fmt-check lint lint-ci vet vuln test coverage-pkg-check ## Run format + lint + vet + vuln + test
+check: fmt fmt-check lint lint-ci vet vuln test coverage-pkg-check docs-check ## Run format + lint + vet + vuln + test + docs-check
+
+# The documents against the code (DOC-008): docsync, as docs-check.yml runs it.
+docs-check: ## Check that the documents agree with the code (docsync)
+	@go run github.com/otfabric/docsync@$(DOCSYNC_VERSION) check .
 
 clean: ## Remove generated binaries
 	@echo "Cleaning up"

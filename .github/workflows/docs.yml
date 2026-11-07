@@ -1,0 +1,19 @@
+# Documents against the code (DOC-008, standards/documentation.md#doc-sync).
+# No path filter: this is the check that runs when ci.yml skips a
+# Markdown-only change, so branch protection can require it.
+name: Docs
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    uses: otfabric/.github/.github/workflows/docs-check.yml@v3.5.0
+    with:
+      docsync-version: v0.2.0
+      policy-version: v1.4.1
+    secrets: inherit
