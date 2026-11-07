@@ -139,7 +139,7 @@ type Config struct {
 
 **Configuration grouping** — for larger setups, use grouped sub-structs:
 
-```go
+```text
 type TransportConfig struct {
     URL, Speed, DataBits, Parity, StopBits, DialTimeout, TLSClientCert, TLSRootCAs
 }
@@ -290,7 +290,7 @@ client, err := modbus.New(modbus.Config{
 
 All read methods share the same signature preamble:
 
-```go
+```text
 func (mc *Client) <Method>(ctx context.Context, unitID uint8, addr uint16, ...) (..., error)
 ```
 
@@ -1616,7 +1616,7 @@ if errors.As(err, &paramErr) {
 
 Codec error sentinels and typed errors live in the `codec` subpackage (`import "github.com/otfabric/go-modbus/codec"`). Use `errors.Is` and `errors.As` to inspect them.
 
-```go
+```text
 // codec package sentinels
 var (
     codec.ErrCodecRegisterCount  // register count mismatch
@@ -2153,7 +2153,7 @@ type Codec[T any] interface {
 
 These live in the `codec` subpackage (`import "github.com/otfabric/go-modbus/codec"`). They are **package-level** generic functions (Go methods cannot have type parameters). They accept a `codec.RegisterReader` / `codec.RegisterWriter` interface — `*modbus.Client` satisfies both. Wire order is big-endian per register; layout is defined by the codec.
 
-```go
+```text
 // codec.RegisterReader / codec.RegisterWriter interfaces:
 type RegisterReader interface {
     ReadRegisters(ctx context.Context, unitID uint8, addr uint16, quantity uint16, regType RegType) ([]uint16, error)
@@ -2185,7 +2185,7 @@ If `dec.RegisterSpec().Count == 0`, `ReadFromClient` returns a `*CodecRegisterCo
 
 **Convenience wrappers for uint32:**
 
-```go
+```text
 func codec.ReadUint32FromClient(r RegisterReader, ctx context.Context, unitID uint8, addr uint16, regType RegType, layout RegisterLayout) (uint32, error)
 func codec.WriteUint32ToClient(w RegisterWriter, ctx context.Context, unitID uint8, addr uint16, v uint32, layout RegisterLayout) error
 ```
@@ -2414,14 +2414,14 @@ IDs follow the same scheme as descriptors (e.g. `uint32/layout:4321`, `ascii/reg
 
 **Client-bound** (perform a Modbus read or write using a runtime codec, in the `codec` subpackage):
 
-```go
+```text
 func codec.ReadRuntimeFromClient(r RegisterReader, ctx context.Context, unitID uint8, addr uint16, regType RegType, dec RuntimeDecoder) (any, error)
 func codec.WriteRuntimeToClient(w RegisterWriter, ctx context.Context, unitID uint8, addr uint16, value any, enc RuntimeEncoder) error
 ```
 
 **Offline** (decode/encode using a descriptor only; useful when you have a descriptor from discovery but no codec instance):
 
-```go
+```text
 func codec.DecodeWithDescriptor(regs []uint16, desc CodecDescriptor) (any, error)
 func codec.EncodeWithDescriptor(value any, desc CodecDescriptor) ([]uint16, error)
 ```

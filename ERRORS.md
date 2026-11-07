@@ -29,9 +29,10 @@ Modbus exception from the unit.
 | Connection lost, refused or reset | stdlib error (`io.EOF`, `*net.OpError`, …); the next request reconnects |
 | Malformed / unexpected peer response | `*ProtocolError` (`errors.Is` → `ErrProtocolError`) |
 | RTU CRC / ASCII LRC / short frame | `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` |
-| Peer Modbus exception (0x01–0x0B) | `*ExceptionError` (`errors.Is` → matching `ErrIllegal…` sentinel) |
+| Peer Modbus exception (0x01–0x0B) | `*ExceptionError` (`errors.Is` → the matching exception sentinel, e.g. `ErrIllegalDataAddress`) |
 | Codec encode/decode failure | `codec` package sentinels / typed errors |
 | `batch.Compile` / `Decode` given invalid items or data | `*batch.ValidationError` |
+| `ValidateRuntimeDecodePlan` / `ExecuteRuntimeDecodePlan` / `ExecuteRuntimeDecodePlanOffline` given an invalid plan (or, offline, registers that do not match the window) | `*RuntimePlanValidationError` (`ItemName`, `Reason`; no sentinel, match with `errors.As`) |
 | `batch` `Plan.Execute` that did not read every window | result **and** `*batch.ExecError` (`errors.Is` → `batch.ErrIncomplete`, the first window error, and the reason the batch stopped) |
 
 Prefer:
@@ -162,7 +163,9 @@ only its window. A timeout, transport error or protocol error ends the batch: th
 remaining windows are `NotAttempted`, with an error wrapping
 `batch.ErrNotAttempted` and that error (`Options.ContinueOnTransportError` reads
 them anyway). A cancelled or expired context always ends the batch. Every window
-and item keeps its own `State` and `Err`; see
+and item keeps its own `State` and `Err`. An item served by a window that is not `OK`
+has a `*batch.WindowError` as its `Err` (`Window` is the index in `Plan.Windows`;
+it unwraps to the window's error); see
 [API.md § 12](API.md#12-batch-reads-package-batch).
 
 ## Retries
