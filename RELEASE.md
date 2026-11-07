@@ -1,5 +1,16 @@
 # go-modbus Releases
 
+## v1.13.1
+
+**Date:** 2026-11-07
+**Previous release:** v1.13.0
+
+### Changed
+
+- The bundled command-line tools are built on v1.13.0. Library code is the same as v1.13.0.
+
+---
+
 ## v1.13.0
 
 **Date:** 2026-11-07
