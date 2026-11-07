@@ -71,23 +71,9 @@ Operations are given as trailing arguments using a colon-separated DSL.
 	f.BoolVar(&opts.json, "json", false, "output as line-delimited JSON")
 	f.BoolVar(&opts.failFast, "fail-fast", false, "stop on first operation error")
 
-	_ = rootCmd.RegisterFlagCompletionFunc("parity", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		return []string{"none", "even", "odd"}, cobra.ShellCompDirectiveNoFileComp
-	})
-	_ = rootCmd.RegisterFlagCompletionFunc("endianness", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		return []string{"big", "little"}, cobra.ShellCompDirectiveNoFileComp
-	})
-	_ = rootCmd.RegisterFlagCompletionFunc("word-order", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		return []string{
-			"highfirst\tmost significant word first",
-			"hf\tmost significant word first (short)",
-			"lowfirst\tleast significant word first",
-			"lf\tleast significant word first (short)",
-		}, cobra.ShellCompDirectiveNoFileComp
-	})
-
 	rootCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError(err) })
-	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newVersionCmd(opts))
+	registerCompletions(rootCmd)
 
 	return rootCmd
 }
