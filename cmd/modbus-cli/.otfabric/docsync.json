@@ -1,0 +1,8 @@
+{
+  "clis": [
+    {
+      "name": "modbus-cli",
+      "manifest": "."
+    }
+  ]
+}

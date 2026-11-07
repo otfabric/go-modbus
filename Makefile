@@ -186,8 +186,9 @@ coverage-pkg-check: coverage ## Fail when a package is below COVER_PKG_MIN
 check: fmt fmt-check lint lint-ci vet vuln test coverage-pkg-check docs-check ## Run format + lint + vet + vuln + test + docs-check
 
 # The documents against the code (DOC-008): docsync, as docs-check.yml runs it.
-docs-check: ## Check that the documents agree with the code (docsync)
+docs-check: ## Check that the documents agree with the code (docsync), library and cmd/modbus-cli
 	@go run github.com/otfabric/docsync@$(DOCSYNC_VERSION) check .
+	@cd cmd/modbus-cli && go run github.com/otfabric/docsync@$(DOCSYNC_VERSION) check .
 
 clean: ## Remove generated binaries
 	@echo "Cleaning up"
