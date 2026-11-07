@@ -1,5 +1,16 @@
 # go-modbus Releases
 
+## v1.13.2
+
+**Date:** 2026-11-08
+**Previous release:** v1.13.1
+
+### Changed
+
+- `modbus-cli` is built with the latest Go 1.26 patch release; v1.13.1 was built with go1.26.0.
+
+---
+
 ## v1.13.1
 
 **Date:** 2026-11-07
