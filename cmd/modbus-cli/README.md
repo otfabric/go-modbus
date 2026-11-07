@@ -127,5 +127,7 @@ modbus-cli --target tcp://10.0.0.1:502 --json rh:uint16:0x100+3
 ```
 
 Without `--fail-fast` the CLI runs all operations and exits non-zero if any
-failed; with it, it stops at the first error. The exit codes are in
+failed; with it, it stops at the first error. The exit code tells usage errors
+(2), connection failures (4), timeouts (5), Modbus exceptions (6), partial
+runs (7) and interrupts (130) apart; the full table is in
 [docs/exitcodes.md](docs/exitcodes.md).

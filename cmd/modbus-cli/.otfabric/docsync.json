@@ -1,0 +1,9 @@
+{
+  "clis": [
+    {
+      "name": "modbus-cli",
+      "manifest": ".",
+      "exit_codes": "."
+    }
+  ]
+}

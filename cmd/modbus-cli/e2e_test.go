@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -148,7 +149,7 @@ func startServer(t *testing.T, h *testHandler) string {
 // runCLI runs the command line and returns stdout, stderr and the exit code.
 func runCLI(args ...string) (string, string, int) {
 	var stdout, stderr bytes.Buffer
-	code := run(args, &stdout, &stderr)
+	code := Run(context.Background(), args, &stdout, &stderr)
 	return stdout.String(), stderr.String(), code
 }
 
@@ -198,17 +199,17 @@ func TestCLI_VersionAndHelp(t *testing.T) {
 		t.Errorf("help not printed:\n%s", stdout)
 	}
 
-	_, stderr := expectRun(t, 1, "version", "extra")
+	_, stderr := expectRun(t, ExitUsage, "version", "extra")
 	if !strings.Contains(stderr, "Error:") {
 		t.Errorf("unexpected stderr: %q", stderr)
 	}
 
-	_, stderr = expectRun(t, 1, "--no-such-flag")
+	_, stderr = expectRun(t, ExitUsage, "--no-such-flag")
 	if !strings.Contains(stderr, "unknown flag") {
 		t.Errorf("unexpected stderr: %q", stderr)
 	}
 
-	_, stderr = expectRun(t, 1, "--unit-id", "-1", "rc:0")
+	_, stderr = expectRun(t, ExitUsage, "--unit-id", "-1", "rc:0")
 	if !strings.Contains(stderr, "invalid argument") {
 		t.Errorf("unexpected stderr: %q", stderr)
 	}
@@ -224,34 +225,35 @@ func TestCLI_ArgumentErrors(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		args    []string
-		wantErr string
+		name     string
+		args     []string
+		wantErr  string
+		wantCode int
 	}{
-		{"no target", []string{"rc:0"}, "no target specified"},
-		{"parity", []string{"--target", target, "--parity", "mark", "rc:0"}, "unknown parity setting \"mark\""},
-		{"data bits", []string{"--target", target, "--data-bits", "9", "rc:0"}, "data bits 9 out of range"},
-		{"stop bits", []string{"--target", target, "--stop-bits", "3", "rc:0"}, "stop bits 3 out of range"},
-		{"timeout syntax", []string{"--target", target, "--timeout", "soon", "rc:0"}, "failed to parse timeout"},
-		{"timeout zero", []string{"--target", target, "--timeout", "0s", "rc:0"}, "must be greater than 0"},
-		{"timeout negative", []string{"--target", target, "--timeout", "-1s", "rc:0"}, "must be greater than 0"},
-		{"unit id", []string{"--target", target, "--unit-id", "256", "rc:0"}, "unit ID 256 out of range"},
-		{"endianness", []string{"--target", target, "--endianness", "middle", "rc:0"}, "unknown endianness"},
-		{"word order", []string{"--target", target, "--word-order", "mf", "rc:0"}, "unknown word order"},
-		{"operation", []string{"--target", target, "rc:0+65535"}, "exceeds the limit of 2000"},
+		{"no target", []string{"rc:0"}, "no target specified", ExitUsage},
+		{"parity", []string{"--target", target, "--parity", "mark", "rc:0"}, "unknown parity setting \"mark\"", ExitUsage},
+		{"data bits", []string{"--target", target, "--data-bits", "9", "rc:0"}, "data bits 9 out of range", ExitUsage},
+		{"stop bits", []string{"--target", target, "--stop-bits", "3", "rc:0"}, "stop bits 3 out of range", ExitUsage},
+		{"timeout syntax", []string{"--target", target, "--timeout", "soon", "rc:0"}, "failed to parse timeout", ExitUsage},
+		{"timeout zero", []string{"--target", target, "--timeout", "0s", "rc:0"}, "must be greater than 0", ExitUsage},
+		{"timeout negative", []string{"--target", target, "--timeout", "-1s", "rc:0"}, "must be greater than 0", ExitUsage},
+		{"unit id", []string{"--target", target, "--unit-id", "256", "rc:0"}, "unit ID 256 out of range", ExitUsage},
+		{"endianness", []string{"--target", target, "--endianness", "middle", "rc:0"}, "unknown endianness", ExitUsage},
+		{"word order", []string{"--target", target, "--word-order", "mf", "rc:0"}, "unknown word order", ExitUsage},
+		{"operation", []string{"--target", target, "rc:0+65535"}, "exceeds the limit of 2000", ExitUsage},
 		// used to wrap 16385*4 registers to 4 and panic slicing the reply
-		{"wrapped register count", []string{"--target", target, "rh:uint64:0+16384"}, "exceeds the limit of 31"},
-		{"tls no cert", []string{"--target", "tcp+tls://127.0.0.1:1", "rc:0"}, "use --cert"},
-		{"tls no key", []string{"--target", "tcp+tls://127.0.0.1:1", "--cert", junk, "rc:0"}, "use --key"},
-		{"tls no ca", []string{"--target", "tcp+tls://127.0.0.1:1", "--cert", junk, "--key", junk, "rc:0"}, "use --ca"},
-		{"tls bad pair", []string{"--target", "tcp+tls://127.0.0.1:1", "--cert", junk, "--key", junk, "--ca", junk, "rc:0"}, "failed to load client TLS key pair"},
-		{"bad url", []string{"--target", "foo://x", "rc:0"}, "failed to create client"},
-		{"connect", []string{"--target", target, "--timeout", "200ms", "rc:0"}, "failed to open client"},
+		{"wrapped register count", []string{"--target", target, "rh:uint64:0+16384"}, "exceeds the limit of 31", ExitUsage},
+		{"tls no cert", []string{"--target", "tcp+tls://127.0.0.1:1", "rc:0"}, "use --cert", ExitUsage},
+		{"tls no key", []string{"--target", "tcp+tls://127.0.0.1:1", "--cert", junk, "rc:0"}, "use --key", ExitUsage},
+		{"tls no ca", []string{"--target", "tcp+tls://127.0.0.1:1", "--cert", junk, "--key", junk, "rc:0"}, "use --ca", ExitUsage},
+		{"tls bad pair", []string{"--target", "tcp+tls://127.0.0.1:1", "--cert", junk, "--key", junk, "--ca", junk, "rc:0"}, "failed to load client TLS key pair", ExitInvalidInput},
+		{"bad url", []string{"--target", "foo://x", "rc:0"}, "failed to create client", ExitUsage},
+		{"connect", []string{"--target", target, "--timeout", "200ms", "rc:0"}, "failed to open client", ExitTransport},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stdout, stderr := expectRun(t, 1, tt.args...)
+			stdout, stderr := expectRun(t, tt.wantCode, tt.args...)
 			if stdout != "" {
 				t.Errorf("unexpected stdout: %q", stdout)
 			}
@@ -274,7 +276,7 @@ func TestCLI_TLSBadCA(t *testing.T) {
 	if err := os.WriteFile(key, keyPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, stderr := expectRun(t, 1, "--target", "tcp+tls://127.0.0.1:1", "--cert", cert, "--key", key,
+	_, stderr := expectRun(t, ExitInvalidInput, "--target", "tcp+tls://127.0.0.1:1", "--cert", cert, "--key", key,
 		"--ca", filepath.Join(dir, "missing.pem"), "rc:0")
 	if !strings.Contains(stderr, "failed to load TLS CA/server certificate") {
 		t.Errorf("unexpected stderr: %q", stderr)
@@ -436,9 +438,11 @@ func TestCLI_ExceptionsAndFailFast(t *testing.T) {
 		"rh:uint64:0x100", "rh:float64:0x100", "rh:bytes:0x100",
 		"wc:0x100:true", "wr:uint16:0x100:1", "wr:float32:0x100:1", "wr:bytes:0x100:00",
 	}
-	stdout, stderr := expectRun(t, 1, append([]string{"--target", target}, failing...)...)
-	if stderr != "" {
-		t.Errorf("operation failures are reported on stdout, got stderr %q", stderr)
+	stdout, stderr := expectRun(t, ExitProtocol, append([]string{"--target", target}, failing...)...)
+	// each failure is reported on stdout, the summary on stderr
+	if want := fmt.Sprintf("Error: %d of %d operations failed, the first with: ", len(failing), len(failing)); !strings.HasPrefix(stderr, want) ||
+		strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, "Illegal Data Address") {
+		t.Errorf("unexpected stderr %q", stderr)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	if len(lines) != len(failing) {
@@ -451,11 +455,11 @@ func TestCLI_ExceptionsAndFailFast(t *testing.T) {
 	}
 
 	// --fail-fast stops after the first failure
-	stdout, _ = expectRun(t, 1, "--target", target, "--fail-fast", "rc:0x100", "rc:0")
+	stdout, _ = expectRun(t, ExitProtocol, "--target", target, "--fail-fast", "rc:0x100", "rc:0")
 	expectLines(t, stdout, lines[0])
 
 	// JSON mode reports the same failures as records
-	stdout, _ = expectRun(t, 1, append([]string{"--target", target, "--json"}, failing...)...)
+	stdout, _ = expectRun(t, ExitProtocol, append([]string{"--target", target, "--json"}, failing...)...)
 	recs := decodeJSONLines(t, stdout)
 	if len(recs) != len(failing) {
 		t.Fatalf("got %d records, want %d", len(recs), len(failing))
@@ -670,7 +674,7 @@ func TestExecute_ScansStopWhenInterrupted(t *testing.T) {
 				t.Fatal(err)
 			}
 			var buf bytes.Buffer
-			executeOperations(ctx, client, runList, 1, modbus.BigEndian, modbus.HighWordFirst, newOutput(&buf, false), false)
+			_ = executeOperations(ctx, client, runList, 1, modbus.BigEndian, modbus.HighWordFirst, newOutput(&buf, false), false)
 
 			// scanning used to go on through all 65536 addresses after an
 			// interrupt, printing a failure for each of them
@@ -701,8 +705,8 @@ func TestExecute_RepeatUntilInterrupted(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	if !executeOperations(ctx, client, runList, 1, modbus.BigEndian, modbus.HighWordFirst, newOutput(&buf, true), false) {
-		t.Error("an interrupted run should report failure")
+	if err := executeOperations(ctx, client, runList, 1, modbus.BigEndian, modbus.HighWordFirst, newOutput(&buf, true), false); !errors.Is(err, errInterrupted) {
+		t.Errorf("an interrupted run should report the interrupt, got %v", err)
 	}
 	if n := h.requests.Load(); n < 5 {
 		t.Errorf("only %d requests sent", n)
@@ -722,8 +726,8 @@ func TestExecute_InterruptedSleepAndPing(t *testing.T) {
 	}
 	start := time.Now()
 	// an interrupt during sleep used to exit with status 0
-	if !executeOperations(ctx, client, runList, 1, modbus.BigEndian, modbus.HighWordFirst, newOutput(&bytes.Buffer{}, false), false) {
-		t.Error("an interrupted sleep should report failure")
+	if err := executeOperations(ctx, client, runList, 1, modbus.BigEndian, modbus.HighWordFirst, newOutput(&bytes.Buffer{}, false), false); !errors.Is(err, errInterrupted) {
+		t.Errorf("an interrupted sleep should report the interrupt, got %v", err)
 	}
 	if time.Since(start) > 10*time.Second {
 		t.Error("sleep not interrupted")
@@ -746,8 +750,8 @@ func TestExecute_CancelledBeforeStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runList, _ := parseOperations([]string{"rc:0"})
-	if !executeOperations(ctx, client, runList, 1, modbus.BigEndian, modbus.HighWordFirst, newOutput(&bytes.Buffer{}, false), false) {
-		t.Error("expected failure")
+	if err := executeOperations(ctx, client, runList, 1, modbus.BigEndian, modbus.HighWordFirst, newOutput(&bytes.Buffer{}, false), false); !errors.Is(err, errInterrupted) {
+		t.Errorf("expected the interrupt, got %v", err)
 	}
 	var buf bytes.Buffer
 	performPing(ctx, client, 1, 3, 0, newOutput(&buf, false))
