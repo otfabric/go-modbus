@@ -81,8 +81,8 @@ Transports, selected by the scheme of `--target`:
 
 | Command | What it does |
 |---|---|
-| `modbus-cli version` | Print the build version, tag, commit and build date |
-| `modbus-cli completion bash\|zsh\|fish\|powershell` | Generate the shell completion script |
+| `modbus-cli version` | Print the version, tag, commit, build date, Go version and platform on one line; with `--json` as one line of JSON |
+| `modbus-cli completion bash\|zsh\|fish\|powershell` | Generate the shell completion script ([install](../../README.md#shell-completion)) |
 | `modbus-cli help [command]` | Help about any command |
 
 ## Examples
@@ -106,11 +106,22 @@ modbus-cli --target tcp+tls://securehost:802 \
 
 # Ping a device 10 times with 500ms interval
 modbus-cli --target tcp://somehost:502 ping:10:500ms
-
-# Shell completion
-modbus-cli completion bash > /etc/bash_completion.d/modbus-cli
-modbus-cli completion zsh > "${fpath[1]}/_modbus-cli"
 ```
+
+## Version
+
+```text
+$ modbus-cli version
+modbus-cli 1.13.0 (tag v1.13.0, commit 1802d0f9afe8642d1e278120b76fcdfac967cb9e, built 2026-11-05T15:41:49Z, go-serial 0.2.1, go1.26.0, linux/amd64)
+$ modbus-cli version --json
+{"name":"modbus-cli","version":"1.13.0","tag":"v1.13.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-05T15:41:49Z","libraries":[{"name":"go-serial","version":"0.2.1"}],"go":"go1.26.0","platform":"linux/amd64"}
+```
+
+The OT Fabric libraries it is built on follow the build date (not go-modbus
+itself, whose version is the version). A build that was not released
+(`go build`, `go install`) prints `dev` or the
+module version of `go install …@vX.Y.Z`, the VCS revision (with `-dirty` for
+uncommitted changes), and no tag.
 
 ## Output
 

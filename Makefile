@@ -49,9 +49,11 @@ all: build ## Default target: build cmd + examples apps
 
 build: build-cmd build-examples ## Build all app entrypoints
 
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-TAG      ?= $(shell git describe --tags --exact-match 2>/dev/null || echo none)
-COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Version and tag only when HEAD is exactly on a tag (version without the leading v);
+# otherwise the binary reports dev. The full commit SHA, as the Release workflow injects.
+VERSION  ?= $(patsubst v%,%,$(shell git describe --tags --exact-match 2>/dev/null))
+TAG      ?= $(shell git describe --tags --exact-match 2>/dev/null)
+COMMIT   ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS  := -s -w -X main.version=$(VERSION) -X main.tag=$(TAG) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)
 

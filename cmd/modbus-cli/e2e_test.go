@@ -190,7 +190,7 @@ func decodeJSONLines(t *testing.T, s string) []map[string]any {
 
 func TestCLI_VersionAndHelp(t *testing.T) {
 	stdout, _ := expectRun(t, 0, "version")
-	if !strings.HasPrefix(stdout, "modbus-cli dev\n") || !strings.Contains(stdout, "commit:") {
+	if !strings.HasPrefix(stdout, "modbus-cli dev (commit ") || strings.Count(stdout, "\n") != 1 {
 		t.Errorf("unexpected version output:\n%s", stdout)
 	}
 

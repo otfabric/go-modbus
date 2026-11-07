@@ -564,6 +564,28 @@ modbus-cli --target tcp://10.0.0.1:502 --json rh:uint16:0x100+3
 Operations, flags, transports, JSON output and exit codes:
 [cmd/modbus-cli/README.md](cmd/modbus-cli/README.md).
 
+### Shell completion
+
+The flags with a value set complete (`--target` schemes, `--parity`, `--data-bits`, `--stop-bits`, `--endianness`, `--word-order`), `--cert`, `--key` and `--ca` complete certificate and key files, and the operations complete.
+
+```bash
+# bash (needs the bash-completion package)
+mkdir -p ~/.local/share/bash-completion/completions
+modbus-cli completion bash > ~/.local/share/bash-completion/completions/modbus-cli
+
+# zsh: a directory on your fpath, then restart the shell
+mkdir -p ~/.zsh/completions && modbus-cli completion zsh > ~/.zsh/completions/_modbus-cli
+# and once in ~/.zshrc:  fpath=(~/.zsh/completions $fpath); autoload -U compinit && compinit
+
+# fish
+mkdir -p ~/.config/fish/completions && modbus-cli completion fish > ~/.config/fish/completions/modbus-cli.fish
+```
+
+```powershell
+# PowerShell: add this line to your profile ($PROFILE)
+modbus-cli completion powershell | Out-String | Invoke-Expression
+```
+
 ---
 
 ## Examples
