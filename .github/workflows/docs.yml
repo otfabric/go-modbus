@@ -14,6 +14,6 @@ jobs:
   docs:
     uses: otfabric/.github/.github/workflows/docs-check.yml@v3.5.0
     with:
-      docsync-version: v0.2.0
+      docsync-version: v0.3.0
       policy-version: v1.4.1
     secrets: inherit

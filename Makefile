@@ -28,7 +28,7 @@ PKGS := $(shell go list -tags=$(INTEROP_TAGS) ./... | grep -v '/examples$$' | se
 TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/interop' | sed 's,^github.com/otfabric/go-modbus,.,')
 
 # docsync release of docs-check (DOC-008).
-DOCSYNC_VERSION := v0.2.0
+DOCSYNC_VERSION := v0.3.0
 
 # Reference implementations for 'make interop': otfabric/modbus-interop v0.3.3
 # (libmodbus v3.2.0, PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83,
