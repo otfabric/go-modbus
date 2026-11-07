@@ -167,6 +167,7 @@ Run against the same local server on the same machine; publish the benchmark cod
 - [Error handling](#error-handling)
 - [Advanced features](#advanced-features)
 - [modbus-cli](#modbus-cli)
+  - [Install modbus-cli](#install-modbus-cli)
 - [Examples](#examples)
 - [Interop tests](#interop-tests)
 - [FAQ](#faq)
@@ -542,17 +543,22 @@ The flat `Config` struct remains fully supported and backward-compatible.
 ## modbus-cli
 
 A command-line Modbus client is included in `cmd/modbus-cli/`. It is a nested
-module, so the library does not depend on cobra. Download a binary from the
-[releases](https://github.com/otfabric/go-modbus/releases), or build it from a
-checkout:
+module, so the library does not depend on cobra.
+
+### Install modbus-cli
 
 ```bash
-make build-cmd
-./bin/modbus-cli --help
+curl -fsSL https://get.otfabric.io/modbus-cli | sh
 ```
 
+```powershell
+irm https://get.otfabric.io/modbus-cli.ps1 | iex
+```
+
+Linux (amd64, arm64, armv7), macOS (Intel, Apple silicon) and Windows (amd64, arm64). The installer verifies the release's SHA-256 checksum, installs per user without `sudo` (`~/.local/bin`, Windows `%LOCALAPPDATA%\OTFabric\bin`), and upgrades in place when run again. Pin a version with `OTF_VERSION=x.y.z`; for CI, containers and device images use `OTF_UNMANAGED_INSTALL=<dir>`; all options: [otfabric/install](https://github.com/otfabric/install#options). `OTF_VERSION` is the version of go-modbus, which ships `modbus-cli`. For offline machines, the archives and checksums are on [Releases](https://github.com/otfabric/go-modbus/releases).
+
 ```bash
-./bin/modbus-cli --target tcp://10.0.0.1:502 --json rh:uint16:0x100+3
+modbus-cli --target tcp://10.0.0.1:502 --json rh:uint16:0x100+3
 ```
 
 Operations, flags, transports, JSON output and exit codes:

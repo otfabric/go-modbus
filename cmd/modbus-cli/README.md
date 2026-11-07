@@ -4,14 +4,9 @@ A command-line Modbus client for probing and troubleshooting devices, built on
 [go-modbus](../../README.md). It is a nested module of go-modbus, so the
 library does not depend on cobra.
 
-Download a binary from the
-[releases](https://github.com/otfabric/go-modbus/releases), or build it from a
-checkout of go-modbus:
-
-```bash
-make build-cmd
-./bin/modbus-cli --help
-```
+Install it with the one-line installer: see
+[Install modbus-cli](../../README.md#install-modbus-cli). Contributors build it
+from a checkout of go-modbus with `make build-cmd` (`./bin/modbus-cli`).
 
 ## Usage
 
