@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"runtime"
 	"slices"
 	"strings"
@@ -92,10 +93,10 @@ func TestEveryFlagCompletes(t *testing.T) {
 func TestVersionOutput(t *testing.T) {
 	plat := runtime.Version() + ", " + runtime.GOOS + "/" + runtime.GOARCH
 	stdout, _ := expectRun(t, ExitOK, "version")
-	if want := "modbus-cli dev (commit unknown, built unknown, " + plat + ")\n"; stdout != want {
+	if want := "modbus-cli dev (commit unknown, built unknown, " + libsText() + plat + ")\n"; stdout != want {
 		t.Errorf("version: %q, want %q", stdout, want)
 	}
-	want := `{"name":"modbus-cli","version":"dev","tag":"","commit":"unknown","built":"unknown","go":"` +
+	want := `{"name":"modbus-cli","version":"dev","tag":"","commit":"unknown","built":"unknown",` + libsJSON() + `"go":"` +
 		runtime.Version() + `","platform":"` + runtime.GOOS + "/" + runtime.GOARCH + "\"}\n"
 	if stdout, _ := expectRun(t, ExitOK, "version", "--json"); stdout != want {
 		t.Errorf("version --json: %q, want %q", stdout, want)
@@ -108,7 +109,22 @@ func TestVersionOutput(t *testing.T) {
 	t.Cleanup(func() { version, tag, commit, buildDate = old[0], old[1], old[2], old[3] })
 	version, tag, commit, buildDate = "1.13.0", "v1.13.0", "1802d0f9afe8642d1e278120b76fcdfac967cb9e", "2026-11-05T15:41:49Z"
 	stdout, _ = expectRun(t, ExitOK, "version")
-	if want := "modbus-cli 1.13.0 (tag v1.13.0, commit 1802d0f9afe8642d1e278120b76fcdfac967cb9e, built 2026-11-05T15:41:49Z, " + plat + ")\n"; stdout != want {
+	if want := "modbus-cli 1.13.0 (tag v1.13.0, commit 1802d0f9afe8642d1e278120b76fcdfac967cb9e, built 2026-11-05T15:41:49Z, " + libsText() + plat + ")\n"; stdout != want {
 		t.Errorf("injected: %q, want %q", stdout, want)
 	}
+}
+
+// libsText and libsJSON are the libraries part of the version output of
+// this test binary (whatever OT Fabric modules it links).
+func libsText() string {
+	s := ""
+	for _, l := range build().Libraries {
+		s += l.Name + " " + l.Version + ", "
+	}
+	return s
+}
+
+func libsJSON() string {
+	b, _ := json.Marshal(build().Libraries)
+	return `"libraries":` + string(b) + `,`
 }

@@ -11,40 +11,57 @@ package buildinfo
 
 import (
 	"encoding/json"
+	"path"
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"slices"
+	"sort"
 	"strings"
 )
 
 // Info is what the version command prints. The JSON field order is part of
 // the output contract.
 type Info struct {
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Tag      string `json:"tag"`
-	Commit   string `json:"commit"`
-	Built    string `json:"built"`
-	Go       string `json:"go"`
-	Platform string `json:"platform"`
+	Name      string    `json:"name"`
+	Version   string    `json:"version"`
+	Tag       string    `json:"tag"`
+	Commit    string    `json:"commit"`
+	Built     string    `json:"built"`
+	Libraries []Library `json:"libraries"`
+	Go        string    `json:"go"`
+	Platform  string    `json:"platform"`
 }
+
+// Library is an OT Fabric library the binary is built on.
+type Library struct {
+	Name    string `json:"name"`    // last element of the module path: go-canbus
+	Version string `json:"version"` // without the leading v; pseudo-versions as they are
+}
+
+// libraryPrefix selects the OT Fabric libraries among the dependencies.
+const libraryPrefix = "github.com/otfabric/go-"
 
 // readBuildInfo is replaced in tests.
 var readBuildInfo = debug.ReadBuildInfo
 
 // Resolve returns the build information of the program called name, from the
-// values injected at build time (empty when not injected).
-func Resolve(name, version, tag, commit, buildDate string) Info {
+// values injected at build time (empty when not injected). The libraries are
+// the github.com/otfabric/go-* dependencies, without the main module and the
+// module paths in exclude (the parent library of a nested CLI module).
+func Resolve(name, version, tag, commit, buildDate string, exclude ...string) Info {
 	i := Info{
-		Name:     name,
-		Version:  strings.TrimPrefix(version, "v"),
-		Tag:      tag,
-		Commit:   commit,
-		Built:    buildDate,
-		Go:       runtime.Version(),
-		Platform: runtime.GOOS + "/" + runtime.GOARCH,
+		Name:      name,
+		Version:   strings.TrimPrefix(version, "v"),
+		Tag:       tag,
+		Commit:    commit,
+		Built:     buildDate,
+		Libraries: []Library{},
+		Go:        runtime.Version(),
+		Platform:  runtime.GOOS + "/" + runtime.GOARCH,
 	}
 	if bi, ok := readBuildInfo(); ok && bi != nil {
+		i.Libraries = libraries(bi, exclude)
 		if i.Version == "" && released(bi.Main.Version) {
 			i.Version = strings.TrimPrefix(bi.Main.Version, "v")
 		}
@@ -79,6 +96,26 @@ func Resolve(name, version, tag, commit, buildDate string) Info {
 	return i
 }
 
+// libraries returns the OT Fabric library dependencies of bi, sorted by name.
+func libraries(bi *debug.BuildInfo, exclude []string) []Library {
+	out := []Library{}
+	for _, d := range bi.Deps {
+		if d == nil || d.Path == bi.Main.Path || slices.Contains(exclude, d.Path) {
+			continue
+		}
+		m := d
+		if d.Replace != nil {
+			m = d.Replace
+		}
+		if !strings.HasPrefix(m.Path, libraryPrefix) {
+			continue
+		}
+		out = append(out, Library{Name: path.Base(m.Path), Version: strings.TrimPrefix(m.Version, "v")})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
+}
+
 // pseudo matches the end of a Go pseudo-version (v0.0.0-20261107205103-37f27f89321d),
 // which go build stamps from the VCS since Go 1.24.
 var pseudo = regexp.MustCompile(`\d{14}-[0-9a-f]{12}$`)
@@ -92,19 +129,27 @@ func released(v string) bool {
 
 // String is the text line, without a newline:
 //
-//	name 1.2.3 (tag v1.2.3, commit <sha>, built <date>, go1.26.0, linux/amd64)
+//	name 1.2.3 (tag v1.2.3, commit <sha>, built <date>, go-lib 0.8.0, go1.26.0, linux/amd64)
 //
-// The tag part is left out when no tag was injected.
+// The tag part is left out when no tag was injected, the libraries when
+// there are none.
 func (i Info) String() string {
 	s := i.Name + " " + i.Version + " ("
 	if i.Tag != "" {
 		s += "tag " + i.Tag + ", "
 	}
-	return s + "commit " + i.Commit + ", built " + i.Built + ", " + i.Go + ", " + i.Platform + ")"
+	s += "commit " + i.Commit + ", built " + i.Built + ", "
+	for _, l := range i.Libraries {
+		s += l.Name + " " + l.Version + ", "
+	}
+	return s + i.Go + ", " + i.Platform + ")"
 }
 
 // JSON is the one-line JSON form, without a newline.
 func (i Info) JSON() string {
+	if i.Libraries == nil {
+		i.Libraries = []Library{}
+	}
 	b, _ := json.Marshal(i) // cannot fail: every field is a string
 	return string(b)
 }

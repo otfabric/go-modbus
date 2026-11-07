@@ -112,12 +112,14 @@ modbus-cli --target tcp://somehost:502 ping:10:500ms
 
 ```text
 $ modbus-cli version
-modbus-cli 1.13.0 (tag v1.13.0, commit 1802d0f9afe8642d1e278120b76fcdfac967cb9e, built 2026-11-05T15:41:49Z, go1.26.0, linux/amd64)
+modbus-cli 1.13.0 (tag v1.13.0, commit 1802d0f9afe8642d1e278120b76fcdfac967cb9e, built 2026-11-05T15:41:49Z, go-serial 0.2.1, go1.26.0, linux/amd64)
 $ modbus-cli version --json
-{"name":"modbus-cli","version":"1.13.0","tag":"v1.13.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-05T15:41:49Z","go":"go1.26.0","platform":"linux/amd64"}
+{"name":"modbus-cli","version":"1.13.0","tag":"v1.13.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-05T15:41:49Z","libraries":[{"name":"go-serial","version":"0.2.1"}],"go":"go1.26.0","platform":"linux/amd64"}
 ```
 
-A build that was not released (`go build`, `go install`) prints `dev` or the
+The OT Fabric libraries it is built on follow the build date (not go-modbus
+itself, whose version is the version). A build that was not released
+(`go build`, `go install`) prints `dev` or the
 module version of `go install …@vX.Y.Z`, the VCS revision (with `-dirty` for
 uncommitted changes), and no tag.
 

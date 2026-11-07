@@ -26,17 +26,17 @@ var (
 
 // build is the resolved build information of this binary.
 func build() buildinfo.Info {
-	return buildinfo.Resolve("modbus-cli", version, tag, commit, buildDate)
+	return buildinfo.Resolve("modbus-cli", version, tag, commit, buildDate, "github.com/otfabric/go-modbus")
 }
 
 func newVersionCmd(opts *options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the version, tag, commit, build date, Go version and platform",
-		Long: `Print the version, tag, commit, build date, Go version and platform on one
-line, or with --json as one line of JSON:
+		Long: `Print the version, tag, commit, build date, the OT Fabric libraries it is
+built on, Go version and platform on one line, or with --json as one line of JSON:
 
-  {"name":"modbus-cli","version":"…","tag":"…","commit":"…","built":"…","go":"…","platform":"…"}`,
+  {"name":"modbus-cli","version":"…","tag":"…","commit":"…","built":"…","libraries":[…],"go":"…","platform":"…"}`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if err := cobra.NoArgs(cmd, args); err != nil {
 				return usageError(err)

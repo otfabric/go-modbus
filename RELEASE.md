@@ -7,12 +7,12 @@
 
 ### Added
 
-- `modbus-cli version` prints one line with the tag, the full commit, the build date, the Go version and the platform: `modbus-cli 1.13.0 (tag v1.13.0, commit <sha>, built <date>, go1.26.0, linux/amd64)`, instead of four lines. `version --json` (or `--json version`) writes it as one line of JSON with the keys `name`, `version`, `tag`, `commit`, `built`, `go`, `platform`. A build that was not released reports `dev` (or the module version of `go install …@vX.Y.Z`) and the VCS revision, with `-dirty` for uncommitted changes, and leaves out the tag instead of printing `none`.
+- `modbus-cli version` prints one line with the tag, the full commit, the build date, the Go version and the platform: `modbus-cli 1.13.0 (tag v1.13.0, commit <sha>, built <date>, go-serial 0.2.1, go1.26.0, linux/amd64)`, with the OT Fabric libraries it is built on, instead of four lines. `version --json` (or `--json version`) writes it as one line of JSON with the keys `name`, `version`, `tag`, `commit`, `built`, `libraries`, `go`, `platform`. A build that was not released reports `dev` (or the module version of `go install …@vX.Y.Z`) and the VCS revision, with `-dirty` for uncommitted changes, and leaves out the tag instead of printing `none`.
 - `modbus-cli` shell completion (bash, zsh, fish, PowerShell) completes `--target` schemes, `--data-bits` and `--stop-bits` besides `--parity`, `--endianness` and `--word-order`; `--cert`, `--key` and `--ca` complete `.pem`/`.crt`/`.cer`/`.key` files; flags with free values no longer offer file names. Install: [Shell completion](README.md#shell-completion).
 
 ### Changed
 
-- `make build-cmd` injects the version without the leading `v`, the full commit SHA and an empty tag for an untagged build, as the Release workflow does. Library code is the same as v1.12.0.
+- `make build-cmd` injects the version (without the leading `v`) and the tag only when HEAD is on a tag, otherwise the binary reports `dev`; and the full commit SHA, as the Release workflow does. Library code is the same as v1.12.0.
 
 ---
 
