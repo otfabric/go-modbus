@@ -53,7 +53,10 @@ build: build-cmd build-examples ## Build all app entrypoints
 # otherwise the binary reports dev. The full commit SHA, as the Release workflow injects.
 VERSION  ?= $(patsubst v%,%,$(shell git describe --tags --exact-match 2>/dev/null))
 TAG      ?= $(shell git describe --tags --exact-match 2>/dev/null)
-COMMIT   ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+# -dirty when the working tree has changes, as Go itself marks vcs.modified
+# (git status --porcelain, untracked files included); empty outside git.
+DIRTY := $(shell [ -z "$$(git status --porcelain 2>/dev/null)" ] || echo -dirty)
+COMMIT   ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)$(DIRTY)
 BUILD_DATE ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS  := -s -w -X main.version=$(VERSION) -X main.tag=$(TAG) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)
 
