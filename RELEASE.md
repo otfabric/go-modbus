@@ -1,5 +1,16 @@
 # go-modbus Releases
 
+## v1.13.3
+
+**Date:** 2026-11-08
+**Previous release:** v1.13.2
+
+### Changed
+
+- No changes. v1.13.3 was released by mistake from the same commit as v1.13.2, a few seconds later; the library and `modbus-cli` are identical to v1.13.2.
+
+---
+
 ## v1.13.2
 
 **Date:** 2026-11-08
