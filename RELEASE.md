@@ -1,6 +1,9 @@
 # go-modbus Releases
 
-## Unreleased
+## v1.14.0
+
+**Date:** 2026-11-09
+**Previous release:** v1.13.4
 
 ### Added
 
