@@ -3,6 +3,7 @@
 package modbus
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -65,6 +66,13 @@ type Config struct {
 	// TLS handshake, UDP dial). Zero uses a sensible default (5s for TCP/UDP,
 	// 15s for TLS). Does not apply to serial (rtu, ascii) transports.
 	DialTimeout time.Duration
+	// Dialer opens the network connections of the client (see Dialer), for
+	// example to apply an address allowlist, to dial through a proxy or to use
+	// an in-memory connection in tests. Nil (the default) uses net.Dialer.
+	// It is used by every network transport; tcp+tls runs its TLS handshake on
+	// the connection it returns. It is not used by the serial transports (rtu,
+	// ascii).
+	Dialer Dialer
 	// TLSClientCert sets the client-side TLS key pair (tcp+tls only)
 	TLSClientCert *tls.Certificate
 	// TLSRootCAs sets the list of CA certificates used to authenticate
@@ -129,6 +137,25 @@ type Config struct {
 	MaxConns int
 }
 
+// Dialer opens a network connection to addr, the host:port of Config.URL as
+// written there (not resolved). network is "tcp" for tcp, tcp+tls, rtuovertcp
+// and asciiovertcp, and "udp" for udp and rtuoverudp.
+//
+// ctx carries the dial timeout (Config.DialTimeout or its default) and, when
+// the dial replaces a lost connection during a request, that request's
+// context: the dialer should honour it. ctx ends once the dial returns (for
+// tcp+tls, once the TLS handshake is done), so the connection must not depend
+// on it.
+//
+// Like net.Dialer.DialContext, a Dialer returns a connection exactly when the
+// error is nil. A connection returned together with an error is closed; a nil
+// connection without an error fails the dial. The error is wrapped, so
+// errors.Is and errors.As reach it.
+//
+// For udp and rtuoverudp, each Read of the connection must return one datagram
+// and each Write must send one, as a connected *net.UDPConn does.
+type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // TransportConfig groups transport-related settings. Use with NewConfig
 // for a structured alternative to the flat Config literal.
 type TransportConfig struct {
@@ -138,6 +165,7 @@ type TransportConfig struct {
 	Parity        Parity
 	StopBits      uint
 	DialTimeout   time.Duration
+	Dialer        Dialer
 	TLSClientCert *tls.Certificate
 	TLSRootCAs    *x509.CertPool
 }
@@ -172,6 +200,7 @@ func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) C
 		Parity:               tc.Parity,
 		StopBits:             tc.StopBits,
 		DialTimeout:          tc.DialTimeout,
+		Dialer:               tc.Dialer,
 		TLSClientCert:        tc.TLSClientCert,
 		TLSRootCAs:           tc.TLSRootCAs,
 		Timeout:              ec.Timeout,
@@ -443,7 +472,7 @@ func (mc *Client) Open() (err error) {
 		Suspect:  mc.suspectResponse(),
 	})
 
-	if err = eng.Open(); err != nil {
+	if err = eng.Open(context.Background()); err != nil {
 		return
 	}
 
@@ -536,9 +565,95 @@ func (mc *Client) dialTimeout() time.Duration {
 	return 5 * time.Second
 }
 
+// errDialNoConn is what a dial fails with when Config.Dialer returns neither a
+// connection nor an error.
+var errDialNoConn = errors.New("dialer returned no connection")
+
+// dialError reports a failed dial or TLS handshake. It wraps the cause, and
+// reports a timeout when the cause does, so that os.IsTimeout and the
+// request-timeout mapping of the session engine see it as before.
+type dialError struct {
+	op      string // "dial" or "tls handshake"
+	network string
+	addr    string
+	err     error
+}
+
+func (e *dialError) Error() string {
+	return fmt.Sprintf("modbus: %s %s %s: %v", e.op, e.network, e.addr, e.err)
+}
+
+func (e *dialError) Unwrap() error { return e.err }
+
+func (e *dialError) Timeout() bool {
+	var t interface{ Timeout() bool }
+	return errors.As(e.err, &t) && t.Timeout()
+}
+
+// dialConn opens a network connection to the endpoint with Config.Dialer, or
+// with net.Dialer when there is none. ctx must already carry the dial timeout.
+func (mc *Client) dialConn(ctx context.Context, network string) (net.Conn, error) {
+	dial := mc.conf.Dialer
+	if dial == nil {
+		var d net.Dialer
+		dial = d.DialContext
+	}
+	conn, err := dial(ctx, network, mc.endpoint)
+	if err != nil {
+		if conn != nil {
+			// A misbehaving dialer returned a connection with its error: do not leak it.
+			_ = conn.Close()
+		}
+		return nil, &dialError{op: "dial", network: network, addr: mc.endpoint, err: err}
+	}
+	if conn == nil {
+		return nil, &dialError{op: "dial", network: network, addr: mc.endpoint, err: errDialNoConn}
+	}
+	return conn, nil
+}
+
+// dialNetwork is dialConn bounded by the dial timeout.
+func (mc *Client) dialNetwork(ctx context.Context, network string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, mc.dialTimeout())
+	defer cancel()
+	return mc.dialConn(ctx, network)
+}
+
+// dialTLS opens a TCP connection with dialConn and runs the TLS handshake on
+// it; the dial timeout bounds both, as it bounded tls.DialWithDialer.
+func (mc *Client) dialTLS(ctx context.Context) (*tls.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, mc.dialTimeout())
+	defer cancel()
+	raw, err := mc.dialConn(ctx, "tcp")
+	if err != nil {
+		return nil, err
+	}
+	sock := tls.Client(raw, mc.tlsConfig())
+	if err = sock.HandshakeContext(ctx); err != nil {
+		_ = sock.Close()
+		return nil, &dialError{op: "tls handshake", network: "tcp", addr: mc.endpoint, err: err}
+	}
+	return sock, nil
+}
+
+// tlsConfig returns the client TLS configuration. ServerName is the host part
+// of the endpoint, as tls.DialWithDialer derives it.
+func (mc *Client) tlsConfig() *tls.Config {
+	host, _, err := net.SplitHostPort(mc.endpoint)
+	if err != nil {
+		host = mc.endpoint
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{*mc.conf.TLSClientCert},
+		RootCAs:      mc.conf.TLSRootCAs,
+		MinVersion:   tls.VersionTLS12,
+		ServerName:   host,
+	}
+}
+
 // dialSessionTransport dials and returns a new internal transport for the session engine.
 // Safe to call without mc.lock because it only reads immutable config fields set at construction time.
-func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.Response], error) {
+func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*adu.Request, *adu.Response], error) {
 	switch mc.transportType {
 	case modbusRTU:
 		spw := newSerialPortWrapper(&serialPortConfig{
@@ -556,7 +671,7 @@ func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.R
 			newLogger(fmt.Sprintf("rtu-transport(%s)", mc.endpoint), mc.conf.Logger)), nil
 
 	case modbusRTUOverTCP:
-		sock, err := net.DialTimeout("tcp", mc.endpoint, mc.dialTimeout())
+		sock, err := mc.dialNetwork(ctx, "tcp")
 		if err != nil {
 			return nil, err
 		}
@@ -565,15 +680,11 @@ func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.R
 			newLogger(fmt.Sprintf("rtu-transport(%s)", mc.endpoint), mc.conf.Logger)), nil
 
 	case modbusRTUOverUDP:
-		sock, err := net.DialTimeout("udp", mc.endpoint, mc.dialTimeout())
+		sock, err := mc.dialNetwork(ctx, "udp")
 		if err != nil {
 			return nil, err
 		}
-		usw, err := newUDPSockWrapper(sock)
-		if err != nil {
-			_ = sock.Close()
-			return nil, err
-		}
+		usw := newUDPSockWrapper(sock)
 		return inttrans.NewRTU(
 			usw, mc.endpoint, mc.conf.Speed, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("rtu-transport(%s)", mc.endpoint), mc.conf.Logger)), nil
@@ -594,7 +705,7 @@ func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.R
 			newLogger(fmt.Sprintf("ascii-transport(%s)", mc.endpoint), mc.conf.Logger)), nil
 
 	case modbusASCIIOverTCP:
-		sock, err := net.DialTimeout("tcp", mc.endpoint, mc.dialTimeout())
+		sock, err := mc.dialNetwork(ctx, "tcp")
 		if err != nil {
 			return nil, err
 		}
@@ -603,7 +714,7 @@ func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.R
 			newLogger(fmt.Sprintf("ascii-transport(%s)", mc.endpoint), mc.conf.Logger)), nil
 
 	case modbusTCP:
-		sock, err := net.DialTimeout("tcp", mc.endpoint, mc.dialTimeout())
+		sock, err := mc.dialNetwork(ctx, "tcp")
 		if err != nil {
 			return nil, err
 		}
@@ -612,19 +723,8 @@ func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.R
 			newLogger(fmt.Sprintf("tcp-transport(%s)", sock.RemoteAddr()), mc.conf.Logger)), nil
 
 	case modbusTCPOverTLS:
-		sock, err := tls.DialWithDialer(
-			&net.Dialer{Deadline: time.Now().Add(mc.dialTimeout())},
-			"tcp", mc.endpoint,
-			&tls.Config{
-				Certificates: []tls.Certificate{*mc.conf.TLSClientCert},
-				RootCAs:      mc.conf.TLSRootCAs,
-				MinVersion:   tls.VersionTLS12,
-			})
+		sock, err := mc.dialTLS(ctx)
 		if err != nil {
-			return nil, err
-		}
-		if err = sock.Handshake(); err != nil {
-			_ = sock.Close()
 			return nil, err
 		}
 		return inttrans.NewTCP(
@@ -632,15 +732,11 @@ func (mc *Client) dialSessionTransport() (session.Transport[*adu.Request, *adu.R
 			newLogger(fmt.Sprintf("tcp-transport(%s)", sock.RemoteAddr()), mc.conf.Logger)), nil
 
 	case modbusTCPOverUDP:
-		sock, err := net.DialTimeout("udp", mc.endpoint, mc.dialTimeout())
+		sock, err := mc.dialNetwork(ctx, "udp")
 		if err != nil {
 			return nil, err
 		}
-		usw, err := newUDPSockWrapper(sock)
-		if err != nil {
-			_ = sock.Close()
-			return nil, err
-		}
+		usw := newUDPSockWrapper(sock)
 		return inttrans.NewTCP(
 			usw, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("tcp-transport(%s)", sock.RemoteAddr()), mc.conf.Logger)), nil

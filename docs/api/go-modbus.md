@@ -837,6 +837,13 @@ type Config struct {
 	// TLS handshake, UDP dial). Zero uses a sensible default (5s for TCP/UDP,
 	// 15s for TLS). Does not apply to serial (rtu, ascii) transports.
 	DialTimeout time.Duration
+	// Dialer opens the network connections of the client (see Dialer), for
+	// example to apply an address allowlist, to dial through a proxy or to use
+	// an in-memory connection in tests. Nil (the default) uses net.Dialer.
+	// It is used by every network transport; tcp+tls runs its TLS handshake on
+	// the connection it returns. It is not used by the serial transports (rtu,
+	// ascii).
+	Dialer Dialer
 	// TLSClientCert sets the client-side TLS key pair (tcp+tls only)
 	TLSClientCert *tls.Certificate
 	// TLSRootCAs sets the list of CA certificates used to authenticate
@@ -1118,6 +1125,20 @@ type DiagnosticsRequest struct {
 ```
 
 DiagnosticsRequest is passed to DiagnosticsHandler.HandleDiagnostics for FC08 (Diagnostics) requests.
+
+### type Dialer
+
+```go
+type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+```
+
+Dialer opens a network connection to addr, the host:port of Config.URL as written there (not resolved). network is "tcp" for tcp, tcp+tls, rtuovertcp and asciiovertcp, and "udp" for udp and rtuoverudp.
+
+ctx carries the dial timeout (Config.DialTimeout or its default) and, when the dial replaces a lost connection during a request, that request's context: the dialer should honour it. ctx ends once the dial returns (for tcp+tls, once the TLS handshake is done), so the connection must not depend on it.
+
+Like net.Dialer.DialContext, a Dialer returns a connection exactly when the error is nil. A connection returned together with an error is closed; a nil connection without an error fails the dial. The error is wrapped, so errors.Is and errors.As reach it.
+
+For udp and rtuoverudp, each Read of the connection must return one datagram and each Write must send one, as a connected \*net.UDPConn does.
 
 ### type DiscreteInputsRequest
 
@@ -1891,6 +1912,7 @@ type TransportConfig struct {
 	Parity        Parity
 	StopBits      uint
 	DialTimeout   time.Duration
+	Dialer        Dialer
 	TLSClientCert *tls.Certificate
 	TLSRootCAs    *x509.CertPool
 }

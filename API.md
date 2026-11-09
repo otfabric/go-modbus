@@ -94,6 +94,12 @@ type Config struct {
     // Does not apply to serial (rtu, ascii) transports.
     DialTimeout time.Duration
 
+    // Dialer opens the network connections of the client. Nil (default) uses
+    // net.Dialer. Every network transport uses it; tcp+tls runs its TLS
+    // handshake on the connection it returns. Not used by rtu and ascii.
+    // See "Custom dialer" below.
+    Dialer Dialer
+
     // TLSClientCert is the client-side TLS certificate and private key (tcp+tls only).
     // Required: mutual TLS authentication is mandatory per the MBAPS spec.
     TLSClientCert *tls.Certificate
@@ -141,7 +147,7 @@ type Config struct {
 
 ```text
 type TransportConfig struct {
-    URL, Speed, DataBits, Parity, StopBits, DialTimeout, TLSClientCert, TLSRootCAs
+    URL, Speed, DataBits, Parity, StopBits, DialTimeout, Dialer, TLSClientCert, TLSRootCAs
 }
 
 type ExecutionConfig struct {
@@ -187,6 +193,58 @@ client, err := modbus.New(modbus.Config{
 - `New` copies the list, and rejects (`*ConfigurationError`) a list that holds
   0x00 or a code with the exception bit set (0x80..0xFF). Any code from 0x01 to
   0x7F is accepted.
+
+**Custom dialer** — `Dialer` replaces how the client opens its network
+connections, for example to check the resolved address against an allowlist,
+to dial through a SOCKS or HTTP proxy, or to hand the client an in-memory
+connection in tests:
+
+```go
+type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+```
+
+```go
+allow := func(ip netip.Addr) bool { return ip == netip.MustParseAddr("10.0.0.7") }
+d := net.Dialer{
+    // Control sees the resolved address right before connecting, so a name
+    // that resolves to another host later (DNS rebinding) is still refused.
+    Control: func(_, address string, _ syscall.RawConn) error {
+        ap, err := netip.ParseAddrPort(address)
+        if err != nil || !allow(ap.Addr().Unmap()) {
+            return fmt.Errorf("destination %s not allowed", address)
+        }
+        return nil
+    },
+}
+client, err := modbus.New(modbus.Config{URL: "tcp://plc.local:502", Dialer: d.DialContext})
+```
+
+| Transport | `network` | After the dial |
+|---|---|---|
+| `tcp`, `rtuovertcp`, `asciiovertcp` | `"tcp"` | used as is |
+| `tcp+tls` | `"tcp"` | TLS handshake on the connection (`tls.Client`), server name = host of the URL |
+| `udp`, `rtuoverudp` | `"udp"` | each `Read` must return one datagram and each `Write` send one |
+| `rtu`, `ascii` | — | not used |
+
+- `addr` is the `host:port` of the URL as written, not resolved.
+- The context carries the dial timeout (`DialTimeout` or its default); for
+  `tcp+tls` the same deadline also bounds the handshake. When the dial
+  replaces a lost connection during a request (see "An open client stays open"
+  below), the context is also the request's: cancelling the request ends the
+  dial. `Open` dials with the dial timeout only. The context ends once the dial
+  (and handshake) returns, so the connection must not depend on it.
+- The dialer must return a connection exactly when the error is nil. A
+  connection returned together with an error is closed. A nil connection
+  without an error fails the dial.
+- A failed dial or handshake returns an error that starts with
+  `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:` and
+  wraps the cause: `errors.Is` and `errors.As` reach the dialer's own error.
+  It reports `Timeout()` when the cause does. A re-dial during a request that
+  times out also matches `ErrRequestTimedOut`.
+- The pool (`MaxConns > 1`) dials every connection through it, pre-warmed or
+  not.
+- Everything that runs on a client goes through it: the probe and detection
+  helpers, `batch`, `codec` and `sunspec`. `modbus-cli` does not set one.
 
 ### 2.2 Lifecycle
 

@@ -40,6 +40,18 @@ What it implements, function by function, is in
 Only `tcp+tls://` protects the connection. Authorization on the server is the
 handler's job. See [SECURITY.md](SECURITY.md).
 
+## Custom dialer
+
+- `Config.Dialer` covers the network transports only; `rtu` and `ascii` open
+  their serial device directly.
+- `Open` takes no context: its dials are bounded by `DialTimeout` (or its
+  default) and cannot be cancelled. The dials that replace a lost connection
+  during a request run under the request's context as well.
+- For `udp` and `rtuoverudp`, a connection from the dialer must keep datagram
+  boundaries (one `Read` per datagram, one datagram per `Write`); a stream
+  connection, such as most proxies give, will not frame Modbus/UDP correctly.
+- `modbus-cli` has no option for a dialer or a proxy.
+
 ## Known deviations
 
 - The server's exception order: a request for a unit the handler would reject

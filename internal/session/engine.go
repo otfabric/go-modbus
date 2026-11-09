@@ -5,6 +5,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -30,7 +31,9 @@ type Interrupter interface {
 
 // Config configures a session Engine.
 type Config struct {
-	Dial     func() (Transport[*adu.Request, *adu.Response], error)
+	// Dial opens a new connection. ctx bounds the dial: it is the request's
+	// context for a re-dial, and the one passed to Open for the first dial.
+	Dial     func(ctx context.Context) (Transport[*adu.Request, *adu.Response], error)
 	UsePool  bool
 	MinConns int
 	MaxConns int
@@ -97,8 +100,8 @@ func NewEngine(cfg Config) *Engine {
 	}
 }
 
-// Open dials transport connections (or creates a pool).
-func (e *Engine) Open() error {
+// Open dials transport connections (or creates a pool). ctx bounds the dials.
+func (e *Engine) Open(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -108,13 +111,13 @@ func (e *Engine) Open() error {
 		return nil
 	}
 	if e.cfg.UsePool && e.cfg.MaxConns > 1 {
-		p, err := NewPool[*adu.Request, *adu.Response](e.cfg.MinConns, e.cfg.MaxConns, e.cfg.Dial)
+		p, err := NewPool[*adu.Request, *adu.Response](ctx, e.cfg.MinConns, e.cfg.MaxConns, e.cfg.Dial)
 		if err != nil {
 			return err
 		}
 		e.pool = p
 	} else {
-		t, err := e.cfg.Dial()
+		t, err := e.cfg.Dial(ctx)
 		if err != nil {
 			return err
 		}
@@ -244,7 +247,7 @@ func (e *Engine) isClosed() bool {
 // transport returns the single connection, dialling a new one if there is none.
 // Only the goroutine holding the turn calls it, so at most one dial runs at a
 // time; the lock is not held while dialling, so that Close does not have to wait.
-func (e *Engine) transport(attempt int) (Transport[*adu.Request, *adu.Response], error) {
+func (e *Engine) transport(ctx context.Context, attempt int) (Transport[*adu.Request, *adu.Response], error) {
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
@@ -258,13 +261,13 @@ func (e *Engine) transport(attempt int) (Transport[*adu.Request, *adu.Response],
 	e.mu.Unlock()
 
 	dialStart := time.Now()
-	t, err := e.cfg.Dial()
+	t, err := e.cfg.Dial(ctx)
 	if obs := e.cfg.Attempts; obs != nil {
 		obs.OnRetryDial(attempt, time.Since(dialStart), err)
 	}
 	if err != nil {
 		e.logger.Errorf("reconnect failed (attempt %d): %v", attempt, err)
-		return nil, &redialError{err: mapTimeout(err)}
+		return nil, &redialError{err: mapDialTimeout(err)}
 	}
 	if t == nil {
 		// A dial function that reports success without a transport.
@@ -314,7 +317,7 @@ func (e *Engine) executeOnce(ctx context.Context, req *adu.Request, pool *Pool[*
 		return res, mapTimeout(err)
 	}
 
-	tr, err := e.transport(attempt)
+	tr, err := e.transport(ctx, attempt)
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +359,16 @@ func (e *Engine) exchange(ctx context.Context, tr Transport[*adu.Request, *adu.R
 }
 
 // mapTimeout turns I/O timeouts into ErrRequestTimedOut.
+// mapDialTimeout is mapTimeout for the error of a dial: a dial that timed out
+// also matches ErrRequestTimedOut, as it did before dials took a context, and
+// the dial error stays reachable with errors.Is and errors.As.
+func mapDialTimeout(err error) error {
+	if err != nil && os.IsTimeout(err) && !errors.Is(err, protocol.ErrRequestTimedOut) {
+		return fmt.Errorf("%w: %w", protocol.ErrRequestTimedOut, err)
+	}
+	return err
+}
+
 func mapTimeout(err error) error {
 	if err != nil && os.IsTimeout(err) {
 		return protocol.ErrRequestTimedOut

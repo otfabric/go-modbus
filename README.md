@@ -239,6 +239,7 @@ or `ServerConfig.URL`.
 |---|---|
 | `Speed`, `DataBits`, `Parity`, `StopBits` | Serial (`rtu://`, `ascii://`) only. Defaults: 19200 bps, 8 data bits (RTU) or 7 (ASCII), no parity, 2 stop bits without parity or 1 with |
 | `DialTimeout` | TCP, TCP+TLS, UDP, RTU-over-TCP/UDP, ASCII-over-TCP — not serial |
+| `Dialer` | Same as `DialTimeout`: opens every network connection (TLS runs its handshake on it), for allowlists, proxies or in-memory tests. Nil uses `net.Dialer`. See [API.md § 2.1](API.md#21-config) and [SECURITY.md](SECURITY.md#restricting-destinations) |
 | `TLSClientCert`, `TLSRootCAs` | TCP+TLS only |
 | `MinConns`, `MaxConns` | TCP-based transports only; serial and TLS always use one connection. `MaxConns > 1` on non-poolable transports is silently clamped to 1 with a warning log. |
 

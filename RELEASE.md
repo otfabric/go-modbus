@@ -1,5 +1,21 @@
 # go-modbus Releases
 
+## v1.14.0
+
+**Date:** 2026-11-09
+**Previous release:** v1.13.4
+
+### Added
+
+- `Config.Dialer` (and `TransportConfig.Dialer`): a caller-supplied `func(ctx, network, addr) (net.Conn, error)` that opens every network connection of the client (`tcp`, `tcp+tls`, `udp`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`), including re-dials and pooled connections. It lets an application check the resolved IP against an allowlist (no DNS-rebinding gap), dial through a proxy, or use an in-memory connection in tests. `tcp+tls` runs its handshake on the returned connection with `tls.Client`. A dialer that returns neither a connection nor an error fails the dial; a connection returned with an error is closed. Nil keeps the previous behaviour ([API.md § 2.1](API.md#21-config), [SECURITY.md](SECURITY.md#restricting-destinations)).
+
+### Changed
+
+- A dial that replaces a lost connection during a request now runs under that request's context: cancelling the request, or its deadline, ends the dial instead of waiting for `DialTimeout`.
+- Dial and TLS handshake errors are wrapped: they start with `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:`, and `errors.Is` / `errors.As` still reach the cause (`*net.OpError` and the like). A re-dial that times out matches `ErrRequestTimedOut` and now also wraps the dial error.
+
+---
+
 ## v1.13.4
 
 **Date:** 2026-11-09

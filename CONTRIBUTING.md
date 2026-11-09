@@ -95,7 +95,7 @@ Examples:
 Three suites in the root package run the real client against the real server on loopback:
 
 - `e2e_*_test.go`: the functional matrix (every client function over `tcp` and `tcp+tls`); `e2e_matrix_test.go` lists what is covered and where.
-- `chaos_*_test.go`: a fault-injecting TCP proxy (`chaos_proxy_test.go`) and a self-checking workload (`chaos_harness_test.go`). `TestChaosMonkey` runs randomized scenarios, `TestChaosFaultMatrix` one precisely placed fault per case, and `chaos_regression_test.go` one test per defect found this way.
+- `chaos_*_test.go`: a fault-injecting TCP proxy (`chaos_proxy_test.go`) and a self-checking workload (`chaos_harness_test.go`). `TestChaosMonkey` runs randomized scenarios, `TestChaosFaultMatrix` one precisely placed fault per case, `chaos_regression_test.go` one test per defect found this way, and `TestChaosDialerFaults` (`chaos_dialer_test.go`) injects faults through `Config.Dialer` instead of the proxy.
 - `stress_*_test.go`: parallel load, lifecycle races and hostile peers.
 
 ```bash

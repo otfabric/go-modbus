@@ -33,16 +33,16 @@ type Pool[Req any, Res any] struct {
 	// close them and interrupt the requests running on them.
 	inUse    map[Transport[Req, Res]]struct{}
 	maxConns int
-	dial     func() (Transport[Req, Res], error)
+	dial     func(ctx context.Context) (Transport[Req, Res], error)
 }
 
 // errPoolClosed is what the pool returns once CloseAll has run: the client that
 // owned it is no longer open.
 var errPoolClosed = protocol.ErrClientNotOpen
 
-// NewPool creates a pool and pre-warms minConns connections.
+// NewPool creates a pool and pre-warms minConns connections, dialled with ctx.
 // maxConns must be ≥ 1. minConns is clamped to [0, maxConns].
-func NewPool[Req any, Res any](minConns, maxConns int, dial func() (Transport[Req, Res], error)) (*Pool[Req, Res], error) {
+func NewPool[Req any, Res any](ctx context.Context, minConns, maxConns int, dial func(ctx context.Context) (Transport[Req, Res], error)) (*Pool[Req, Res], error) {
 	if maxConns <= 0 {
 		maxConns = 1
 	}
@@ -66,7 +66,10 @@ func NewPool[Req any, Res any](minConns, maxConns int, dial func() (Transport[Re
 
 	// pre-warm MinConns connections
 	for i := 0; i < minConns; i++ {
-		t, err := dial()
+		t, err := dial(ctx)
+		if err == nil && t == nil {
+			err = protocol.ErrClientNotOpen
+		}
 		if err != nil {
 			// close what we already opened and propagate the error
 			for _, c := range p.idle {
@@ -121,10 +124,14 @@ func (p *Pool[Req, Res]) acquire(ctx context.Context) (Transport[Req, Res], erro
 	p.mu.Unlock()
 
 	// The slot is held while dialling, so the pool never exceeds maxConns.
-	t, err := p.dial()
+	t, err := p.dial(ctx)
+	if err == nil && t == nil {
+		// A dial function that reports success without a transport.
+		err = protocol.ErrClientNotOpen
+	}
 	if err != nil {
 		p.slots <- struct{}{}
-		return nil, err
+		return nil, mapDialTimeout(err)
 	}
 
 	p.mu.Lock()

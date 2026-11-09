@@ -206,11 +206,19 @@ func TestClientOpen_UDPDialErrors(t *testing.T) {
 	}
 }
 
-func TestNewUDPSockWrapper_RejectsNonUDPConn(t *testing.T) {
+// A connection from Config.Dialer need not be a *net.UDPConn: each Read is
+// taken as one datagram.
+func TestNewUDPSockWrapper_AcceptsAnyConn(t *testing.T) {
 	c1, c2 := net.Pipe()
 	defer func() { _ = c1.Close(); _ = c2.Close() }()
-	if usw, err := newUDPSockWrapper(c1); err == nil || usw != nil {
-		t.Fatalf("got (%v, %v), want an error for a non-UDP connection", usw, err)
+	usw := newUDPSockWrapper(c1)
+	go func() { _, _ = c2.Write([]byte{1, 2, 3}) }()
+	buf := make([]byte, 2)
+	if n, err := usw.Read(buf); err != nil || n != 2 || buf[0] != 1 || buf[1] != 2 {
+		t.Fatalf("first read: n=%d err=%v buf=%v", n, err, buf)
+	}
+	if n, err := usw.Read(buf); err != nil || n != 1 || buf[0] != 3 {
+		t.Fatalf("leftover read: n=%d err=%v buf=%v", n, err, buf)
 	}
 }
 

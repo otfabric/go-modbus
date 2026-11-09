@@ -54,7 +54,10 @@ failure: `OnRequest`, then `OnError` with an error wrapping
 
 `OnRetryDial` reports every re-dial of a single connection: between retry
 attempts and, with attempt 0, when a request starts without a usable connection
-(the previous one was lost, or dropped after a timeout on `tcp`/`tcp+tls`). A
+(the previous one was lost, or dropped after a timeout on `tcp`/`tcp+tls`). Its
+`err` is the dial error, wrapped as described in [ERRORS.md](ERRORS.md) (it also
+covers a `Config.Dialer` that failed or returned no connection); its duration
+includes the TLS handshake. A
 request cancelled through its context is an `OnError` with `context.Canceled`; an
 expired deadline is an `OnTimeout`. On the server, a request for a function code
 no handler serves is an `OnError` with `ErrIllegalFunction`, and a request a

@@ -3,14 +3,13 @@
 package modbus
 
 import (
-	"fmt"
 	"net"
 	"time"
 )
 
 const maxTCPFrameLength = 260
 
-// udpSockWrapper wraps a net.UDPConn (UDP socket) to present a stream-like
+// udpSockWrapper wraps a datagram connection (normally a *net.UDPConn) to present a stream-like
 // (net.Conn-compatible) interface on top of a datagram socket. This allows
 // the TCP/MBAP transport layer to read byte-by-byte from what is actually
 // a datagram socket, which is necessary because the Modbus/UDP framing is
@@ -32,18 +31,17 @@ const maxTCPFrameLength = 260
 type udpSockWrapper struct {
 	leftoverCount int
 	rxbuf         []byte
-	sock          *net.UDPConn
+	sock          net.Conn
 }
 
-func newUDPSockWrapper(sock net.Conn) (*udpSockWrapper, error) {
-	udpConn, ok := sock.(*net.UDPConn)
-	if !ok {
-		return nil, fmt.Errorf("expected *net.UDPConn, got %T", sock)
-	}
+// newUDPSockWrapper wraps sock, normally a connected *net.UDPConn. Any
+// net.Conn whose Read returns one datagram and whose Write sends one will do,
+// such as one returned by Config.Dialer.
+func newUDPSockWrapper(sock net.Conn) *udpSockWrapper {
 	return &udpSockWrapper{
 		rxbuf: make([]byte, maxTCPFrameLength),
-		sock:  udpConn,
-	}, nil
+		sock:  sock,
+	}
 }
 
 func (usw *udpSockWrapper) Read(buf []byte) (rlen int, err error) {

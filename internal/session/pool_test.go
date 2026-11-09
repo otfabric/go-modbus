@@ -33,14 +33,14 @@ func (f *fakeTransport) Close() error {
 	return f.closeErr
 }
 
-func newFakeDial() func() (Transport[*adu.Request, *adu.Response], error) {
-	return func() (Transport[*adu.Request, *adu.Response], error) {
+func newFakeDial() func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
+	return func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
 		return &fakeTransport{execRes: &adu.Response{}}, nil
 	}
 }
 
 func TestNewPool_MinMaxClamping(t *testing.T) {
-	p, err := NewPool(5, 2, newFakeDial())
+	p, err := NewPool(context.Background(), 5, 2, newFakeDial())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,11 +52,11 @@ func TestNewPool_MinMaxClamping(t *testing.T) {
 
 func TestNewPool_PreWarm(t *testing.T) {
 	calls := 0
-	dial := func() (Transport[*adu.Request, *adu.Response], error) {
+	dial := func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
 		calls++
 		return &fakeTransport{execRes: &adu.Response{}}, nil
 	}
-	p, err := NewPool(3, 5, dial)
+	p, err := NewPool(context.Background(), 3, 5, dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,21 +71,21 @@ func TestNewPool_PreWarm(t *testing.T) {
 
 func TestNewPool_PreWarmFailure(t *testing.T) {
 	count := 0
-	dial := func() (Transport[*adu.Request, *adu.Response], error) {
+	dial := func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
 		count++
 		if count == 2 {
 			return nil, errors.New("dial failed")
 		}
 		return &fakeTransport{execRes: &adu.Response{}}, nil
 	}
-	_, err := NewPool(3, 5, dial)
+	_, err := NewPool(context.Background(), 3, 5, dial)
 	if err == nil {
 		t.Fatal("expected error on pre-warm failure")
 	}
 }
 
 func TestPool_Execute(t *testing.T) {
-	p, err := NewPool(1, 2, newFakeDial())
+	p, err := NewPool(context.Background(), 1, 2, newFakeDial())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +104,10 @@ func TestPool_Execute(t *testing.T) {
 
 func TestPool_ExecuteDiscardsOnError(t *testing.T) {
 	execErr := errors.New("transport error")
-	dial := func() (Transport[*adu.Request, *adu.Response], error) {
+	dial := func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
 		return &fakeTransport{execErr: execErr}, nil
 	}
-	p, err := NewPool(0, 2, dial)
+	p, err := NewPool(context.Background(), 0, 2, dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,10 +120,10 @@ func TestPool_ExecuteDiscardsOnError(t *testing.T) {
 }
 
 func TestPool_CloseAllWakesAcquire(t *testing.T) {
-	dial := func() (Transport[*adu.Request, *adu.Response], error) {
+	dial := func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
 		return &fakeTransport{execRes: &adu.Response{}}, nil
 	}
-	p, err := NewPool(1, 1, dial)
+	p, err := NewPool(context.Background(), 1, 1, dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestPool_CloseAllWakesAcquire(t *testing.T) {
 }
 
 func TestPool_AcquireAfterClose(t *testing.T) {
-	p, err := NewPool(0, 2, newFakeDial())
+	p, err := NewPool(context.Background(), 0, 2, newFakeDial())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,10 +166,10 @@ func TestPool_AcquireAfterClose(t *testing.T) {
 }
 
 func TestPool_AcquireContextCancellation(t *testing.T) {
-	dial := func() (Transport[*adu.Request, *adu.Response], error) {
+	dial := func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
 		return &fakeTransport{execRes: &adu.Response{}}, nil
 	}
-	p, err := NewPool(1, 1, dial)
+	p, err := NewPool(context.Background(), 1, 1, dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestPool_AcquireContextCancellation(t *testing.T) {
 }
 
 func TestPool_CloseAllIdempotent(t *testing.T) {
-	p, err := NewPool(1, 2, newFakeDial())
+	p, err := NewPool(context.Background(), 1, 2, newFakeDial())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestPool_CloseAllIdempotent(t *testing.T) {
 }
 
 func TestPool_ReleaseAfterClose(t *testing.T) {
-	p, err := NewPool(1, 2, newFakeDial())
+	p, err := NewPool(context.Background(), 1, 2, newFakeDial())
 	if err != nil {
 		t.Fatal(err)
 	}
