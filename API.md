@@ -239,6 +239,11 @@ client, err := modbus.New(modbus.Config{URL: "tcp://plc.local:502", Dialer: d.Di
 - A failed dial or handshake returns an error that starts with
   `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:` and
   wraps the cause: `errors.Is` and `errors.As` reach the dialer's own error.
+  When the cause is a `*net.OpError` for the same dial (same network and
+  address), the address is not repeated:
+  `modbus: dial tcp 10.0.0.5:502: connect: connection refused`. A host name
+  that resolved to another address keeps both:
+  `modbus: dial tcp plc.local:502: dial tcp 10.0.0.5:502: …`.
   It reports `Timeout()` when the cause does. A re-dial during a request that
   times out also matches `ErrRequestTimedOut`.
 - The pool (`MaxConns > 1`) dials every connection through it, pre-warmed or

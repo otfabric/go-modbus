@@ -1,5 +1,16 @@
 # go-modbus Releases
 
+## v1.14.2
+
+**Date:** 2026-11-09
+**Previous release:** v1.14.1
+
+### Fixed
+
+- A dial error no longer names the address twice. When the cause is a `*net.OpError` for the same dial, the message is `modbus: dial tcp 10.0.0.5:502: connect: connection refused` instead of `modbus: dial tcp 10.0.0.5:502: dial tcp 10.0.0.5:502: connect: connection refused`. A host name that resolved to another address, a failed name lookup, a `Config.Dialer`'s own error and TLS handshake errors keep the `modbus: dial <network> <addr>:` prefix. `errors.Is`, `errors.As` and `Timeout()` are unchanged.
+
+---
+
 ## v1.14.1
 
 **Date:** 2026-11-09

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -566,7 +567,59 @@ func TestDialer_DefaultIsNetDialer(t *testing.T) {
 	if !errors.As(err, &opErr) || opErr.Op != "dial" {
 		t.Fatalf("Open: want a dial *net.OpError, got %T: %v", err, err)
 	}
-	if !strings.HasPrefix(err.Error(), "modbus: dial tcp "+addr+": ") {
-		t.Errorf("error %q lacks the dial prefix", err)
+	// The *net.OpError already names the dial: the address appears once.
+	if want := "modbus: " + opErr.Error(); err.Error() != want {
+		t.Errorf("error %q, want %q", err, want)
+	}
+	if n := strings.Count(err.Error(), addr); n != 1 {
+		t.Errorf("address appears %d times in %q", n, err)
+	}
+}
+
+// The prefix is left out only when the cause already names the same dial.
+func TestDialError_Message(t *testing.T) {
+	tcpAddr := func(s string) net.Addr {
+		a, err := net.ResolveTCPAddr("tcp", s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	refused := errors.New("connect: connection refused")
+	cases := []struct {
+		name string
+		e    *dialError
+		want string
+	}{
+		{"same dial", &dialError{op: "dial", network: "tcp", addr: "10.0.0.5:502",
+			err: &net.OpError{Op: "dial", Net: "tcp", Addr: tcpAddr("10.0.0.5:502"), Err: refused}},
+			"modbus: dial tcp 10.0.0.5:502: connect: connection refused"},
+		{"same dial, IPv6", &dialError{op: "dial", network: "tcp", addr: "[::1]:502",
+			err: &net.OpError{Op: "dial", Net: "tcp", Addr: tcpAddr("[::1]:502"), Err: refused}},
+			"modbus: dial tcp [::1]:502: connect: connection refused"},
+		{"same dial wrapped by a dialer", &dialError{op: "dial", network: "tcp", addr: "10.0.0.5:502",
+			err: fmt.Errorf("allowlist dialer: %w", &net.OpError{Op: "dial", Net: "tcp", Addr: tcpAddr("10.0.0.5:502"), Err: refused})},
+			"modbus: allowlist dialer: dial tcp 10.0.0.5:502: connect: connection refused"},
+		{"host name resolved to an IP", &dialError{op: "dial", network: "tcp", addr: "plc.test:502",
+			err: &net.OpError{Op: "dial", Net: "tcp", Addr: tcpAddr("10.0.0.5:502"), Err: refused}},
+			"modbus: dial tcp plc.test:502: dial tcp 10.0.0.5:502: connect: connection refused"},
+		{"lookup failed", &dialError{op: "dial", network: "tcp", addr: "plc.invalid:502",
+			err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("lookup plc.invalid: no such host")}},
+			"modbus: dial tcp plc.invalid:502: dial tcp: lookup plc.invalid: no such host"},
+		{"other network", &dialError{op: "dial", network: "udp", addr: "10.0.0.5:502",
+			err: &net.OpError{Op: "dial", Net: "tcp", Addr: tcpAddr("10.0.0.5:502"), Err: refused}},
+			"modbus: dial udp 10.0.0.5:502: dial tcp 10.0.0.5:502: connect: connection refused"},
+		{"dialer's own error", &dialError{op: "dial", network: "tcp", addr: "10.0.0.5:502", err: errDialRefused},
+			"modbus: dial tcp 10.0.0.5:502: destination not allowed"},
+		{"no connection", &dialError{op: "dial", network: "tcp", addr: "10.0.0.5:502", err: errDialNoConn},
+			"modbus: dial tcp 10.0.0.5:502: dialer returned no connection"},
+		{"tls handshake", &dialError{op: "tls handshake", network: "tcp", addr: "10.0.0.5:802",
+			err: &net.OpError{Op: "dial", Net: "tcp", Addr: tcpAddr("10.0.0.5:802"), Err: refused}},
+			"modbus: tls handshake tcp 10.0.0.5:802: dial tcp 10.0.0.5:802: connect: connection refused"},
+	}
+	for _, tc := range cases {
+		if got := tc.e.Error(); got != tc.want {
+			t.Errorf("%s:\n got %q\nwant %q", tc.name, got, tc.want)
+		}
 	}
 }
