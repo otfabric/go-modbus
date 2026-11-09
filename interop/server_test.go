@@ -85,7 +85,23 @@ func (sc scenario) needs() []string {
 	if strings.Contains(sc.args, "--repeat") {
 		out = append(out, featClientRepeat)
 	}
+	// FC16 with more than 120 registers and FC23 with more than 120 written:
+	// jsmodbus caps the byte count it encodes (clientLargestRegisterWrites).
+	if op := sc.operation(); (op == "write-multiple-registers" || op == "read-write-multiple-registers") && sc.values() > 120 {
+		out = append(out, featClientLargestRegisterWrites)
+	}
 	return out
+}
+
+// values returns the number of values of --values, or 0.
+func (sc scenario) values() int {
+	f := strings.Fields(sc.args)
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "--values" {
+			return strings.Count(f[i+1], ",") + 1
+		}
+	}
+	return 0
 }
 
 func (sc scenario) refFeatures() []string {
@@ -296,8 +312,8 @@ var scenarios = []scenario{
 	{args: "read-holding-registers --address 65535 --quantity 1", want: exception(3, illegalAddr)},
 	// FC04
 	{args: "read-input-registers --address 65280 --quantity 125", want: ok(4, 125)},
-	{args: "read-input-registers --address 65411 --quantity 125", want: ok(4, 125)},
-	{args: "read-input-registers --address 65535 --quantity 1", want: ok(4, 1)},
+	{args: "read-input-registers --address 65411 --quantity 125", want: ok(4, 125), ref: featServerHighestAddress},
+	{args: "read-input-registers --address 65535 --quantity 1", want: ok(4, 1), ref: featServerHighestAddress},
 	{args: "read-input-registers --address 0 --quantity 1", want: exception(4, illegalAddr)},
 	{args: "read-input-registers --address 65279 --quantity 2", want: exception(4, illegalAddr)},
 	// Another unit identifier: exception 11, 0 and 255 included.
@@ -310,7 +326,7 @@ var scenarios = []scenario{
 	// Several requests on one connection.
 	{args: "read-holding-registers --address 0 --quantity 10 --repeat 50", want: fmt.Sprintf(okRepeat, 3, 10, 50, 50), check: oneConnection(50)},
 	{args: "read-coils --address 0 --quantity 64 --repeat 50", want: fmt.Sprintf(okRepeat, 1, 64, 50, 50), check: oneConnection(50)},
-	{args: "read-input-registers --address 65411 --quantity 125 --repeat 1000", want: fmt.Sprintf(okRepeat, 4, 125, 1000, 1000), check: oneConnection(1000)},
+	{args: "read-input-registers --address 65411 --quantity 125 --repeat 1000", want: fmt.Sprintf(okRepeat, 4, 125, 1000, 1000), check: oneConnection(1000), ref: featServerHighestAddress},
 	{args: "read-holding-registers --address 256 --quantity 1 --repeat 5", want: exception(3, illegalAddr), check: oneConnection(1)},
 	// Writes outside the blocks: exception 2, and nothing is written (the
 	// shared device is compared with the fixture at the end).
@@ -522,9 +538,18 @@ func reference(t *testing.T, a adapter, sc scenario) *adapter {
 }
 
 // skipFor names the scenarios a reference client cannot run although it
-// declares what they need, and why. There are none at present: what a
-// client lacks, its capability document says.
-func skipFor(adapter, scenario) string { return "" }
+// declares what they need, and why.
+func skipFor(a adapter, sc scenario) string {
+	// modbus4j sends unit identifier 0 as a broadcast on every transport and
+	// waits for no response, so the client reports "failed" without having
+	// seen the answer (adapters/modbus4j/README.md in modbus-interop, client
+	// finding 17). Broadcast is a serial-line notion (Modbus over Serial Line
+	// V1.02, 2.2); the go-modbus device answers unit 0 over TCP.
+	if a.name == modbus4j && sc.flag("--unit-id", 1) == 0 {
+		return "the modbus4j client sends unit 0 as a broadcast and waits for no response"
+	}
+	return ""
+}
 
 // TestServerScenarios drives a go-modbus device with every reference client
 // and checks, for each operation: that the outcome is what the fixture rules

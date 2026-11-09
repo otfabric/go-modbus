@@ -603,16 +603,22 @@ details, and annotated examples — see **[API.md](API.md)**.
 
 ## Interop tests
 
-The `interop` package tests go-modbus against five independent Modbus TCP
+The `interop` package tests go-modbus against eight independent Modbus
 implementations, [libmodbus](https://github.com/stephane/libmodbus) (C),
 [PyModbus](https://github.com/pymodbus-dev/pymodbus) (Python),
 [digitalpetri/modbus](https://github.com/digitalpetri/modbus) (Java),
-[NModbus](https://github.com/NModbus/NModbus) (C#) and
-[tokio-modbus](https://github.com/slowtec/tokio-modbus) (Rust), packaged as
+[NModbus](https://github.com/NModbus/NModbus) (C#),
+[tokio-modbus](https://github.com/slowtec/tokio-modbus) (Rust),
+[j2mod](https://github.com/steveohara/j2mod) (Java),
+[jsmodbus](https://github.com/Cloud-Automation/node-modbus) (JavaScript) and
+[modbus-esp8266](https://github.com/emelianov/modbus-esp8266) (C++), packaged as
 container images by [otfabric/modbus-interop](https://github.com/otfabric/modbus-interop).
+A ninth, [modbus4j](https://github.com/MangoAutomation/modbus4j) (Java), is
+GPL-3.0; its image is not published, and the suite runs it when
+`MODBUS_INTEROP_MODBUS4J_IMAGE` names a local build.
 
 ```sh
-make interop    # needs Docker; about five minutes
+make interop    # needs Docker; about ten minutes
 ```
 
 | Direction | What is checked |
@@ -624,24 +630,30 @@ The images are the only thing shared with modbus-interop; nothing of it is
 cloned or built here. Scenarios, expected values and assertions live in this
 repository.
 
-This version is qualified against modbus-interop v0.3.3 (libmodbus v3.2.0,
+This version is qualified against modbus-interop v0.4.1 (libmodbus v3.2.0,
 PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
-0.17.0). The five images are named in `interop/harness.go`, the Makefile and
-the Interop workflow, which runs on every push and pull request. To test
-against another build, set `MODBUS_INTEROP_<ADAPTER>_IMAGE` (`LIBMODBUS`,
-`PYMODBUS`, `DIGITALPETRI`, `NMODBUS`, `TOKIOMODBUS`); to run some stacks
-only, `MODBUS_INTEROP_ADAPTERS=libmodbus,pymodbus`.
+0.17.0, j2mod 3.4.0, jsmodbus 5.0.0, modbus-esp8266 4.1.1; modbus4j 3.1.0
+from a local build). The eight published images are named in
+`interop/harness.go`, the Makefile and the Interop workflow, which runs on
+every push and pull request. To test against another build, set
+`MODBUS_INTEROP_<ADAPTER>_IMAGE` (`LIBMODBUS`, `PYMODBUS`, `DIGITALPETRI`,
+`NMODBUS`, `TOKIOMODBUS`, `J2MOD`, `JSMODBUS`, `MODBUSESP`, `MODBUS4J`); to run
+some stacks only, `MODBUS_INTEROP_ADAPTERS=libmodbus,pymodbus`. Against the
+references that declare them, the client is also tested over Modbus UDP and
+RTU over TCP.
 
 The references do not all support the same. The suite asks each image what
 it declares (`print-capabilities`) and skips, rather than fails, what an
 image lacks:
 
-| | libmodbus | PyModbus | digitalpetri | NModbus | tokio-modbus |
-|---|:---:|:---:|:---:|:---:|:---:|
-| FC01 to FC06, FC15, FC16, FC23, exceptions, both directions | ✅ | ✅ | ✅ | ✅ | ✅ |
-| FC22, both directions | ✅ | ✅ | ✅ | — no FC22 | ✅ |
-| FC43/14, reference as server | — no FC43 | ✅ | — no FC43 | — no FC43 | ✅ |
-| FC43/14, reference as client | — | ✅ | raw PDU only | ✅ | ✅ |
+| | libmodbus | PyModbus | digitalpetri | NModbus | tokio-modbus | j2mod | jsmodbus | modbus-esp8266 | modbus4j |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| FC01 to FC06, FC15, FC16, exceptions, both directions | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| FC23, both directions | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — no FC23 | ✅ | — no FC23 |
+| FC22, both directions | ✅ | ✅ | ✅ | — no FC22 | ✅ | ✅ | — no FC22 | ✅ | as client only |
+| FC43/14, reference as server | — no FC43 | ✅ | — no FC43 | — no FC43 | ✅ | — no FC43 | ✅ | — no FC43 | — no FC43 |
+| FC43/14, reference as client | — | ✅ | raw PDU only | ✅ | ✅ | ✅ | ✅ | raw PDU only | — |
+| Client over UDP / RTU over TCP | — | — | — | — | — | both | RTU | RTU | both |
 
 What is implemented, how the server answers invalid requests and what the
 suite found is in [INTEROPERABILITY.md](INTEROPERABILITY.md).
@@ -701,8 +713,8 @@ go-modbus/
 │   ├── protocol/      Function codes, limits, shared sentinels
 │   └── logging/       Prefixed logger adapter
 ├── cmd/modbus-cli/    Command-line client
-├── interop/           Tests against libmodbus, PyModbus, digitalpetri, NModbus and
-│                      tokio-modbus (build tag "interop", needs Docker)
+├── interop/           Tests against the modbus-interop reference stacks
+│                      (build tag "interop", needs Docker)
 ├── examples/          Runnable TCP/TLS server and client samples
 ├── spec/              Protocol notes / reference material
 ├── testdata/          Fuzz corpora and test fixtures

@@ -261,7 +261,14 @@ func TestClientReads(t *testing.T) {
 			}
 		})
 		t.Run("input-registers", func(t *testing.T) {
+			// A server without serverHighestAddress cannot serve the register
+			// at 65535 (modbus-esp8266: COMPATIBILITY.md in modbus-interop).
+			top := a.has(t, featServerHighestAddress)
 			for _, s := range regSpans {
+				if !top && s.at+s.n == len(fx.InputRegisters.Values) {
+					t.Logf("%+v ends at address 65535: %s does not declare %s", s, a.name, featServerHighestAddress)
+					continue
+				}
 				got, err := c.ReadInputRegisters(ctx, u, fx.InputRegisters.Address+uint16(s.at), uint16(s.n))
 				if err != nil {
 					t.Fatalf("ReadInputRegisters %+v: %v", s, err)
@@ -276,6 +283,9 @@ func TestClientReads(t *testing.T) {
 				}
 			}
 			// The last address there is.
+			if !top {
+				return
+			}
 			if v, err := c.ReadInputRegister(ctx, u, 65535); err != nil || v != baselineInputRegister(255) {
 				t.Errorf("ReadInputRegister(65535) = %d, %v", v, err)
 			}
@@ -284,7 +294,7 @@ func TestClientReads(t *testing.T) {
 		// The server saw what the client meant: the function, the address
 		// as a number on the wire and the quantity.
 		t.Run("as-the-server-saw-it", func(t *testing.T) {
-			a.need(t, featRequestEvents)
+			a.need(t, featRequestEvents, featServerHighestAddress)
 			if _, err := c.ReadInputRegisters(ctx, u, 65411, 125); err != nil {
 				t.Fatal(err)
 			}
@@ -376,19 +386,25 @@ func TestClientExceptions(t *testing.T) {
 		})
 
 		t.Run("illegal-function", func(t *testing.T) {
-			// Functions with data bytes that the server does not serve.
-			if !a.has(t, featServerFIFOQueue) {
+			// A server without serverIllegalFunction closes the connection or
+			// stays silent instead (j2mod, jsmodbus, modbus4j: COMPATIBILITY.md
+			// in modbus-interop).
+			a.need(t, featServerIllegalFunction)
+			// Functions with data bytes that the server does not serve. A
+			// server may answer one without the feature for it (modbus-esp8266
+			// answers FC20 with a wrong byte count): serverFunctions says so.
+			if !a.has(t, featServerFIFOQueue) && !a.serves(t, 24) {
 				_, err := c.ReadFIFOQueue(ctx, u, 0)
 				wantException(t, "ReadFIFOQueue", err, modbus.FCReadFIFOQueue, excIllegalFunction)
 				if !errors.Is(err, modbus.ErrIllegalFunction) {
 					t.Errorf("%v is not ErrIllegalFunction", err)
 				}
 			}
-			if !a.has(t, featServerFileRecord) {
+			if !a.has(t, featServerFileRecord) && !a.serves(t, 20) {
 				_, err := c.ReadFileRecords(ctx, u, []modbus.FileRecordRequest{{FileNumber: 1, RecordNumber: 0, RecordLength: 2}})
 				wantException(t, "ReadFileRecords", err, modbus.FCReadFileRecord, excIllegalFunction)
 			}
-			if !a.has(t, featServerDiagnostics) {
+			if !a.has(t, featServerDiagnostics) && !a.serves(t, 8) {
 				_, err := c.DiagnosticLoopback(ctx, u, 0x1234)
 				wantException(t, "DiagnosticLoopback", err, modbus.FCDiagnostics, excIllegalFunction)
 			}
@@ -406,8 +422,14 @@ func TestClientExceptions(t *testing.T) {
 		})
 
 		// Nothing was written, and all of the above ran on one connection:
-		// an exception response does not cost the connection.
-		wantState(t, "after the rejected requests", c, fx, fx.Coils.Values, fx.HoldingRegisters.Values)
+		// an exception response does not cost the connection. modbus4j writes
+		// the part of a refused FC15/FC16 inside the block
+		// (serverRejectedWriteUnchanged).
+		if a.has(t, featServerRejectedWriteUnchanged) {
+			wantState(t, "after the rejected requests", c, fx, fx.Coils.Values, fx.HoldingRegisters.Values)
+		} else {
+			t.Logf("%s does not declare %s: the device after the rejected requests is not compared", a.name, featServerRejectedWriteUnchanged)
+		}
 		if a.has(t, featConnectionEvents) {
 			opened := srv.waitEvents(t, "connection-opened", 1, func(e event) bool { return e.name() == "connection-opened" })
 			if len(opened) != 1 {

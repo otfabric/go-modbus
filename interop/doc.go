@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: MIT
 
 // Package interop runs black-box tests of go-modbus against independent
-// Modbus TCP implementations: libmodbus, PyModbus, digitalpetri/modbus,
-// NModbus and tokio-modbus, packaged as container images by
-// otfabric/modbus-interop.
+// Modbus implementations: libmodbus, PyModbus, digitalpetri/modbus, NModbus,
+// tokio-modbus, j2mod, jsmodbus and modbus-esp8266, packaged as container
+// images by otfabric/modbus-interop, and modbus4j when a local build of its
+// (unpublished, GPL) image is given.
 //
 // Both directions are covered:
 //

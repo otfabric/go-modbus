@@ -30,19 +30,26 @@ TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/interop' | 
 # docsync release of docs-check (DOC-008).
 DOCSYNC_VERSION := v0.3.1
 
-# Reference implementations for 'make interop': otfabric/modbus-interop v0.3.3
+# Reference implementations for 'make interop': otfabric/modbus-interop v0.4.1
 # (libmodbus v3.2.0, PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83,
-# tokio-modbus 0.17.0).
+# tokio-modbus 0.17.0, j2mod 3.4.0, jsmodbus 5.0.0, modbus-esp8266 4.1.1).
+# modbus4j 3.1.0 is GPL and not published: build it in modbus-interop
+# ("make image-modbus4j") and pass
+#   make interop MODBUS_INTEROP_MODBUS4J_IMAGE=ghcr.io/otfabric/modbus-interop-modbus4j:dev
 # The images are pinned by the multi-arch index digests of its release manifest.
 # Keep in step with interop/harness.go and .github/workflows/interop.yml.
 # Override to test other builds, e.g.
 #   make interop MODBUS_INTEROP_PYMODBUS_IMAGE=ghcr.io/otfabric/modbus-interop-pymodbus:dev
 # MODBUS_INTEROP_ADAPTERS=libmodbus,pymodbus restricts the run to a subset.
-MODBUS_INTEROP_LIBMODBUS_IMAGE    ?= ghcr.io/otfabric/modbus-interop-libmodbus@sha256:7aebd97a0fd9872266be54aad7793971a661676ebc11b939374d0c469d2cd0c3
-MODBUS_INTEROP_PYMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-pymodbus@sha256:dbd305a7789a0f1469d403a163ce463297cda77066bf4b1a14d7604031361e3b
-MODBUS_INTEROP_DIGITALPETRI_IMAGE ?= ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:2784f46b1978413584f070277677a5340062bf4c7b93bc9a6b31ec9b97a9e2b8
-MODBUS_INTEROP_NMODBUS_IMAGE      ?= ghcr.io/otfabric/modbus-interop-nmodbus@sha256:18d4d701a5571fd9eaa63629345bcbcfe260fe76ba5ee7ea8b9f8b9d897d75ff
-MODBUS_INTEROP_TOKIOMODBUS_IMAGE  ?= ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:48b1d97e13a5a44579b9efc23cd26d8dd12605f5185b5a0553ed6df0dbf9750d
+MODBUS_INTEROP_LIBMODBUS_IMAGE    ?= ghcr.io/otfabric/modbus-interop-libmodbus@sha256:ec16dc38fbed42962aac2c3b72162615095c20beb7791c8b5f7d07a878d1cb16
+MODBUS_INTEROP_PYMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-pymodbus@sha256:048cf2a22fa2473c21d431e224b7feaafc791b596a088af355e2076266afba9c
+MODBUS_INTEROP_DIGITALPETRI_IMAGE ?= ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:8a852fc84fd47b5bcfb60dbec2473b55dd388425ee0c983458e871ffab6589a0
+MODBUS_INTEROP_NMODBUS_IMAGE      ?= ghcr.io/otfabric/modbus-interop-nmodbus@sha256:9cef6ff1b8b44da0a0356f5cb2b1a94c763f065f1e07c353469acd18279d8a17
+MODBUS_INTEROP_TOKIOMODBUS_IMAGE  ?= ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:bea1d36c98ba8bec5abb240461ef6f440cebcedcb7879e75cdb02c4a75b3c7aa
+MODBUS_INTEROP_J2MOD_IMAGE        ?= ghcr.io/otfabric/modbus-interop-j2mod@sha256:a2618932713d711ac1b0ede20623289b98372116d81228b744c14af5089ad1c4
+MODBUS_INTEROP_JSMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-jsmodbus@sha256:0482025a89e68e37708bf10bf6abb1289f10bfebbc58db2dd59c3fd42d72c70d
+MODBUS_INTEROP_MODBUSESP_IMAGE    ?= ghcr.io/otfabric/modbus-interop-modbusesp@sha256:0eaabcafa6605a37c1977552b32979ae1b865ab61f2a44ed27543b5b99ed43cc
+MODBUS_INTEROP_MODBUS4J_IMAGE     ?=
 
 
 all: build ## Default target: build cmd + examples apps
@@ -152,14 +159,18 @@ soak: ## Run the chaos and stress tests under the race detector for SOAKTIME eac
 stress-load: ## Repeat the chaos regression tests under CPU contention with the race detector (about 5 to 15 minutes)
 	@scripts/stress-load.sh bin/stress-load
 
-test-interop: ## Run the interop suite against the libmodbus, PyModbus, digitalpetri, NModbus and tokio-modbus reference images (needs Docker)
-	@echo "Running interop tests against $(MODBUS_INTEROP_LIBMODBUS_IMAGE), $(MODBUS_INTEROP_PYMODBUS_IMAGE), $(MODBUS_INTEROP_DIGITALPETRI_IMAGE), $(MODBUS_INTEROP_NMODBUS_IMAGE) and $(MODBUS_INTEROP_TOKIOMODBUS_IMAGE)"
+test-interop: ## Run the interop suite against the reference images of modbus-interop (needs Docker)
+	@echo "Running interop tests against $(MODBUS_INTEROP_LIBMODBUS_IMAGE), $(MODBUS_INTEROP_PYMODBUS_IMAGE), $(MODBUS_INTEROP_DIGITALPETRI_IMAGE), $(MODBUS_INTEROP_NMODBUS_IMAGE), $(MODBUS_INTEROP_TOKIOMODBUS_IMAGE), $(MODBUS_INTEROP_J2MOD_IMAGE), $(MODBUS_INTEROP_JSMODBUS_IMAGE), $(MODBUS_INTEROP_MODBUSESP_IMAGE)$(if $(MODBUS_INTEROP_MODBUS4J_IMAGE), and $(MODBUS_INTEROP_MODBUS4J_IMAGE))"
 	@MODBUS_INTEROP_LIBMODBUS_IMAGE="$(MODBUS_INTEROP_LIBMODBUS_IMAGE)" \
 		MODBUS_INTEROP_PYMODBUS_IMAGE="$(MODBUS_INTEROP_PYMODBUS_IMAGE)" \
 		MODBUS_INTEROP_DIGITALPETRI_IMAGE="$(MODBUS_INTEROP_DIGITALPETRI_IMAGE)" \
 		MODBUS_INTEROP_NMODBUS_IMAGE="$(MODBUS_INTEROP_NMODBUS_IMAGE)" \
 		MODBUS_INTEROP_TOKIOMODBUS_IMAGE="$(MODBUS_INTEROP_TOKIOMODBUS_IMAGE)" \
-		go test -tags=$(INTEROP_TAGS) -count=1 -timeout=30m ./interop/...
+		MODBUS_INTEROP_J2MOD_IMAGE="$(MODBUS_INTEROP_J2MOD_IMAGE)" \
+		MODBUS_INTEROP_JSMODBUS_IMAGE="$(MODBUS_INTEROP_JSMODBUS_IMAGE)" \
+		MODBUS_INTEROP_MODBUSESP_IMAGE="$(MODBUS_INTEROP_MODBUSESP_IMAGE)" \
+		MODBUS_INTEROP_MODBUS4J_IMAGE="$(MODBUS_INTEROP_MODBUS4J_IMAGE)" \
+		go test -tags=$(INTEROP_TAGS) -count=1 -timeout=45m ./interop/...
 
 interop: test-interop ## Alias for test-interop
 

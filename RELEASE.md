@@ -1,5 +1,18 @@
 # go-modbus Releases
 
+## v1.13.4
+
+**Date:** 2026-11-09
+**Previous release:** v1.13.3
+
+### Changed
+
+- Interop runs against modbus-interop v0.4.1 (contract 1.2), with three more independent stacks in CI: j2mod 3.4.0 (Java), jsmodbus 5.0.0 (JavaScript) and modbus-esp8266 4.1.1 (C++). modbus4j 3.1.0 (Java) runs when `MODBUS_INTEROP_MODBUS4J_IMAGE` names a local build: its image is GPL-3.0 and not published. The library is unchanged from v1.13.3.
+- The interop suite tests the client over Modbus UDP and RTU over TCP against the references that declare those transports (`TestClientTransports`).
+- The suite gates on the five features of contract 1.2 (`serverIllegalFunction`, `serverRejectedWriteUnchanged`, `serverHighestAddress`, `serverLargestRegisterWrites`, `clientLargestRegisterWrites`) and skips, rather than fails, what a reference does not declare. [INTEROPERABILITY.md](INTEROPERABILITY.md) lists what is not covered per stack and the findings: the j2mod server answers the second sub-request of FC20 with the wrong records, and modbus4j writes part of a rejected FC15 or FC16.
+
+---
+
 ## v1.13.3
 
 **Date:** 2026-11-08
