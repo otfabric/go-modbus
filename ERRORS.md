@@ -27,7 +27,7 @@ Modbus exception from the unit.
 | Context already cancelled or expired when the call starts | `ctx.Err()` (`context.Canceled` / `context.DeadlineExceeded`); nothing is sent |
 | Context cancelled while the request is in flight | `context.Canceled` (`errors.Is`); returns promptly |
 | Connection lost, refused or reset | stdlib error (`io.EOF`, `*net.OpError`, …); the next request reconnects |
-| Dial or TLS handshake failed (default or `Config.Dialer`) | error starting `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:`, wrapping the cause (`errors.Is` / `errors.As` reach `*net.OpError` or the dialer's own error); `Timeout()` when the cause timed out |
+| Dial or TLS handshake failed (default or `Config.Dialer`) | error starting `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:` (or `modbus: ` followed by a `*net.OpError` that already names the same dial), wrapping the cause (`errors.Is` / `errors.As` reach `*net.OpError` or the dialer's own error); `Timeout()` when the cause timed out |
 | `Config.Dialer` returned neither a connection nor an error | dial error with the message `dialer returned no connection`; no sentinel |
 | Re-dial during a request ran out of the dial timeout or the request's deadline | `ErrRequestTimedOut` wrapping the dial error (`errors.Is` reaches both, and `context.DeadlineExceeded` when the context ended it) |
 | Malformed / unexpected peer response | `*ProtocolError` (`errors.Is` → `ErrProtocolError`) |

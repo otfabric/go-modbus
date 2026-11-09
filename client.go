@@ -580,7 +580,25 @@ type dialError struct {
 }
 
 func (e *dialError) Error() string {
+	if e.causeNamesDial() {
+		// "dial tcp 10.0.0.5:502: connect: connection refused" already says
+		// what failed and where: do not say it twice.
+		return "modbus: " + e.err.Error()
+	}
 	return fmt.Sprintf("modbus: %s %s %s: %v", e.op, e.network, e.addr, e.err)
+}
+
+// causeNamesDial reports whether the cause is a *net.OpError for the same
+// dial: same operation, network and address. A host name that resolved to
+// another address, a failed name lookup or a dialer's own error keep the
+// prefix, which then adds the address of the URL.
+func (e *dialError) causeNamesDial() bool {
+	if e.op != "dial" {
+		return false
+	}
+	var oe *net.OpError
+	return errors.As(e.err, &oe) && oe.Op == "dial" && oe.Net == e.network &&
+		oe.Addr != nil && oe.Addr.String() == e.addr
 }
 
 func (e *dialError) Unwrap() error { return e.err }
