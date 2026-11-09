@@ -18,9 +18,12 @@ application provides the optional handler · **no** not implemented.
 | Modbus RTU, Modbus ASCII (serial line) | yes | no |
 | RTU over TCP, RTU over UDP, ASCII over TCP, Modbus UDP | yes | no |
 
-The reference implementations below speak Modbus TCP, so that is the
-transport the interop suite covers. The others are covered by this
-repository's own tests.
+The interop suite covers Modbus TCP in both directions. It also covers the
+client over Modbus UDP (against j2mod and modbus4j) and over RTU over TCP
+(against j2mod, jsmodbus, modbus-esp8266 and modbus4j); those are the
+references that declare the transport. The server has Modbus TCP only.
+Modbus over TLS, RTU and ASCII on a serial line, RTU over UDP and ASCII
+over TCP are covered by this repository's own tests only.
 
 ## Function codes
 
@@ -107,10 +110,13 @@ category the device has objects for, with the bit for individual access
 
 ## Verification status
 
-Besides its own tests the library is run against five independent
+Besides its own tests the library is run against eight independent
 implementations, as client and as server, on every push. The reference
 builds are the images of
-[otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.3.3:
+[otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.4.1.
+A ninth, modbus4j, is GPL-3.0 and its image is not published. It is run
+when `MODBUS_INTEROP_MODBUS4J_IMAGE` names a local build (`make
+image-modbus4j` in modbus-interop), not in CI:
 
 | Reference | Version | go-modbus client → reference server | reference client → go-modbus server |
 |-----------|---------|-------------------------------------|-------------------------------------|
@@ -119,20 +125,48 @@ builds are the images of
 | digitalpetri/modbus (Java) | 2.1.6 | pass ¹ | pass ² |
 | NModbus (C#) | 3.0.83 | pass ¹ ³ | pass ³ |
 | tokio-modbus (Rust) | 0.17.0 | pass | pass |
+| j2mod (Java) | 3.4.0 | pass ⁴ | pass ⁴ |
+| jsmodbus (JavaScript) | 5.0.0 | pass ⁴ | pass ⁴ |
+| modbus-esp8266 (C++) | 4.1.1 | pass ⁴ | pass ⁴ |
+| modbus4j (Java), local build | 3.1.0 | pass ⁴ | pass ⁴ |
 
 ¹ without Read Device Identification: the stack has no FC43 in that role.
 ² FC43 through the client's raw operation only: the stack has no call for it.
 ³ without Mask Write Register: NModbus has no FC22.
+⁴ without what the stack does not have or does not do as the specification
+asks, as its image declares it:
+
+| Reference | Not covered, go-modbus client → reference server | Not covered, reference client → go-modbus server |
+|-----------|---------------------------------------------------|---------------------------------------------------|
+| j2mod | FC08, FC17, FC20, FC21, FC43; exception 1 for an unknown function | raw PDUs |
+| jsmodbus | FC08, FC17, FC20 to FC24; exception 1 for an unknown function | FC08, FC17, FC20 to FC24, FC16 of more than 120 registers, raw PDUs |
+| modbus-esp8266 | FC08, FC17, FC20, FC21, FC24, FC43; the reads that end at input register 65535 | FC17; FC08, FC20, FC24 and FC43 through raw PDUs only |
+| modbus4j | FC08, FC20 to FC24, FC43; exceptions 1 and 11; the device state after a rejected FC15 or FC16 | FC08, FC20, FC21, FC23, FC24, FC43, raw PDUs, unit 0 |
+
+j2mod has FC20 but answers the second of two sub-requests with the wrong
+records (specification 6.14), so its image does not declare it. The
+modbus4j server writes part of a rejected FC15 or FC16 and does not answer
+an unknown function code over RTU or a request for another unit. Its client
+sends unit 0 as a broadcast and waits for no response, which over TCP is
+not a broadcast (Modbus over Serial Line V1.02, 2.2).
+
+The client over the other transports (`TestClientTransports`): every table
+read in full, exceptions 2, a request for another unit (exception 11 over
+UDP, no answer over RTU), every write read back. It passes against j2mod and
+modbus4j on UDP and RTU over TCP, and against jsmodbus and modbus-esp8266 on
+RTU over TCP (jsmodbus without the FC16 of 123 registers, which its RTU
+server does not answer; modbus4j without another unit, which its server does
+not answer).
 
 FC08, FC17, FC20, FC21 and FC24 are covered where a reference has them,
 and through raw PDUs from every reference client:
 
 | Function | go-modbus client → reference server | reference client → go-modbus server |
 |----------|-------------------------------------|-------------------------------------|
-| 08 Diagnostics (Return Query Data) | PyModbus, NModbus | PyModbus (`diagnostics`); PyModbus, digitalpetri, NModbus, tokio-modbus (raw) |
-| 17 Report Server ID | PyModbus | libmodbus, PyModbus, tokio-modbus (`report-server-id`) |
-| 20, 21 Read / Write File Record | PyModbus | PyModbus (both), NModbus (FC21); PyModbus, digitalpetri, NModbus, tokio-modbus (raw) |
-| 24 Read FIFO Queue | PyModbus | PyModbus (`read-fifo-queue`); PyModbus, digitalpetri, NModbus, tokio-modbus (raw) |
+| 08 Diagnostics (Return Query Data) | PyModbus, NModbus | PyModbus, j2mod (`diagnostics`); PyModbus, digitalpetri, NModbus, tokio-modbus, modbus-esp8266 (raw) |
+| 17 Report Server ID | PyModbus, modbus4j | libmodbus, PyModbus, tokio-modbus, j2mod, modbus4j (`report-server-id`) |
+| 20, 21 Read / Write File Record | PyModbus | PyModbus, j2mod (both), NModbus, modbus-esp8266 (FC21); PyModbus, digitalpetri, NModbus, tokio-modbus, modbus-esp8266 (raw) |
+| 24 Read FIFO Queue | PyModbus, j2mod | PyModbus, j2mod (`read-fifo-queue`); PyModbus, digitalpetri, NModbus, tokio-modbus, modbus-esp8266 (raw) |
 
 libmodbus frames a response by its function code, so its raw operation
 cannot receive the normal responses of FC08, FC20, FC21 and FC24; the images
@@ -144,7 +178,8 @@ skips what it lacks.
 
 The suite (`make interop`, package `interop`) covers FC01 to FC06, FC08,
 FC15, FC16, FC17, FC20 to FC24 and FC43/14 on Modbus TCP, in both
-directions where a reference has the function:
+directions where a reference has the function, and the client over UDP and
+RTU over TCP (above):
 
 - **go-modbus client → reference servers.** Every table of the reference
   device read in full, at the boundaries of its block, across byte
@@ -205,13 +240,23 @@ a test fail; the suite records them where it meets them):
   FC24, FC43).
 - **tokio-modbus 0.17.0** frames its server's FC17 response with an MBAP
   length one byte short; the image refuses FC17 because of it.
+- **The j2mod 3.4.0 server** answers the second sub-request of an FC20
+  request with the records of the wrong file (specification 6.14). The
+  suite failed on it against a candidate image; modbus-interop v0.4.1 no
+  longer declares file records for j2mod.
+- **The modbus4j 3.1.0 server** writes part of an FC15 or FC16 request
+  that runs past the end of a block and then answers exception 2. It does
+  not answer an unknown function code over RTU, a quantity out of range, or
+  a request for another unit. Its client sends unit 0 as a broadcast.
+- **The jsmodbus 5.0.0 RTU server** does not answer FC16 with 123
+  registers, and its server does not answer an unknown function code.
 - **The PyModbus 3.16.1 server** cannot decode an FC20 request for an odd
   number of registers (it answers `80 01`) and ignores the reference type.
   The client tests read even lengths, and `SupportsFunction(FC20)`, whose
   probe reads one register, is not checked against it.
 
 Further findings on these stacks are in modbus-interop's
-[COMPATIBILITY.md](https://github.com/otfabric/modbus-interop/blob/v0.3.3/docs/COMPATIBILITY.md).
+[COMPATIBILITY.md](https://github.com/otfabric/modbus-interop/blob/v0.4.1/docs/COMPATIBILITY.md).
 
 It has **not** been run against certified test equipment. Reports from the
 field are welcome.

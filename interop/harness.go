@@ -29,20 +29,26 @@ type adapter struct {
 }
 
 // The reference images this version of go-modbus is qualified against:
-// otfabric/modbus-interop v0.3.3 (libmodbus v3.2.0, PyModbus 3.16.1,
-// digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus 0.17.0).
+// otfabric/modbus-interop v0.4.1 (libmodbus v3.2.0, PyModbus 3.16.1,
+// digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus 0.17.0, j2mod 3.4.0,
+// jsmodbus 5.0.0, modbus-esp8266 4.1.1). modbus4j 3.1.0 is GPL and never
+// published: it runs only when MODBUS_INTEROP_MODBUS4J_IMAGE names a local
+// build (see [modbus4j]).
 //
 // The images are pinned by the multi-arch index digests of the release
 // manifest, so that a run is reproducible. Moving to another release of
 // modbus-interop means
 // changing these constants, and the Makefile and the interop workflow follow.
 const (
-	interopRelease           = "v0.3.3"
-	defaultLibmodbusImage    = "ghcr.io/otfabric/modbus-interop-libmodbus@sha256:7aebd97a0fd9872266be54aad7793971a661676ebc11b939374d0c469d2cd0c3"
-	defaultPymodbusImage     = "ghcr.io/otfabric/modbus-interop-pymodbus@sha256:dbd305a7789a0f1469d403a163ce463297cda77066bf4b1a14d7604031361e3b"
-	defaultDigitalpetriImage = "ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:2784f46b1978413584f070277677a5340062bf4c7b93bc9a6b31ec9b97a9e2b8"
-	defaultNmodbusImage      = "ghcr.io/otfabric/modbus-interop-nmodbus@sha256:18d4d701a5571fd9eaa63629345bcbcfe260fe76ba5ee7ea8b9f8b9d897d75ff"
-	defaultTokiomodbusImage  = "ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:48b1d97e13a5a44579b9efc23cd26d8dd12605f5185b5a0553ed6df0dbf9750d"
+	interopRelease           = "v0.4.1"
+	defaultLibmodbusImage    = "ghcr.io/otfabric/modbus-interop-libmodbus@sha256:ec16dc38fbed42962aac2c3b72162615095c20beb7791c8b5f7d07a878d1cb16"
+	defaultPymodbusImage     = "ghcr.io/otfabric/modbus-interop-pymodbus@sha256:048cf2a22fa2473c21d431e224b7feaafc791b596a088af355e2076266afba9c"
+	defaultDigitalpetriImage = "ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:8a852fc84fd47b5bcfb60dbec2473b55dd388425ee0c983458e871ffab6589a0"
+	defaultNmodbusImage      = "ghcr.io/otfabric/modbus-interop-nmodbus@sha256:9cef6ff1b8b44da0a0356f5cb2b1a94c763f065f1e07c353469acd18279d8a17"
+	defaultTokiomodbusImage  = "ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:bea1d36c98ba8bec5abb240461ef6f440cebcedcb7879e75cdb02c4a75b3c7aa"
+	defaultJ2modImage        = "ghcr.io/otfabric/modbus-interop-j2mod@sha256:a2618932713d711ac1b0ede20623289b98372116d81228b744c14af5089ad1c4"
+	defaultJsmodbusImage     = "ghcr.io/otfabric/modbus-interop-jsmodbus@sha256:0482025a89e68e37708bf10bf6abb1289f10bfebbc58db2dd59c3fd42d72c70d"
+	defaultModbusespImage    = "ghcr.io/otfabric/modbus-interop-modbusesp@sha256:0eaabcafa6605a37c1977552b32979ae1b865ab61f2a44ed27543b5b99ed43cc"
 )
 
 // Names of the adapters, where a test has to name one.
@@ -52,6 +58,14 @@ const (
 	digitalpetri = "digitalpetri"
 	nmodbus      = "nmodbus"
 	tokiomodbus  = "tokiomodbus"
+	j2mod        = "j2mod"
+	jsmodbus     = "jsmodbus"
+	modbusesp    = "modbusesp"
+	// modbus4j is GPL-3.0-or-later, so otfabric/modbus-interop builds it from
+	// source on the machine that runs it and never publishes it ("make
+	// image-modbus4j" there). It runs only when MODBUS_INTEROP_MODBUS4J_IMAGE
+	// names such a build.
+	modbus4j = "modbus4j"
 	// otfabric is go-modbus itself, as published by otfabric/modbus-interop. It
 	// is not a reference: it runs only when MODBUS_INTEROP_OTFABRIC_IMAGE names
 	// an image, and what it shows is compatibility between releases of this
@@ -65,6 +79,9 @@ var defaultImages = []adapter{
 	{digitalpetri, defaultDigitalpetriImage},
 	{nmodbus, defaultNmodbusImage},
 	{tokiomodbus, defaultTokiomodbusImage},
+	{j2mod, defaultJ2modImage},
+	{jsmodbus, defaultJsmodbusImage},
+	{modbusesp, defaultModbusespImage},
 }
 
 // adapters returns the reference implementations to test against. The image
@@ -72,9 +89,12 @@ var defaultImages = []adapter{
 //
 //	MODBUS_INTEROP_LIBMODBUS_IMAGE, MODBUS_INTEROP_PYMODBUS_IMAGE,
 //	MODBUS_INTEROP_DIGITALPETRI_IMAGE, MODBUS_INTEROP_NMODBUS_IMAGE,
-//	MODBUS_INTEROP_TOKIOMODBUS_IMAGE
+//	MODBUS_INTEROP_TOKIOMODBUS_IMAGE, MODBUS_INTEROP_J2MOD_IMAGE,
+//	MODBUS_INTEROP_JSMODBUS_IMAGE, MODBUS_INTEROP_MODBUSESP_IMAGE
 //
-// MODBUS_INTEROP_OTFABRIC_IMAGE adds a released go-modbus (see [otfabric]).
+// MODBUS_INTEROP_MODBUS4J_IMAGE adds a local build of modbus4j (see
+// [modbus4j]), MODBUS_INTEROP_OTFABRIC_IMAGE a released go-modbus (see
+// [otfabric]).
 //
 // MODBUS_INTEROP_ADAPTERS restricts the run to a comma-separated subset.
 //
@@ -85,6 +105,9 @@ func adapters(t testing.TB) []adapter {
 	all := make([]adapter, len(defaultImages))
 	for i, a := range defaultImages {
 		all[i] = adapter{a.name, getenv("MODBUS_INTEROP_"+strings.ToUpper(a.name)+"_IMAGE", a.image)}
+	}
+	if image := os.Getenv("MODBUS_INTEROP_MODBUS4J_IMAGE"); image != "" {
+		all = append(all, adapter{modbus4j, image})
 	}
 	if image := os.Getenv("MODBUS_INTEROP_OTFABRIC_IMAGE"); image != "" {
 		all = append(all, adapter{otfabric, image})
@@ -143,6 +166,11 @@ type capabilities struct {
 	Features         map[string]bool `json:"features"`
 	ServerFunctions  []int           `json:"serverFunctions"`
 	ClientOperations []string        `json:"clientOperations"`
+	// Transports is new in contract 1.2: the values of --transport per role.
+	Transports *struct {
+		Server []string `json:"server"`
+		Client []string `json:"client"`
+	} `json:"transports"`
 }
 
 var (
@@ -193,6 +221,12 @@ const (
 	featClientWriteFileRecord      = "clientWriteFileRecord"
 	featClientFIFOQueue            = "clientFifoQueue"
 	featClientRawAnyResponse       = "clientRawAnyResponse"
+	// Contract 1.2: parts of the basic functions that a reference gets wrong.
+	featServerIllegalFunction        = "serverIllegalFunction"
+	featServerRejectedWriteUnchanged = "serverRejectedWriteUnchanged"
+	featServerHighestAddress         = "serverHighestAddress"
+	featServerLargestRegisterWrites  = "serverLargestRegisterWrites"
+	featClientLargestRegisterWrites  = "clientLargestRegisterWrites"
 )
 
 // has reports whether the image declares a feature. A feature an image does
@@ -336,15 +370,33 @@ type refServer struct {
 // their names carry the prefix go-modbus-interop- and the pid of the test.
 func startServer(t testing.TB, a adapter) *refServer {
 	t.Helper()
+	return startServerOver(t, a, "tcp")
+}
+
+// startServerOver is [startServer] with the --transport of contract 1.2:
+// "tcp", "udp" or "rtu-over-tcp". A udp server's port is published as a UDP
+// port.
+func startServerOver(t testing.TB, a adapter, transport string) *refServer {
+	t.Helper()
 	var (
 		port int
 		name string
 	)
+	network, command := "tcp", []string{"server"}
+	if transport != "tcp" {
+		command = append(command, "--transport", transport)
+	}
+	if transport == "udp" {
+		network = "udp"
+	}
 	for attempt := 1; ; attempt++ {
-		port = freePort(t, "127.0.0.1")
+		port = freePortOn(t, network, "127.0.0.1")
 		name = fmt.Sprintf("go-modbus-interop-%s-%d-%d", a.name, os.Getpid(), containerSeq.Add(1))
-		_, stderr, err := docker("run", "-d", "--name", name,
-			"-p", fmt.Sprintf("127.0.0.1:%d:%s", port, containerPort), a.image, "server")
+		publish := fmt.Sprintf("127.0.0.1:%d:%s", port, containerPort)
+		if network == "udp" {
+			publish += "/udp"
+		}
+		_, stderr, err := docker(append([]string{"run", "-d", "--name", name, "-p", publish, a.image}, command...)...)
 		if err == nil {
 			break
 		}
@@ -626,6 +678,20 @@ const portAttempts = 5
 // taken on another interface, which makes it unusable for 0.0.0.0.
 func freePort(t testing.TB, host string) int {
 	t.Helper()
+	return freePortOn(t, "tcp", host)
+}
+
+// freePortOn is [freePort] for "tcp" or "udp".
+func freePortOn(t testing.TB, network, host string) int {
+	t.Helper()
+	if network == "udp" {
+		pc, err := net.ListenPacket("udp", net.JoinHostPort(host, "0"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = pc.Close() }()
+		return pc.LocalAddr().(*net.UDPAddr).Port
+	}
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		t.Fatal(err)
