@@ -69,7 +69,7 @@ Each subsystem has a **single owner** package.
 
 | File | Concern |
 |---|---|
-| `client.go` | Struct, config, lifecycle (Open/Close) |
+| `client.go` | Struct, config, lifecycle (Open/Close), dialling (`Config.Dialer` or `net.Dialer`, TLS handshake) |
 | `client_exec.go` | Request execution, metrics |
 | `client_bits.go` | Coil and discrete input operations |
 | `client_registers.go` | Register read/write operations |
@@ -101,6 +101,15 @@ under the lock, executes without holding it, and updates state under the lock on
 
 Client methods build `adu.Request` structs directly (no intermediate `pdu` type).
 The `session.Engine` executes them on the transport and returns `adu.Response`.
+
+### Dialling
+
+`session.Config.Dial` takes a context. `Open` passes `context.Background()`;
+a re-dial during a request (single connection or pool) passes the request's
+context. `Client.dialSessionTransport` bounds it by the dial timeout and opens
+the network connection through `Config.Dialer` (or `net.Dialer`); `tcp+tls`
+then runs `tls.Client(...).HandshakeContext` under the same deadline. Serial
+transports open their device and ignore the context.
 
 ## Codec architecture
 
