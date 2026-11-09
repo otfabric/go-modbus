@@ -18,6 +18,8 @@ How to run each test tier. No hardware is needed: tests use in-process servers, 
 
 The end-to-end tier runs the real client against the real server on loopback, over `tcp` and `tcp+tls`; `e2e_matrix_test.go` lists what is covered and where.
 
+`Config.Dialer` is tested in `client_dialer_test.go` (the network and address each transport dials, the dial timeout in the context, wrapped errors, the dialer contract, TLS on a dialer's connection, in-memory connections, the pool and re-dials under the request's context) and in `chaos_dialer_test.go`, which injects faults through the dialer (refused, stalled and contract-breaking dials; connections that are reset, cut short or go silent) and checks that no read returns wrong data, that every connection handed to the client is closed, that the client recovers and that no goroutine leaks. `MODBUS_CHAOS_SEED` replays its fault order.
+
 Serial transports run on a pseudo-terminal on Linux and macOS, and those tests skip elsewhere. The `coverage-packages` job of `ci.yml` sets `MODBUS_REQUIRE_PTY=1`, so there a missing pseudo-terminal is a failure.
 
 ## Environment variables

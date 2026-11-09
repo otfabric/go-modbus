@@ -67,7 +67,7 @@ func TestEngine_PoolMode_OpenExecuteClose(t *testing.T) {
 		UsePool:  true,
 		MinConns: 2,
 		MaxConns: 3,
-		Dial: func() (aduTransport, error) {
+		Dial: func(context.Context) (aduTransport, error) {
 			dials.Add(1)
 			ft := &fakeTransport{execRes: &adu.Response{UnitID: 9, FunctionCode: 3}}
 			mu.Lock()
@@ -76,7 +76,7 @@ func TestEngine_PoolMode_OpenExecuteClose(t *testing.T) {
 			return ft, nil
 		},
 	})
-	if err := e.Open(); err != nil {
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if got := dials.Load(); got != 2 {
@@ -116,9 +116,9 @@ func TestEngine_PoolMode_OpenPreWarmFailure(t *testing.T) {
 		UsePool:  true,
 		MinConns: 1,
 		MaxConns: 2,
-		Dial:     func() (aduTransport, error) { return nil, dialErr },
+		Dial:     func(context.Context) (aduTransport, error) { return nil, dialErr },
 	})
-	if err := e.Open(); !errors.Is(err, dialErr) {
+	if err := e.Open(context.Background()); !errors.Is(err, dialErr) {
 		t.Fatalf("Open: want dial error, got %v", err)
 	}
 	if _, err := e.Execute(context.Background(), &adu.Request{}); !errors.Is(err, protocol.ErrClientNotOpen) {
@@ -132,11 +132,11 @@ func TestEngine_PoolMode_CloseReportsTransportCloseError(t *testing.T) {
 		UsePool:  true,
 		MinConns: 1,
 		MaxConns: 2,
-		Dial: func() (aduTransport, error) {
+		Dial: func(context.Context) (aduTransport, error) {
 			return &fakeTransport{execRes: &adu.Response{}, closeErr: closeErr}, nil
 		},
 	})
-	if err := e.Open(); err != nil {
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if err := e.Close(); !errors.Is(err, closeErr) {
@@ -152,14 +152,14 @@ func TestEngine_PoolMode_ClosedDuringRetry(t *testing.T) {
 		UsePool:  true,
 		MaxConns: 2,
 		Retry:    fixedRetry{max: 3},
-		Dial: func() (aduTransport, error) {
+		Dial: func(context.Context) (aduTransport, error) {
 			return &mockTransport{execFn: func(context.Context, *adu.Request) (*adu.Response, error) {
 				_ = e.Close()
 				return nil, io.EOF
 			}}, nil
 		},
 	})
-	if err := e.Open(); err != nil {
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if _, err := e.Execute(context.Background(), &adu.Request{}); !errors.Is(err, protocol.ErrClientNotOpen) {
@@ -169,10 +169,10 @@ func TestEngine_PoolMode_ClosedDuringRetry(t *testing.T) {
 
 func TestEngine_SingleTransport_CloseReportsCloseError(t *testing.T) {
 	closeErr := errors.New("close failed")
-	e := NewEngine(Config{Dial: func() (aduTransport, error) {
+	e := NewEngine(Config{Dial: func(context.Context) (aduTransport, error) {
 		return &mockTransport{closeFn: func() error { return closeErr }}, nil
 	}})
-	if err := e.Open(); err != nil {
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if err := e.Close(); !errors.Is(err, closeErr) {
@@ -181,8 +181,8 @@ func TestEngine_SingleTransport_CloseReportsCloseError(t *testing.T) {
 }
 
 func TestEngine_Execute_NilTransportFromDial(t *testing.T) {
-	e := NewEngine(Config{Dial: func() (aduTransport, error) { return nil, nil }})
-	if err := e.Open(); err != nil {
+	e := NewEngine(Config{Dial: func(context.Context) (aduTransport, error) { return nil, nil }})
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if _, err := e.Execute(context.Background(), &adu.Request{}); !errors.Is(err, protocol.ErrClientNotOpen) {
@@ -194,13 +194,13 @@ func TestEngine_Execute_TimeoutMappedToRequestTimedOut(t *testing.T) {
 	obs := &recordingObserver{}
 	e := NewEngine(Config{
 		Attempts: obs,
-		Dial: func() (aduTransport, error) {
+		Dial: func(context.Context) (aduTransport, error) {
 			return &mockTransport{execFn: func(context.Context, *adu.Request) (*adu.Response, error) {
 				return nil, os.ErrDeadlineExceeded
 			}}, nil
 		},
 	})
-	if err := e.Open(); err != nil {
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = e.Close() }()
@@ -226,7 +226,7 @@ func TestEngine_Execute_RetryObserverAndRedial(t *testing.T) {
 	e := NewEngine(Config{
 		Attempts: obs,
 		Retry:    fixedRetry{max: 5, delay: time.Millisecond},
-		Dial: func() (aduTransport, error) {
+		Dial: func(context.Context) (aduTransport, error) {
 			n := dials.Add(1)
 			return &mockTransport{
 				execFn: func(_ context.Context, req *adu.Request) (*adu.Response, error) {
@@ -239,7 +239,7 @@ func TestEngine_Execute_RetryObserverAndRedial(t *testing.T) {
 			}, nil
 		},
 	})
-	if err := e.Open(); err != nil {
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = e.Close() }()
@@ -279,7 +279,7 @@ func TestEngine_Execute_RedialFailureJoinsErrors(t *testing.T) {
 	e := NewEngine(Config{
 		Attempts: obs,
 		Retry:    fixedRetry{max: 5},
-		Dial: func() (aduTransport, error) {
+		Dial: func(context.Context) (aduTransport, error) {
 			if dials.Add(1) > 1 {
 				return nil, dialErr
 			}
@@ -288,7 +288,7 @@ func TestEngine_Execute_RedialFailureJoinsErrors(t *testing.T) {
 			}}, nil
 		},
 	})
-	if err := e.Open(); err != nil {
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	_, err := e.Execute(context.Background(), &adu.Request{})
@@ -315,7 +315,7 @@ func TestEngine_Execute_ContextCancelledDuringBackoff(t *testing.T) {
 	defer cancel()
 	e := NewEngine(Config{
 		Retry: fixedRetry{max: 5, delay: time.Minute},
-		Dial: func() (aduTransport, error) {
+		Dial: func(context.Context) (aduTransport, error) {
 			dials.Add(1)
 			return &mockTransport{execFn: func(context.Context, *adu.Request) (*adu.Response, error) {
 				cancel()
@@ -323,7 +323,7 @@ func TestEngine_Execute_ContextCancelledDuringBackoff(t *testing.T) {
 			}}, nil
 		},
 	})
-	if err := e.Open(); err != nil {
+	if err := e.Open(context.Background()); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = e.Close() }()
@@ -342,7 +342,7 @@ func TestEngine_Execute_ContextCancelledDuringBackoff(t *testing.T) {
 
 func TestNewPool_ClampsNonPositiveLimits(t *testing.T) {
 	var dials int
-	p, err := NewPool(-3, 0, func() (aduTransport, error) {
+	p, err := NewPool(context.Background(), -3, 0, func(context.Context) (aduTransport, error) {
 		dials++
 		return &fakeTransport{execRes: &adu.Response{}}, nil
 	})
@@ -361,7 +361,7 @@ func TestNewPool_ClampsNonPositiveLimits(t *testing.T) {
 func TestPool_Execute_DialErrorFreesSlot(t *testing.T) {
 	dialErr := errors.New("dial refused")
 	fail := true
-	p, err := NewPool(0, 1, func() (aduTransport, error) {
+	p, err := NewPool(context.Background(), 0, 1, func(context.Context) (aduTransport, error) {
 		if fail {
 			return nil, dialErr
 		}
@@ -401,7 +401,7 @@ func TestPool_ExhaustedWaiterGetsReleasedConnection(t *testing.T) {
 	var dials atomic.Int32
 	entered := make(chan struct{}, 2)
 	unblock := make(chan struct{})
-	p, err := NewPool(0, 1, func() (aduTransport, error) {
+	p, err := NewPool(context.Background(), 0, 1, func(context.Context) (aduTransport, error) {
 		dials.Add(1)
 		return &mockTransport{execFn: func(context.Context, *adu.Request) (*adu.Response, error) {
 			entered <- struct{}{}
@@ -453,7 +453,7 @@ func TestPool_ExhaustedWaiterGetsReleasedConnection(t *testing.T) {
 }
 
 func TestPool_ReleaseWithFullIdleQueueClosesConnection(t *testing.T) {
-	p, err := NewPool(1, 1, newFakeDial())
+	p, err := NewPool(context.Background(), 1, 1, newFakeDial())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +474,7 @@ func TestPool_CloseAllJoinsCloseErrors(t *testing.T) {
 	errA, errB := errors.New("close a"), errors.New("close b")
 	closeErrs := []error{errA, nil, errB}
 	i := 0
-	p, err := NewPool(3, 3, func() (aduTransport, error) {
+	p, err := NewPool(context.Background(), 3, 3, func(context.Context) (aduTransport, error) {
 		ft := &fakeTransport{closeErr: closeErrs[i]}
 		i++
 		return ft, nil
@@ -523,7 +523,7 @@ func TestEngine_SingleTransport_ClosedDuringRetryStaysClosed(t *testing.T) {
 			var e *Engine
 			e = NewEngine(Config{
 				Retry: fixedRetry{max: 5, delay: delay},
-				Dial: func() (aduTransport, error) {
+				Dial: func(context.Context) (aduTransport, error) {
 					dials.Add(1)
 					return &mockTransport{
 						execFn: func(context.Context, *adu.Request) (*adu.Response, error) {
@@ -535,7 +535,7 @@ func TestEngine_SingleTransport_ClosedDuringRetryStaysClosed(t *testing.T) {
 					}, nil
 				},
 			})
-			if err := e.Open(); err != nil {
+			if err := e.Open(context.Background()); err != nil {
 				t.Fatalf("Open: %v", err)
 			}
 

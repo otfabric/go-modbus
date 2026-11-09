@@ -33,6 +33,7 @@ Security fixes: see [SECURITY.md](../SECURITY.md).
 | Standard function codes | ✅ | ◐ the optional ones need a handler | ✅ e2e | Modbus TCP, per stack in [INTEROPERABILITY.md](../INTEROPERABILITY.md#verification-status) |
 | Vendor and user-defined function codes | — | — | n/a | n/a |
 | FC43 sub-type 13 (CANopen general reference) | — | — | n/a | n/a |
+| Custom dialer (`Config.Dialer`): allowlists, proxies, in-memory connections | ✅ all network transports | n/a | ✅ unit, e2e (TLS), chaos | n/a |
 | Batch reads (`batch`) | ✅ | n/a | ✅ property tests, fuzz | none |
 | Value codecs (`codec`) | ✅ | n/a | ✅ | none |
 | SunSpec marker and model headers (`sunspec`) | ◐ no points; use go-sunspec | n/a | ✅ e2e | none |

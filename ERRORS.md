@@ -27,6 +27,9 @@ Modbus exception from the unit.
 | Context already cancelled or expired when the call starts | `ctx.Err()` (`context.Canceled` / `context.DeadlineExceeded`); nothing is sent |
 | Context cancelled while the request is in flight | `context.Canceled` (`errors.Is`); returns promptly |
 | Connection lost, refused or reset | stdlib error (`io.EOF`, `*net.OpError`, …); the next request reconnects |
+| Dial or TLS handshake failed (default or `Config.Dialer`) | error starting `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:`, wrapping the cause (`errors.Is` / `errors.As` reach `*net.OpError` or the dialer's own error); `Timeout()` when the cause timed out |
+| `Config.Dialer` returned neither a connection nor an error | dial error with the message `dialer returned no connection`; no sentinel |
+| Re-dial during a request ran out of the dial timeout or the request's deadline | `ErrRequestTimedOut` wrapping the dial error (`errors.Is` reaches both, and `context.DeadlineExceeded` when the context ended it) |
 | Malformed / unexpected peer response | `*ProtocolError` (`errors.Is` → `ErrProtocolError`) |
 | RTU CRC / ASCII LRC / short frame | `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` |
 | Peer Modbus exception (0x01–0x0B) | `*ExceptionError` (`errors.Is` → the matching exception sentinel, e.g. `ErrIllegalDataAddress`) |
@@ -151,6 +154,12 @@ transports and `udp` keep their link unless it is down, and discard a late
 answer to a failed request before the next one. An RTU response of variable
 length (FC08, FC43) that keeps trickling in ends with `ErrRequestTimedOut` at
 the request deadline. See [API.md § 2.2](API.md#22-lifecycle).
+
+A connection that `Config.Dialer` returns together with an error is closed, and
+the dial fails with that error. A dial that fails during a request fails that
+request (the attempts before it, if any, are joined to it) but not the client:
+the next request dials again. See
+[API.md § 2.1 "Custom dialer"](API.md#21-config).
 
 On the server, a response that cannot be written in full within
 `ServerConfig.Timeout` closes the connection.

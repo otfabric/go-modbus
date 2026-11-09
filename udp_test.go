@@ -57,10 +57,7 @@ func TestUDPSockWrapper(t *testing.T) {
 	// pushed into txchan over UDP to our test UDP sock wrapper object
 	go feedTestPipe(t, txchan, sock2)
 
-	usw, err = newUDPSockWrapper(sock1)
-	if err != nil {
-		t.Fatalf("newUDPSockWrapper: %v", err)
-	}
+	usw = newUDPSockWrapper(sock1)
 	// push a valid RTU response (illegal data address) to the test pipe
 	txchan <- []byte{
 		0x31, 0x82, // unit id and response code

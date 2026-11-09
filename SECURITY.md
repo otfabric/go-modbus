@@ -38,6 +38,10 @@ Modbus TCP, UDP, RTU and ASCII carry no authentication and no encryption: anyone
 - Keep private keys out of source control and give key files restrictive permissions (`chmod 600`)
 - The server passes the role from the client certificate's Modbus role extension to handlers as `ClientRole`. Authorization is the handler's job: check the role before serving or writing data
 
+### Restricting Destinations
+
+`Config.Dialer` sets the function that opens every network connection of a client (`tcp`, `tcp+tls`, `udp`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`), including the ones it dials again after a lost connection and the connections of the pool. An application that lets users reach only approved hosts should enforce the allowlist there, for example in a `net.Dialer.Control` hook, which sees the resolved IP right before connecting; checking the host name in `Config.URL` before `New` leaves a DNS-rebinding gap. The serial transports (`rtu`, `ascii`) do not dial, and `modbus-cli` does not set a dialer. For `tcp+tls` the TLS handshake and certificate checks run on the connection the dialer returns, against the host name of the URL, so a dialer that sends the connection elsewhere (a proxy, a pinned address) does not weaken them. See [API.md § 2.1](API.md#21-config).
+
 ### Running a Server
 
 - A plain `tcp://` server accepts any client that can reach it. Bind it to a specific interface rather than all interfaces where you can, and restrict access at the network level

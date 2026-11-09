@@ -221,10 +221,10 @@ func TestPDUTap_RetriedRequestReportedOnce(t *testing.T) {
 		return goodDevice(req)
 	}}
 	eng := intsession.NewEngine(intsession.Config{
-		Dial:  func() (intsession.Transport[*adu.Request, *adu.Response], error) { return tr, nil },
+		Dial:  func(context.Context) (intsession.Transport[*adu.Request, *adu.Response], error) { return tr, nil },
 		Retry: retryOnce{},
 	})
-	if err := eng.Open(); err != nil {
+	if err := eng.Open(context.Background()); err != nil {
 		t.Fatalf("engine Open: %v", err)
 	}
 	c.lock.Lock()
