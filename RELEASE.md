@@ -1,5 +1,16 @@
 # go-modbus Releases
 
+## v1.14.4
+
+**Date:** 2026-11-12
+**Previous release:** v1.14.3
+
+### Changed
+
+- Built on go-serial v0.3.0, which rejects out-of-range data bits, stop bits and RS-485 delays instead of truncating them. The values go-modbus passes to it were already in range, so serial behaviour is unchanged. The bundled `modbus-cli` stays on v1.14.2 until the next release.
+
+---
+
 ## v1.14.3
 
 **Date:** 2026-11-09
