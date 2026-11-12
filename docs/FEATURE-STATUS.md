@@ -1,6 +1,6 @@
 # Support and feature matrix
 
-What go-modbus supports, how each feature is tested, and against what. Status: v1.10.0. Function-by-function detail, server behaviour on invalid requests and per-stack results are in [INTEROPERABILITY.md](../INTEROPERABILITY.md); what is out of scope is in [LIMITATIONS.md](../LIMITATIONS.md).
+What go-modbus supports, how each feature is tested, and against what. Status: v1.14.4. Function-by-function detail, server behaviour on invalid requests and per-stack results are in [INTEROPERABILITY.md](../INTEROPERABILITY.md); what is out of scope is in [LIMITATIONS.md](../LIMITATIONS.md).
 
 None of this is a conformance claim: nothing is certified, and no Modbus Organization conformance test has been attempted.
 
@@ -8,7 +8,7 @@ None of this is a conformance claim: nothing is certified, and no Modbus Organiz
 
 | go-modbus | Go | modbus-interop | Supported |
 |---|---|---|---|
-| **v1.11.0** | 1.26 or later (CI: 1.26 and 1.27) | v0.3.3 | **yes** |
+| **v1.14.4** | 1.26 or later (CI: 1.26 and 1.27) | v0.4.1 | **yes** |
 
 Security fixes: see [SECURITY.md](../SECURITY.md).
 
