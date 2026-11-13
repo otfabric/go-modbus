@@ -33,17 +33,33 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		}
 
 		accepted := false
+		var evicted net.Conn
 		ms.lock.Lock()
 		// ms.run != run once the server has been stopped (and maybe started again).
-		if ms.started && ms.run == run && uint(len(ms.tcpClients)) < ms.conf.MaxClients {
-			ms.tcpClients = append(ms.tcpClients, sock)
-			accepted = true
-			// Registered under the lock: Shutdown clears started under the same lock before
-			// it waits, so this Add can never run concurrently with its Wait.
-			run.wg.Add(1)
+		if ms.started && ms.run == run {
+			if uint(len(ms.tcpClients)) >= ms.conf.MaxClients && ms.transportType == modbusTCPOverTLS {
+				evicted = ms.evictPendingTLSLocked(remoteHost(sock))
+			}
+			if uint(len(ms.tcpClients)) < ms.conf.MaxClients {
+				ms.tcpClients = append(ms.tcpClients, sock)
+				if ms.transportType == modbusTCPOverTLS {
+					ms.tlsPending = append(ms.tlsPending, sock)
+				}
+				accepted = true
+				// Registered under the lock: Shutdown clears started under the same lock before
+				// it waits, so this Add can never run concurrently with its Wait.
+				run.wg.Add(1)
+			}
 		}
 		ms.lock.Unlock()
 
+		if evicted != nil {
+			// Its handshake fails and its goroutine ends.
+			ms.logger.Warningf("max. number of concurrent connections reached, "+
+				"closing %v (TLS handshake not completed) for %v",
+				evicted.RemoteAddr(), sock.RemoteAddr())
+			_ = evicted.Close()
+		}
 		if accepted {
 			go ms.handleTCPClient(run, sock)
 		} else {
@@ -52,6 +68,118 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			_ = sock.Close()
 		}
 	}
+}
+
+// remoteHost returns the host part of the remote address of conn, the whole
+// address if it has none.
+func remoteHost(conn net.Conn) string {
+	addr := conn.RemoteAddr()
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}
+
+// evictPendingTLSLocked makes room for a new connection from host when every
+// MaxClients slot is taken: it removes from tcpClients one connection whose TLS
+// handshake has not completed and returns it, for the caller to close; nil if
+// there is none to remove. Connections that completed their handshake are
+// never chosen.
+//
+// The victim is the oldest pending connection from the host with the most
+// pending connections, so that peers that do not complete their handshakes
+// mostly displace one another rather than clients from other hosts. A host
+// that already has as many pending connections as any other displaces its own
+// oldest one; a host with fewer displaces the oldest of a host with more.
+// ms.lock must be held.
+func (ms *Server) evictPendingTLSLocked(host string) net.Conn {
+	i := pickPendingVictim(ms.tlsPending, host)
+	if i < 0 {
+		return nil
+	}
+	victim := ms.tlsPending[i]
+	ms.tlsPending = append(ms.tlsPending[:i], ms.tlsPending[i+1:]...)
+	ms.removeTCPClientLocked(victim)
+	return victim
+}
+
+// pickPendingVictim returns the index in pending (oldest first) of the
+// connection evictPendingTLSLocked removes for a new connection from host, -1
+// if pending is empty.
+func pickPendingVictim(pending []net.Conn, host string) int {
+	if len(pending) == 0 {
+		return -1
+	}
+	counts := make(map[string]int, len(pending))
+	for _, c := range pending {
+		counts[remoteHost(c)]++
+	}
+	most := 0
+	for _, n := range counts {
+		most = max(most, n)
+	}
+	target := host
+	if counts[host] < most {
+		// The host whose oldest pending connection is the oldest among the
+		// hosts with the most of them.
+		for _, c := range pending {
+			if h := remoteHost(c); counts[h] == most {
+				target = h
+				break
+			}
+		}
+	}
+	for i, c := range pending {
+		if remoteHost(c) == target {
+			return i
+		}
+	}
+	return -1
+}
+
+// removeTCPClientLocked removes conn from tcpClients, if it is there. ms.lock
+// must be held.
+func (ms *Server) removeTCPClientLocked(conn net.Conn) {
+	for i := range ms.tcpClients {
+		if ms.tcpClients[i] == conn {
+			ms.tcpClients[i] = ms.tcpClients[len(ms.tcpClients)-1]
+			ms.tcpClients = ms.tcpClients[:len(ms.tcpClients)-1]
+			return
+		}
+	}
+}
+
+// handshakeDoneLocked records that the TLS handshake of sock completed, and
+// replaces it with tlsSock in tcpClients. It reports false if sock was evicted
+// meanwhile (it is then no longer counted, and must not be served). ms.lock
+// must be held.
+func (ms *Server) handshakeDoneLocked(sock net.Conn, tlsSock *tls.Conn) bool {
+	if !ms.dropPendingLocked(sock) {
+		return false
+	}
+	for i := range ms.tcpClients {
+		if ms.tcpClients[i] == sock {
+			ms.tcpClients[i] = tlsSock
+			break
+		}
+	}
+	return true
+}
+
+// dropPendingLocked removes sock from tlsPending and reports whether it was
+// there. ms.lock must be held.
+func (ms *Server) dropPendingLocked(sock net.Conn) bool {
+	for i, c := range ms.tlsPending {
+		if c == sock {
+			ms.tlsPending = append(ms.tlsPending[:i], ms.tlsPending[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // handleTCPClient handles a single TCP client connection. A per-connection
@@ -77,20 +205,22 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 
 	case modbusTCPOverTLS:
 		tlsSock, clientRole, err = ms.startTLS(sock)
-		if err != nil {
+		admitted := false
+		if err == nil {
+			ms.lock.Lock()
+			admitted = ms.handshakeDoneLocked(sock, tlsSock)
+			ms.lock.Unlock()
+		}
+		switch {
+		case err != nil:
 			ms.logger.Warningf("TLS handshake with %s failed: %v",
 				sock.RemoteAddr().String(), err)
-		} else {
+		case !admitted:
+			// Closed to make room for a newer connection while the
+			// handshake was completing.
+			_ = tlsSock.Close()
+		default:
 			effectiveConn = tlsSock
-			ms.lock.Lock()
-			for i := range ms.tcpClients {
-				if ms.tcpClients[i] == sock {
-					ms.tcpClients[i] = tlsSock
-					break
-				}
-			}
-			ms.lock.Unlock()
-
 			ms.serveConn(connCtx, connCancel,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
@@ -101,13 +231,8 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 	}
 
 	ms.lock.Lock()
-	for i := range ms.tcpClients {
-		if ms.tcpClients[i] == effectiveConn {
-			ms.tcpClients[i] = ms.tcpClients[len(ms.tcpClients)-1]
-			ms.tcpClients = ms.tcpClients[:len(ms.tcpClients)-1]
-			break
-		}
-	}
+	ms.dropPendingLocked(sock)
+	ms.removeTCPClientLocked(effectiveConn)
 	ms.lock.Unlock()
 
 	_ = effectiveConn.Close()

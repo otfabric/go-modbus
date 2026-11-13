@@ -40,6 +40,13 @@ What it implements, function by function, is in
 Only `tcp+tls://` protects the connection. Authorization on the server is the
 handler's job. See [SECURITY.md](SECURITY.md).
 
+A `tcp+tls://` server counts a connection against `MaxClients` before its TLS
+handshake. When every slot is taken, a new connection replaces the oldest one
+still handshaking (from the host with the most of them), never one that
+completed its handshake. The server has no per-source connection limit: peers
+that keep opening connections without handshaking can still delay clients
+from the same host, or from many hosts a client whose handshake is slow.
+
 ## Custom dialer
 
 - `Config.Dialer` covers the network transports only; `rtu` and `ascii` open

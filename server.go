@@ -20,6 +20,9 @@ var modbusRoleOID asn1.ObjectIdentifier = asn1.ObjectIdentifier{
 	1, 3, 6, 1, 4, 1, 50316, 802, 1,
 }
 
+// defaultTLSHandshakeTimeout is the default ServerConfig.TLSHandshakeTimeout.
+const defaultTLSHandshakeTimeout = 10 * time.Second
+
 // Server configuration object.
 type ServerConfig struct {
 	URL string
@@ -28,10 +31,17 @@ type ServerConfig struct {
 	// served, is closed. It does not limit how long a handler may run. Each
 	// response is written under a deadline of its own, of the same duration.
 	// Defaults to 120 s.
-	Timeout             time.Duration
-	MaxClients          uint
-	TLSServerCert       *tls.Certificate
-	TLSClientCAs        *x509.CertPool
+	Timeout time.Duration
+	// MaxClients limits the number of concurrent client connections. Defaults
+	// to 10. On tcp+tls a connection whose TLS handshake has not completed
+	// counts too, but when every slot is taken a new connection replaces the
+	// oldest one still handshaking (see TLSHandshakeTimeout): a connection
+	// that completed its handshake is never closed to make room.
+	MaxClients    uint
+	TLSServerCert *tls.Certificate
+	TLSClientCAs  *x509.CertPool
+	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
+	// from accept. Defaults to 10 s.
 	TLSHandshakeTimeout time.Duration
 	Logger              Logger
 	Metrics             ServerMetrics
@@ -219,7 +229,10 @@ type Server struct {
 	handler RequestHandler
 	metrics ServerMetrics
 	// tcpClients holds the sockets of the connected clients.
-	tcpClients    []net.Conn
+	tcpClients []net.Conn
+	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
+	// handshake has not completed (tcp+tls only).
+	tlsPending    []net.Conn
 	transportType transportType
 
 	// run is what the last Start created. The fields below it are copies of its
@@ -296,7 +309,7 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 			ms.conf.MaxClients = 10
 		}
 		if ms.conf.TLSHandshakeTimeout == 0 {
-			ms.conf.TLSHandshakeTimeout = 30 * time.Second
+			ms.conf.TLSHandshakeTimeout = defaultTLSHandshakeTimeout
 		}
 		if ms.conf.TLSServerCert == nil {
 			ms.logger.Errorf("missing server certificate")

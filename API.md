@@ -1099,7 +1099,11 @@ type ServerConfig struct {
     // connection. Default: 120 s.
     Timeout time.Duration
 
-    // MaxClients limits concurrent client connections. Default: 10.
+    // MaxClients limits concurrent client connections. Default: 10. On
+    // tcp+tls a connection whose TLS handshake has not completed counts too,
+    // but when every slot is taken a new connection replaces the oldest one
+    // still handshaking (preferring a host with more of them); a connection
+    // that completed its handshake is never closed to make room.
     MaxClients uint
 
     // TLSServerCert is the server certificate and private key (tcp+tls only). Required.
@@ -1109,7 +1113,8 @@ type ServerConfig struct {
     // (tcp+tls only). Required.
     TLSClientCAs *x509.CertPool
 
-    // TLSHandshakeTimeout is the maximum time for the TLS handshake. Default: 30 s.
+    // TLSHandshakeTimeout is the maximum time for the TLS handshake, from
+    // accept. Default: 10 s.
     TLSHandshakeTimeout time.Duration
 
     // Logger is the sink for log output. If nil (default), logging is disabled (no-op logger).
