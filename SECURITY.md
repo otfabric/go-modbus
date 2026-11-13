@@ -46,6 +46,7 @@ Modbus TCP, UDP, RTU and ASCII carry no authentication and no encryption: anyone
 
 - A plain `tcp://` server accepts any client that can reach it. Bind it to a specific interface rather than all interfaces where you can, and restrict access at the network level
 - Set `MaxClients` and `Timeout` so that idle or excess connections cannot exhaust the server. A client that sends requests but does not read the answers is disconnected once a response cannot be written within `Timeout`
+- On a `tcp+tls://` server a connection counts against `MaxClients` from accept, before its TLS handshake, which must complete within `TLSHandshakeTimeout` (default 10 s). When every slot is taken, a new connection replaces the oldest one that has not completed its handshake, taken from the host with the most such connections; connections that completed their handshake are never closed to make room. Peers that keep opening connections without handshaking can still delay clients from the same host, and many hosts can still crowd out a client whose handshake is slow: limit connections per source at the network edge (firewall, rate limiter) where untrusted hosts can reach the listener
 - Handlers receive data from the network: validate addresses, quantities and values before acting on them, especially for writes that drive physical equipment. A panic in a handler is recovered and answered with a Server Device Failure exception, but it is not a substitute for validation
 
 ### Writing to Devices

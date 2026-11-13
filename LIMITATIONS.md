@@ -40,6 +40,13 @@ What it implements, function by function, is in
 Only `tcp+tls://` protects the connection. Authorization on the server is the
 handler's job. See [SECURITY.md](SECURITY.md).
 
+A `tcp+tls://` server counts a connection against `MaxClients` before its TLS
+handshake. When every slot is taken, a new connection replaces the oldest one
+still handshaking (from the host with the most of them), never one that
+completed its handshake. The server has no per-source connection limit: peers
+that keep opening connections without handshaking can still delay clients
+from the same host, or from many hosts a client whose handshake is slow.
+
 ## Custom dialer
 
 - `Config.Dialer` covers the network transports only; `rtu` and `ascii` open
@@ -62,10 +69,22 @@ handler's job. See [SECURITY.md](SECURITY.md).
   servers answer 11 ([INTEROPERABILITY.md](INTEROPERABILITY.md)).
 - The server does not filter unit identifiers: that is the handler's job.
 - The serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`,
-  `asciiovertcp`) carry no transaction ID. After a failed exchange the client
-  discards what arrives for a short window (3 × t3.5 for RTU, 20 ms for ASCII)
-  before the next request; an answer that arrives later than that can still be
-  read as the answer to the next request.
+  `asciiovertcp`) carry no transaction ID. The tunnelled ones replace their
+  socket after a timeout, a cancelled request or a response that does not match
+  its request, so an earlier answer cannot reach a later request. On a serial
+  line (`rtu`, `ascii`) the client instead discards what the line delivers
+  before the next request (at least 3 × t3.5 for RTU or 20 ms for ASCII, and
+  until the line is quiet, bounded by `Timeout`). An answer that arrives later
+  than that can still be read as the answer to the next request when it has
+  the same unit, function code and length: nothing else tells them apart. The
+  requests that follow a discard first check that the line is quiet (and
+  discard again if it is not), and a response that does not match its request
+  is reported as an error and discards the line too, so one late answer does
+  not shift the answers of later requests; the check may miss an answer that
+  is still on its way when the next request starts. On a serial line prefer `MaskWriteRegister` (FC22), which the
+  device applies atomically, over a client-side read-modify-write
+  (`UpdateRegisterMask`, `WriteRegisterBit` and similar), which writes back a
+  value computed from what was read.
 - Modbus/UDP is not standardised: `udp` and `rtuoverudp` assume one ADU per
   datagram. Bytes left in a datagram are dropped when the next request is
   written, and a datagram longer than 260 bytes is cut off by the socket.

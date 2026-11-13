@@ -3,6 +3,7 @@
 package modbus
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -58,9 +59,11 @@ type Config struct {
 	StopBits uint
 	// Timeout sets the request timeout value. A request ends at Timeout or at
 	// its context's deadline, whichever comes first, so a context deadline can
-	// shorten a request but not extend it. On tcp and tcp+tls the connection a
-	// request timed out on is closed and the next request dials a new one: the
-	// late response must not be taken for the answer to a later request.
+	// shorten a request but not extend it. On tcp, tcp+tls, rtuovertcp,
+	// asciiovertcp and rtuoverudp the connection a request timed out on is
+	// closed and the next request dials a new one: the late response must not
+	// be taken for the answer to a later request. On rtu and ascii the next
+	// request first discards what the line delivers until it is quiet.
 	Timeout time.Duration
 	// DialTimeout sets the maximum time for establishing a connection (TCP dial,
 	// TLS handshake, UDP dial). Zero uses a sensible default (5s for TCP/UDP,
@@ -470,6 +473,8 @@ func (mc *Client) Open() (err error) {
 		Attempts: obs,
 		Broken:   mc.brokenBy(),
 		Suspect:  mc.suspectResponse(),
+
+		ResyncSuspect: mc.resyncSuspect(),
 	})
 
 	if err = eng.Open(context.Background()); err != nil {
@@ -494,14 +499,20 @@ func (mc *Client) Open() (err error) {
 // and a later request could be answered with it. The connection is closed and
 // the next request dials a new one.
 //
-// The serial-framed transports (rtu, ascii, and their TCP/UDP tunnels) keep their
-// link across timeouts and bad frames (a unit that does not answer is routine on
-// a bus, and these transports resynchronize on the next request), as does
-// Modbus/TCP over UDP, where datagrams keep requests apart. They are replaced
-// only when the link itself is down.
+// The serial framings tunnelled over TCP or UDP (rtuovertcp, asciiovertcp,
+// rtuoverudp) carry no transaction ID, so an answer that arrives after its
+// request timed out or was abandoned could be read as the answer to a later
+// request. Every error, timeouts and cancellations included, therefore closes
+// the socket as well: a new connection cannot deliver an old answer.
+//
+// The serial-line transports (rtu, ascii) keep their port across timeouts and
+// bad frames (a unit that does not answer is routine on a bus): the transport
+// discards what the line delivers until it is quiet before the next request.
+// Modbus/TCP over UDP keeps its socket too, as datagrams keep requests apart.
+// They are replaced only when the link itself is down.
 func (mc *Client) brokenBy() func(error) bool {
 	switch mc.transportType {
-	case modbusTCP, modbusTCPOverTLS:
+	case modbusTCP, modbusTCPOverTLS, modbusRTUOverTCP, modbusRTUOverUDP, modbusASCIIOverTCP:
 		return nil
 	default:
 		return linkDown
@@ -519,14 +530,51 @@ func linkDown(err error) bool {
 	return errors.As(err, &netErr) && !netErr.Timeout()
 }
 
-// suspectResponse returns the check applied to every response received on a
-// Modbus/TCP stream (see session.Config.Suspect), nil for other transports.
+// suspectResponse returns the check applied to every response received without
+// error (see session.Config.Suspect). On a Modbus/TCP stream a response that
+// fails it closes the connection. The serial framings have no transaction ID, so
+// their responses are also checked against the echo the request calls for: on a
+// tunnel (rtuovertcp, asciiovertcp, rtuoverudp) a mismatch closes the socket,
+// on a serial line (rtu, ascii) it makes the next request first discard what
+// the line delivers (see session.Config.ResyncSuspect). Modbus/TCP over UDP is
+// not checked.
 func (mc *Client) suspectResponse() func(*adu.Request, *adu.Response) bool {
 	switch mc.transportType {
 	case modbusTCP, modbusTCPOverTLS:
 		return mbapResponseOutOfSync
+	case modbusRTU, modbusASCII, modbusRTUOverTCP, modbusRTUOverUDP, modbusASCIIOverTCP:
+		return serialResponseOutOfSync
 	default:
 		return nil
+	}
+}
+
+// resyncSuspect reports whether a suspect response keeps the link and realigns
+// it instead of closing it: on a serial line, which is not re-opened lightly.
+func (mc *Client) resyncSuspect() bool {
+	return mc.transportType == modbusRTU || mc.transportType == modbusASCII
+}
+
+// serialResponseOutOfSync is mbapResponseOutOfSync for the serial framings,
+// which also check the echo of the write requests whose response repeats the
+// request (MODBUS Application Protocol V1.1b3, 6.5, 6.6, 6.11, 6.12, 6.16): a
+// response to another request of the same function is otherwise only told
+// apart by its content.
+func serialResponseOutOfSync(req *adu.Request, res *adu.Response) bool {
+	if mbapResponseOutOfSync(req, res) {
+		return true
+	}
+	if res.FunctionCode != req.FunctionCode {
+		// An exception response: nothing to compare.
+		return false
+	}
+	switch FunctionCode(req.FunctionCode) {
+	case FCWriteSingleCoil, FCWriteSingleRegister, FCMaskWriteRegister:
+		return !bytes.Equal(res.Payload, req.Payload)
+	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
+		return len(req.Payload) < 4 || !bytes.Equal(res.Payload, req.Payload[:4])
+	default:
+		return false
 	}
 }
 

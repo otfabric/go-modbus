@@ -228,11 +228,11 @@ func TestStressInvalidMBAPHeader(t *testing.T) {
 }
 
 // TestStressSlowLorisTLSHandshake connects to a TLS server without ever starting
-// the handshake. Asserts: the server gives up after TLSHandshakeTimeout, the
-// stalled peers never hold more than MaxClients slots, and a real client gets in
-// once they are gone.
+// the handshake. Asserts: the stalled peers never hold more than MaxClients
+// slots, a real client still gets in by replacing the oldest of them, and the
+// others are given up after TLSHandshakeTimeout.
 func TestStressSlowLorisTLSHandshake(t *testing.T) {
-	const handshakeTimeout = 250 * time.Millisecond
+	const handshakeTimeout = 750 * time.Millisecond
 	const maxClients = 2
 	baseline := chaosGoroutines()
 	srv := chaosStartServer(t, "tcp+tls", chaosNewDevice(1), func(c *ServerConfig) {
@@ -241,59 +241,83 @@ func TestStressSlowLorisTLSHandshake(t *testing.T) {
 	})
 	defer srv.stop()
 
-	var wg sync.WaitGroup
+	type closeResult struct {
+		elapsed time.Duration
+		closed  bool
+	}
+	results := make([]chan closeResult, maxClients)
 	for i := range maxClients {
 		conn, err := net.DialTimeout("tcp", srv.addr, 2*time.Second)
 		if err != nil {
 			t.Fatalf("dial: %v", err)
 		}
-		wg.Add(1)
+		results[i] = make(chan closeResult, 1)
 		go func(i int) {
-			defer wg.Done()
 			defer func() { _ = conn.Close() }()
 			if i == 0 {
 				// Half a TLS record header, then silence.
 				_, _ = conn.Write([]byte{0x16, 0x03, 0x01})
 			}
 			elapsed, _, closed := stressAwaitClose(conn, handshakeTimeout+2*time.Second)
-			switch {
-			case !closed:
-				t.Errorf("peer %d: still connected %v after connecting (TLSHandshakeTimeout is %v)", i, elapsed, handshakeTimeout)
-			case elapsed < handshakeTimeout/2:
-				t.Errorf("peer %d: closed after only %v (TLSHandshakeTimeout is %v)", i, elapsed, handshakeTimeout)
-			}
+			results[i] <- closeResult{elapsed, closed}
 		}(i)
-	}
-	if !chaosEventually(2*time.Second, func() bool { return srv.conns() == maxClients }) {
-		t.Fatalf("server holds %d connections, want %d", srv.conns(), maxClients)
+		// Keep the accept order: peer 0 is the oldest.
+		if !chaosEventually(2*time.Second, func() bool { return srv.conns() == i+1 }) {
+			t.Fatalf("server holds %d connections, want %d", srv.conns(), i+1)
+		}
 	}
 
-	// Every slot is held by a peer that is not handshaking: a real client is turned away.
+	// Every slot is held by a peer that is not handshaking: a real client still
+	// gets in, in place of the oldest of them.
 	conf := chaosClientConfig(t, "tcp+tls", srv.port(), chaosModeSingle, 5*time.Second, nil)
-	client, err := New(conf)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	client := chaosOpenClient(t, conf)
 	defer func() { _ = client.Close() }()
-	if err := client.Open(); err == nil {
-		t.Errorf("Open succeeded although every MaxClients slot is taken")
-		_ = client.Close()
-	} else if class := chaosClassify(err); class != chaosClassTransport {
-		t.Errorf("Open beyond MaxClients: error class %q (%v), want a transport error", class, err)
+	chaosAssertUsable(t, client, "TLS client while stalled peers hold every slot")
+	if n := srv.conns(); n > maxClients {
+		t.Errorf("server holds %d connections, more than MaxClients %d", n, maxClients)
 	}
 
-	chaosWait(t, &wg, 30*time.Second, "stalled peers")
-	if !chaosEventually(2*time.Second, func() bool { return srv.conns() == 0 }) {
-		t.Errorf("server holds %d connections after the stalled peers timed out", srv.conns())
+	for i, want := range []string{"replaced", "timed out"} {
+		r := <-results[i]
+		switch {
+		case !r.closed:
+			t.Errorf("peer %d: still connected %v after connecting (TLSHandshakeTimeout is %v)", i, r.elapsed, handshakeTimeout)
+		case want == "replaced" && r.elapsed >= handshakeTimeout:
+			t.Errorf("peer %d: closed after %v, want it replaced by the real client before TLSHandshakeTimeout %v", i, r.elapsed, handshakeTimeout)
+		case want == "timed out" && r.elapsed < handshakeTimeout/2:
+			t.Errorf("peer %d: closed after only %v (TLSHandshakeTimeout is %v)", i, r.elapsed, handshakeTimeout)
+		}
 	}
-	if err := client.Open(); err != nil {
-		t.Fatalf("Open after the stalled peers left: %v", err)
-	}
-	chaosAssertUsable(t, client, "TLS client admitted after the stalled peers left")
+	chaosAssertUsable(t, client, "TLS client after the stalled peers left")
 	_ = client.Close()
 	if !chaosEventually(2*time.Second, func() bool { return srv.conns() == 0 }) {
 		t.Errorf("server still holds %d connection(s)", srv.conns())
 	}
 	srv.stop()
 	chaosLeakCheck(t, baseline)
+}
+
+// TestStressTLSHandshakenNotReplaced fills every slot with clients that completed
+// their TLS handshake. Asserts: a new connection is turned away rather than
+// replacing one of them, and they stay usable.
+func TestStressTLSHandshakenNotReplaced(t *testing.T) {
+	srv := chaosStartServer(t, "tcp+tls", chaosNewDevice(1), func(c *ServerConfig) {
+		c.TLSHandshakeTimeout = 5 * time.Second
+		c.MaxClients = 1
+	})
+	defer srv.stop()
+	conf := chaosClientConfig(t, "tcp+tls", srv.port(), chaosModeSingle, 5*time.Second, nil)
+	client := chaosOpenClient(t, conf)
+	defer func() { _ = client.Close() }()
+	chaosAssertUsable(t, client, "TLS client holding the only slot")
+
+	conn, err := net.DialTimeout("tcp", srv.addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if elapsed, _, closed := stressAwaitClose(conn, 2*time.Second); !closed || elapsed > time.Second {
+		t.Errorf("connection beyond MaxClients: closed=%v after %v, want it closed at once", closed, elapsed)
+	}
+	chaosAssertUsable(t, client, "TLS client after a connection beyond MaxClients")
 }

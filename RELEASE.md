@@ -1,5 +1,19 @@
 # go-modbus Releases
 
+## v1.15.0
+
+**Date:** 2026-11-13
+**Previous release:** v1.14.5
+
+### Changed
+
+- Serial-framed carriers resynchronise after a failed or mismatched exchange. `rtuovertcp`, `asciiovertcp` and `rtuoverudp` clients close and redial their socket after any request error (timeout, cancelled or expired context, CRC or framing error) and after a response that does not match its request (unit ID, function code, length or write echo). Expect more reconnects behind gateways where units often time out.
+- `rtu` and `ascii` clients discard the line after a mismatched response, and the discard after a failure now runs until the line is quiet (bounded by `Timeout`). The request after a failure first checks that the line is quiet. Without a transaction ID, one late answer can still be read once; see LIMITATIONS.md, which also recommends `MaskWriteRegister` (FC22) over client-side read-modify-write on serial links.
+- RTU: a request abandoned after it was written (context cancelled or expired during the post-transmit gap, or a write error) no longer leaves its answer for the next request.
+- `tcp+tls` server: when `MaxClients` is reached, a new connection replaces the oldest connection that has not completed its TLS handshake (from the host with the most of them) instead of being refused. Connections that completed the handshake are never replaced. The default `TLSHandshakeTimeout` is 10 s (was 30 s). SECURITY.md recommends a per-source connection limit at the network edge.
+
+---
+
 ## v1.14.5
 
 **Date:** 2026-11-12

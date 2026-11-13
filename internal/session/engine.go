@@ -29,6 +29,14 @@ type Interrupter interface {
 	Interrupt()
 }
 
+// Resyncer is implemented by transports that can realign a link they keep: Resync
+// makes the next request first discard what is pending on the link. The engine
+// calls it, when Config.ResyncSuspect is set, for a response that Config.Suspect
+// flags, instead of closing the connection.
+type Resyncer interface {
+	Resync()
+}
+
 // Config configures a session Engine.
 type Config struct {
 	// Dial opens a new connection. ctx bounds the dial: it is the request's
@@ -56,6 +64,12 @@ type Config struct {
 	// but the connection it came from is not used again: the response shows that
 	// requests and responses are no longer aligned on that connection.
 	Suspect func(req *adu.Request, res *adu.Response) bool
+
+	// ResyncSuspect keeps the single connection after a response that Suspect
+	// flags, when its transport implements Resyncer: Resync is called instead,
+	// so that the next request first discards what is pending on the link. It
+	// is meant for links that are not re-opened lightly (a serial port).
+	ResyncSuspect bool
 }
 
 // Engine owns the execute/retry/pool layer above transports.
@@ -328,7 +342,11 @@ func (e *Engine) executeOnce(ctx context.Context, req *adu.Request, pool *Pool[*
 			e.dropTransport(tr)
 		}
 	case e.suspect(req, res):
-		e.dropTransport(tr)
+		if r, ok := tr.(Resyncer); ok && e.cfg.ResyncSuspect {
+			r.Resync()
+		} else {
+			e.dropTransport(tr)
+		}
 	}
 	return res, mapTimeout(err)
 }

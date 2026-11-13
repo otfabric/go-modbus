@@ -149,9 +149,12 @@ On `tcp://` and `tcp+tls://` a timeout, a cancelled request, a framing or
 protocol error and a transport error all end the connection the request ran on:
 it is closed, and the next request dials a new one (a pooled connection is
 discarded). A Modbus exception does not. The client itself stays open through
-all of them; only `Close` makes it return `ErrClientNotOpen`. The serial-framed
-transports and `udp` keep their link unless it is down, and discard a late
-answer to a failed request before the next one. An RTU response of variable
+all of them; only `Close` makes it return `ErrClientNotOpen`. The tunnelled
+serial framings (`rtuovertcp`, `asciiovertcp`, `rtuoverudp`) do the same, and
+also replace their socket after a response that does not match its request.
+The serial lines (`rtu`, `ascii`) and `udp` keep their link unless it is down;
+the serial lines discard a late answer to a failed request, and what follows a
+response that does not match its request, before the next one. An RTU response of variable
 length (FC08, FC43) that keeps trickling in ends with `ErrRequestTimedOut` at
 the request deadline. See [API.md § 2.2](API.md#22-lifecycle).
 

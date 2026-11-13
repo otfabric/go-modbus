@@ -508,3 +508,65 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// resyncTransport counts the Resync calls of a transport that answers with res.
+type resyncTransport struct {
+	mockTransport
+	resyncs atomic.Int32
+}
+
+func (r *resyncTransport) Resync() { r.resyncs.Add(1) }
+
+// With ResyncSuspect, a suspect response keeps the connection of a transport
+// that can resync and calls Resync; without it, or without a Resyncer, the
+// connection is replaced.
+func TestEngine_ResyncSuspect(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		resync     bool
+		resyncer   bool
+		wantDials  int32
+		wantResync int32
+	}{
+		{"resync", true, true, 1, 1},
+		{"resync without Resyncer", true, false, 2, 0},
+		{"drop", false, true, 2, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var dials atomic.Int32
+			var last *resyncTransport
+			answer := func(_ context.Context, req *adu.Request) (*adu.Response, error) {
+				return &adu.Response{UnitID: req.UnitID}, nil
+			}
+			e := NewEngine(Config{
+				Suspect:       func(_ *adu.Request, res *adu.Response) bool { return res.UnitID == 0xEE },
+				ResyncSuspect: tc.resync,
+				Dial: func(context.Context) (aduTransport, error) {
+					dials.Add(1)
+					if !tc.resyncer {
+						return &mockTransport{execFn: answer}, nil
+					}
+					last = &resyncTransport{mockTransport: mockTransport{execFn: answer}}
+					return last, nil
+				},
+			})
+			if err := e.Open(context.Background()); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = e.Close() }()
+			ctx := context.Background()
+			if res, err := e.Execute(ctx, &adu.Request{UnitID: 0xEE}); err != nil || res.UnitID != 0xEE {
+				t.Fatalf("suspect response: res=%+v err=%v", res, err)
+			}
+			if _, err := e.Execute(ctx, &adu.Request{UnitID: 1}); err != nil {
+				t.Fatalf("next request: %v", err)
+			}
+			if got := dials.Load(); got != tc.wantDials {
+				t.Errorf("dials %d, want %d", got, tc.wantDials)
+			}
+			if tc.resyncer && last.resyncs.Load() != tc.wantResync {
+				t.Errorf("Resync calls %d, want %d", last.resyncs.Load(), tc.wantResync)
+			}
+		})
+	}
+}

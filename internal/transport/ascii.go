@@ -29,13 +29,19 @@ type ASCII struct {
 	// rxbuf holds bytes received after the end of the last frame returned by
 	// readFrame (server use: a client may pipeline requests).
 	rxbuf []byte
-	// drain is set when an exchange failed: its answer may still arrive, and
-	// must not be read as the answer to the next request.
+	// drain is set from the moment a request is written until its answer has
+	// been read: if the exchange fails or is abandoned, the answer may still
+	// arrive, and must not be read as the answer to the next request. Resync
+	// sets it too.
 	drain bool
+	// verify is set after a drain: the requests that follow first check that
+	// the link is quiet, until one finds it so (see RTU.verify).
+	verify bool
 }
 
-// asciiDrainWindow is how long the link is read and discarded before a
-// request that follows a failed exchange.
+// asciiDrainWindow is how long the link is read and discarded, at least,
+// before a request that follows a failed exchange; the drain goes on until the
+// link has been quiet that long, bounded by the request timeout.
 const asciiDrainWindow = 20 * time.Millisecond
 
 // NewASCII returns a new ASCII transport.
@@ -58,11 +64,22 @@ func (at *ASCII) Interrupt() {
 	_ = at.Link.SetDeadline(time.Unix(1, 0))
 }
 
+// Resync makes the next request first discard what the link delivers until it
+// is quiet, as after a failed exchange. The session layer calls it when a
+// response did not match its request: the link may hold another answer.
+func (at *ASCII) Resync() {
+	at.drain = true
+}
+
 // ExecuteRequest sends req and returns the response.
 func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
-	if at.drain {
-		discardLink(at.Link, asciiDrainWindow)
+	switch {
+	case at.drain:
+		drainLink(at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout)
 		at.drain = false
+		at.verify = true
+	case at.verify:
+		at.verify = drainLink(at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout) > 0
 	}
 	deadline := requestDeadline(ctx, at.Timeout)
 	if err := at.Link.SetDeadline(deadline); err != nil {
@@ -77,15 +94,17 @@ func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Res
 
 	frame := adu.AssembleASCIIFrame(req.UnitID, req.FunctionCode, req.Payload)
 	at.Logger.Debugf("TX: %s", bytes.TrimRight(frame, "\r\n"))
+	// From here on the request may reach the device, and its answer the link.
+	at.drain = true
 	if err := writeFull(at.Link, frame); err != nil {
 		return nil, err
 	}
 
 	unitID, fc, payload, err := at.readFrame(ctx, deadline)
 	if err != nil {
-		at.drain = true
 		return nil, err
 	}
+	at.drain = false
 	at.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", unitID, fc, payload)
 	return &adu.Response{UnitID: unitID, FunctionCode: fc, Payload: payload}, nil
 }
