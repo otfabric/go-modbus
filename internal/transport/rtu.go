@@ -42,6 +42,42 @@ func discardLink(link RTULink, drainTimeout time.Duration) {
 	_, _ = io.ReadFull(link, buf)
 }
 
+// drainLink discards what the link delivers until it has been quiet for quiet,
+// reading for at least minWindow and at most maxWindow. It is used before the
+// request that follows a failed or suspect exchange: an answer that is still
+// being received is discarded as a whole, rather than cut after a fixed window
+// and its tail taken for the start of the next answer (MODBUS over Serial Line
+// V1.02, 2.5.1.1: frames are delimited by a silent interval of t3.5).
+//
+// It returns the number of bytes discarded.
+func drainLink(link RTULink, minWindow, quiet, maxWindow time.Duration) int {
+	buf := make([]byte, 1024)
+	total := 0
+	start := time.Now()
+	maxWindow = max(maxWindow, minWindow)
+	end := minWindow // since start
+	for {
+		elapsed := time.Since(start)
+		if elapsed >= end || elapsed >= maxWindow {
+			return total
+		}
+		if err := link.SetDeadline(start.Add(min(end, maxWindow))); err != nil {
+			return total
+		}
+		n, err := link.Read(buf)
+		if n > 0 {
+			total += n
+			end = max(end, time.Since(start)+quiet)
+			continue
+		}
+		if err != nil {
+			// A timeout (the window is over) or a broken link: stop either way.
+			return total
+		}
+		// Serial links return (0, nil) on their short poll timeout.
+	}
+}
+
 // RTU implements Transport over an RTU (serial) link.
 // It is NOT safe for concurrent use from multiple goroutines.
 // Concurrency safety is provided by the session layer: Engine.execMu
@@ -53,9 +89,16 @@ type RTU struct {
 	lastActivity time.Time
 	t35          time.Duration
 	t1           time.Duration
-	// drain is set when an exchange failed: its answer may still arrive, and
-	// must not be read as the answer to the next request.
+	// drain is set from the moment a request is written until its answer has
+	// been read: if the exchange fails or is abandoned, the answer may still
+	// arrive, and must not be read as the answer to the next request. Resync
+	// sets it too.
 	drain bool
+	// verify is set after a drain: the requests that follow first check that
+	// the line is quiet, until one finds it so. An answer that arrived after
+	// the drain may have been read as the answer to the next request, and that
+	// request's own answer would then be waiting on the line.
+	verify bool
 }
 
 // NewRTU returns a new RTU transport.
@@ -89,6 +132,20 @@ func (rt *RTU) Interrupt() {
 	_ = rt.Link.SetDeadline(time.Unix(1, 0))
 }
 
+// Resync makes the next request first discard what the link delivers until it
+// is quiet, as after a failed exchange. The session layer calls it when a
+// response did not match its request: the link may hold another answer.
+func (rt *RTU) Resync() {
+	rt.drain = true
+}
+
+// drainBeforeRequest discards what is left of an earlier exchange: at least
+// 3 x t3.5, and until the line has been silent for t3.5, bounded by the
+// request timeout. It returns the number of bytes discarded.
+func (rt *RTU) drainBeforeRequest() int {
+	return drainLink(rt.Link, rt.t35*3, rt.t35, rt.Timeout)
+}
+
 // sleepCtx sleeps for d, returning early if ctx is cancelled.
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
@@ -106,9 +163,15 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // ExecuteRequest sends req and returns the response.
 func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
-	if rt.drain {
-		discardLink(rt.Link, rt.t35*3)
+	switch {
+	case rt.drain:
+		rt.drainBeforeRequest()
 		rt.drain = false
+		rt.verify = true
+	case rt.verify:
+		// Bytes on a line that should be quiet: the last answer read may have
+		// been another request's. Keep checking until the line is found quiet.
+		rt.verify = rt.drainBeforeRequest() > 0
 	}
 	deadline := requestDeadline(ctx, rt.Timeout)
 	if err := rt.Link.SetDeadline(deadline); err != nil {
@@ -123,6 +186,9 @@ func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 	ts := time.Now()
 	frame := adu.AssembleRTUFrame(req.UnitID, req.FunctionCode, req.Payload)
 	rt.Logger.Debugf("TX: % X", frame)
+	// From here on the request may reach the device, and its answer the link:
+	// every return before a complete answer has been read leaves drain set.
+	rt.drain = true
 	if err := writeFull(rt.Link, frame); err != nil {
 		return nil, err
 	}
@@ -136,13 +202,14 @@ func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 	res, err := rt.readRTUFrame(ctx, deadline)
 	switch err {
 	case nil:
+		rt.drain = false
 		rt.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", res.UnitID, res.FunctionCode, res.Payload)
 	case protocol.ErrBadCRC, protocol.ErrProtocolError, protocol.ErrShortFrame:
 		// Wait out the rest of the frame, but not past the request deadline.
-		_ = sleepCtx(ctx, min(time.Duration(adu.MaxRTUFrameLength)*rt.t1, time.Until(deadline)))
-		discardLink(rt.Link, rt.t35*3)
-	default:
-		rt.drain = true
+		if sleepCtx(ctx, min(time.Duration(adu.MaxRTUFrameLength)*rt.t1, time.Until(deadline))) == nil {
+			rt.drainBeforeRequest()
+			rt.drain = false
+		}
 	}
 	if err != protocol.ErrRequestTimedOut {
 		rt.lastActivity = time.Now()

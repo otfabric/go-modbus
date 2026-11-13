@@ -286,16 +286,25 @@ short read, a framing or protocol error (bad MBAP header, wrong unit ID or
 function code, a length that contradicts the response), or a transport error.
 The connection is closed and the next request runs on a new one. Reusing it
 could deliver the rest of an old response as the answer to a new request. A
-well-formed Modbus exception response does not affect the connection. The
-serial-framed transports (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`,
-`asciiovertcp`) and `udp` keep their link across timeouts and bad frames — a
-unit that does not answer is routine on a bus — and replace it only when the
-link itself is down (EOF, reset, closed). After a failed exchange the serial
-framings discard what the link delivers for a short window (3 × t3.5 for RTU,
-20 ms for ASCII) before the next request, so a late answer is not taken as
-the next request's; `udp` and `rtuoverudp` drop the bytes left in a datagram
-when the next request is written. An answer later than that window can still
-be read as the next one: these framings carry no transaction ID. A pooled
+well-formed Modbus exception response does not affect the connection.
+
+The tunnelled serial framings (`rtuovertcp`, `asciiovertcp`, `rtuoverudp`)
+carry no transaction ID, so they replace their socket after every error as
+well, timeouts and cancelled or expired contexts included, and after a
+response that does not match its request (another unit or function code, a
+length that contradicts the response, or a write whose echo differs from the
+request): a new socket cannot deliver an answer meant for an earlier request.
+The serial lines (`rtu`, `ascii`) keep their port across timeouts and bad
+frames — a unit that does not answer is routine on a bus — and replace it only
+when the port itself fails. Instead, after a failed or abandoned exchange, or
+a response that does not match its request, the next request first discards
+what the line delivers: for at least 3 × t3.5 (RTU) or 20 ms (ASCII), and
+until the line has been quiet that long, bounded by `Timeout`; the requests
+after that first check that the line is quiet, until one finds it so. `udp` keeps its
+socket (datagrams keep requests apart); `udp` and `rtuoverudp` drop the bytes
+left in a datagram when the next request is written. On a serial line an
+answer later than the discard window can still be read as the next one, see
+[LIMITATIONS.md](LIMITATIONS.md). A pooled
 connection (`MaxConns > 1`) is discarded after any error.
 
 Without a `RetryPolicy` the request that hit the error still fails; it is the
