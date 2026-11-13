@@ -573,8 +573,9 @@ func serialResponseOutOfSync(req *adu.Request, res *adu.Response) bool {
 		return !bytes.Equal(res.Payload, req.Payload)
 	case FCWriteMultipleCoils, FCWriteMultipleRegisters:
 		return len(req.Payload) < 4 || !bytes.Equal(res.Payload, req.Payload[:4])
+	default:
+		return false
 	}
-	return false
 }
 
 // mbapResponseOutOfSync reports whether res, received as the answer to req on a

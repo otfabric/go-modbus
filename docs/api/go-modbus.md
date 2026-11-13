@@ -829,9 +829,11 @@ type Config struct {
 	StopBits uint
 	// Timeout sets the request timeout value. A request ends at Timeout or at
 	// its context's deadline, whichever comes first, so a context deadline can
-	// shorten a request but not extend it. On tcp and tcp+tls the connection a
-	// request timed out on is closed and the next request dials a new one: the
-	// late response must not be taken for the answer to a later request.
+	// shorten a request but not extend it. On tcp, tcp+tls, rtuovertcp,
+	// asciiovertcp and rtuoverudp the connection a request timed out on is
+	// closed and the next request dials a new one: the late response must not
+	// be taken for the answer to a later request. On rtu and ascii the next
+	// request first discards what the line delivers until it is quiet.
 	Timeout time.Duration
 	// DialTimeout sets the maximum time for establishing a connection (TCP dial,
 	// TLS handshake, UDP dial). Zero uses a sensible default (5s for TCP/UDP,
@@ -1815,6 +1817,9 @@ type Server struct {
 
 	// tcpClients holds the sockets of the connected clients.
 
+	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
+	// handshake has not completed (tcp+tls only).
+
 	// run is what the last Start created. The fields below it are copies of its
 	// members, written by Start under lock and kept after the server has stopped.
 
@@ -1866,10 +1871,17 @@ type ServerConfig struct {
 	// served, is closed. It does not limit how long a handler may run. Each
 	// response is written under a deadline of its own, of the same duration.
 	// Defaults to 120 s.
-	Timeout             time.Duration
-	MaxClients          uint
-	TLSServerCert       *tls.Certificate
-	TLSClientCAs        *x509.CertPool
+	Timeout time.Duration
+	// MaxClients limits the number of concurrent client connections. Defaults
+	// to 10. On tcp+tls a connection whose TLS handshake has not completed
+	// counts too, but when every slot is taken a new connection replaces the
+	// oldest one still handshaking (see TLSHandshakeTimeout): a connection
+	// that completed its handshake is never closed to make room.
+	MaxClients    uint
+	TLSServerCert *tls.Certificate
+	TLSClientCAs  *x509.CertPool
+	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
+	// from accept. Defaults to 10 s.
 	TLSHandshakeTimeout time.Duration
 	Logger              Logger
 	Metrics             ServerMetrics
