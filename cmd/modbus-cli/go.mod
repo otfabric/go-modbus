@@ -10,5 +10,5 @@ require (
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/otfabric/go-serial v0.3.0 // indirect
+	github.com/otfabric/go-serial v0.4.0 // indirect
 )
