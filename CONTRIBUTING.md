@@ -117,7 +117,7 @@ When you change connection handling, retries, timeouts, cancellation or the serv
 The `interop` package (build tag `interop`, so it is not part of `go test ./...`) runs the client against five reference servers and five reference clients against a go-modbus server. The reference stacks are container images published by [otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) and are consumed as images only: nothing of that repository is cloned or built here, and the scenarios, expected values and assertions are this repository's.
 
 ```bash
-# All five stacks (needs Docker; the Interop workflow runs this on every push)
+# All five stacks (needs Docker; the Interop workflow runs this on every pull request)
 make interop
 
 # One stack, or another build of an image
