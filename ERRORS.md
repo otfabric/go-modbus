@@ -25,7 +25,8 @@ Modbus exception from the unit.
 | Function code not in `Config.AllowedFunctionCodes` | error wrapping `ErrFunctionCodeNotAllowed` (`errors.Is`); nothing is sent, the client stays usable |
 | Configured timeout, or context deadline expiring in flight | `ErrRequestTimedOut` |
 | Context already cancelled or expired when the call starts | `ctx.Err()` (`context.Canceled` / `context.DeadlineExceeded`); nothing is sent |
-| Context cancelled while the request is in flight | `context.Canceled` (`errors.Is`); returns promptly |
+| Context cancelled while the request is in flight | `context.Canceled` (`errors.Is`); returns promptly. A cancellation that arrives just before the request would be written is honoured before it is: nothing is sent |
+| Request that does not fit a frame (`Diagnostics` with more than 250 data bytes; every other method bounds its arguments) | `ErrInvalidMBAPLength` on `tcp`, `tcp+tls` and `udp`, `ErrProtocolError` on the serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`); nothing is sent |
 | Connection lost, refused or reset | stdlib error (`io.EOF`, `*net.OpError`, …); the next request reconnects |
 | Dial or TLS handshake failed (default or `Config.Dialer`) | error starting `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:` (or `modbus: ` followed by a `*net.OpError` that already names the same dial), wrapping the cause (`errors.Is` / `errors.As` reach `*net.OpError` or the dialer's own error); `Timeout()` when the cause timed out |
 | `Config.Dialer` returned neither a connection nor an error | dial error with the message `dialer returned no connection`; no sentinel |
@@ -123,6 +124,7 @@ built-in retry policies. `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` and
 | Sentinel | Meaning |
 |---|---|
 | `codec.ErrCodecRegisterCount` | The register slice has the wrong length for the codec (also unwrapped from `*codec.CodecRegisterCountError`). A batch decode item whose window is too short reports it too |
+| `codec.ErrCodecValue` | A value the codec cannot encode or decode (also unwrapped from `*codec.CodecValueError`), or a constructor argument out of range: a text, BCD or UTF-16 codec of 0 or of more than 32767 registers, a bytes codec with an odd or zero byte count |
 | `codec.ErrCodecLayout` | The layout is not valid for the codec, or a descriptor has none (`*codec.CodecLayoutError`) |
 | `codec.ErrCodecValue` | The value cannot be encoded or decoded, or a codec parameter is out of range (`*codec.CodecValueError`) |
 | `codec.ErrCodecByteCount` | The byte slice has the wrong length for the codec (`*codec.CodecByteCountError`) |
@@ -166,6 +168,16 @@ the next request dials again. See
 
 On the server, a response that cannot be written in full within
 `ServerConfig.Timeout` closes the connection.
+
+## Server lifecycle
+
+`Start`, `Shutdown` and `Stop` return the listener's error or nil; `Shutdown`
+returns `ctx.Err()` when its context ends before the handlers have. Only the
+first `Shutdown` or `Stop` of a cycle waits: a later one returns nil at once.
+Called from a `RequestHandler` method or a `ServerMetrics` hook, `Shutdown`
+returns `ctx.Err()` when its context ends (`context.Canceled` at once with the
+handler's own context) and `Stop` does not return. See
+[API.md § 3.2](API.md#32-lifecycle).
 
 ## Batch execution
 

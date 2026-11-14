@@ -86,6 +86,7 @@ Examples:
 - Add tests for new functionality in the appropriate `_test.go` file; the repository uses only the standard `testing` package
 - Assert behaviour: returned values, the specific error, bytes on the wire and metrics callbacks, not just that the code ran
 - Keep tests fast, deterministic and race-clean; CI runs them with `-race` on Go 1.26 and 1.27 and a 120 s per-package timeout
+- Do not synchronise with `time.Sleep`. Wait for the event (a channel the handler or the connection closes, `waitFor` on a condition), or run the test on the fake clock of `testing/synctest` when everything it touches is in memory (`TestServerAccept_BacksOffAfterErrors`, `TestEngine_CloseInterrupts`). A sleep that models a slow peer is fine
 - Serial transports are tested on a pseudo-terminal (Linux and macOS; those tests skip elsewhere), so no serial adapter is needed
 - Library coverage is above 90% and enforced by Codecov; new code should come with tests
 - If your change affects what is sent to or accepted from a device, verify against real hardware when possible and say which device in the pull request

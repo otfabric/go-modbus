@@ -372,7 +372,7 @@ MustNewUint64M10kCodec is like NewUint64M10kCodec but panics on error.
 func NewAsciiCodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewAsciiCodec returns a codec for ASCII text: high byte first per register, decode trims trailing spaces, encode right-pads with space. registerCount must be >= 1.
+NewAsciiCodec returns a codec for ASCII text: high byte first per register, decode trims trailing spaces, encode right-pads with space. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewAsciiFixedCodec
 
@@ -380,7 +380,7 @@ NewAsciiCodec returns a codec for ASCII text: high byte first per register, deco
 func NewAsciiFixedCodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewAsciiFixedCodec returns a codec for fixed-width ASCII: no trim on decode, encode right-pads with NUL. registerCount must be >= 1.
+NewAsciiFixedCodec returns a codec for fixed-width ASCII: no trim on decode, encode right-pads with NUL. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewAsciiReverseCodec
 
@@ -388,7 +388,7 @@ NewAsciiFixedCodec returns a codec for fixed-width ASCII: no trim on decode, enc
 func NewAsciiReverseCodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewAsciiReverseCodec returns a codec for ASCII with low byte first per register; decode trims trailing spaces. registerCount must be >= 1.
+NewAsciiReverseCodec returns a codec for ASCII with low byte first per register; decode trims trailing spaces. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewBCDCodec
 
@@ -396,7 +396,7 @@ NewAsciiReverseCodec returns a codec for ASCII with low byte first per register;
 func NewBCDCodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewBCDCodec returns a codec for one-byte-per-digit BCD (0-9). Encode pads with leading zeros; non-digit input is rejected. registerCount must be >= 1.
+NewBCDCodec returns a codec for one-byte-per-digit BCD (0-9). Encode pads with leading zeros; non-digit input is rejected. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewBytesCodec
 
@@ -588,7 +588,7 @@ NewInt64M10kCodec returns a signed 64-bit decimal-limb (M10k) codec. Only the MS
 func NewPackedBCDCodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewPackedBCDCodec returns a codec for packed BCD (two digits per byte). Encode pads with leading zeros; non-digit input is rejected. registerCount must be >= 1.
+NewPackedBCDCodec returns a codec for packed BCD (two digits per byte). Encode pads with leading zeros; non-digit input is rejected. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewPackedBCDReverseCodec
 
@@ -596,7 +596,7 @@ NewPackedBCDCodec returns a codec for packed BCD (two digits per byte). Encode p
 func NewPackedBCDReverseCodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewPackedBCDReverseCodec returns a codec for packed BCD with low byte first per register (byte-swap within each word on wire). registerCount must be >= 1.
+NewPackedBCDReverseCodec returns a codec for packed BCD with low byte first per register (byte-swap within each word on wire). registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewSignedPackedBCDCodec
 
@@ -604,7 +604,7 @@ NewPackedBCDReverseCodec returns a codec for packed BCD with low byte first per 
 func NewSignedPackedBCDCodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewSignedPackedBCDCodec returns a codec for signed packed BCD: trailing nibble 0xC/0xD/0xF = negative, 0x0-0x9 = positive. Decode returns e.g. "-1234" or "1234"; encode accepts optional leading "-". registerCount must be >= 1.
+NewSignedPackedBCDCodec returns a codec for signed packed BCD: trailing nibble 0xC/0xD/0xF = negative, 0x0-0x9 = positive. Decode returns e.g. "-1234" or "1234"; encode accepts optional leading "-". registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewUTF16BECodec
 
@@ -612,7 +612,7 @@ NewSignedPackedBCDCodec returns a codec for signed packed BCD: trailing nibble 0
 func NewUTF16BECodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewUTF16BECodec returns a codec for fixed-width UTF-16 big-endian (one code unit per register, high byte first). registerCount must be >= 1.
+NewUTF16BECodec returns a codec for fixed-width UTF-16 big-endian (one code unit per register, high byte first). registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewUTF16LECodec
 
@@ -620,7 +620,7 @@ NewUTF16BECodec returns a codec for fixed-width UTF-16 big-endian (one code unit
 func NewUTF16LECodec(registerCount uint16) (Codec[string], error)
 ```
 
-NewUTF16LECodec returns a codec for fixed-width UTF-16 little-endian (one code unit per register, low byte first on wire). registerCount must be >= 1.
+NewUTF16LECodec returns a codec for fixed-width UTF-16 little-endian (one code unit per register, low byte first on wire). registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 
 #### func NewUint16Codec
 

@@ -56,8 +56,8 @@ Each subsystem has a **single owner** package.
 | ADU framing & wire encoding | `internal/adu` | Leaf package — no internal deps |
 | TCP / RTU / ASCII transports | `internal/transport` | |
 | Connection pool, retry, execute | `internal/session` | |
-| Codecs (numeric, text, time, …) | `codec/` | Public subpackage; root has deprecated aliases |
-| SunSpec discovery | `sunspec/` | Public subpackage; root has deprecated aliases |
+| Codecs (numeric, text, time, …) | `codec/` | Public subpackage. The root package imports it for `RuntimeDecodePlan` and has no aliases of its types |
+| SunSpec discovery | `sunspec/` | Public subpackage. The root package does not import it; it only re-exports the two SunSpec error sentinels from `internal/protocol` |
 | Batch-read planning | `batch/` | Public subpackage; plans, executes sequentially and decodes; no scheduling, caching or goroutines |
 | Protocol constants & errors | `internal/protocol` | Root re-exports via type aliases |
 | Logging | `internal/logging` | |
@@ -65,7 +65,7 @@ Each subsystem has a **single owner** package.
 
 ## Client architecture
 
-`ModbusClient` is split across focused files:
+`Client` is split across focused files:
 
 | File | Concern |
 |---|---|
@@ -92,10 +92,19 @@ enforces it (`TestE2E_EveryClientFunctionIsServed`).
 
 ### Locking model
 
-The client mutex guards **only mutable state** (`isOpen`, `engine`, `lastResponseTransactionID`),
-not the entire request lifecycle. `executeRequest` is self-locking: it snapshots the engine
-under the lock, executes without holding it, and updates state under the lock on return.
-`session.Engine` is the sole authority for request-level concurrency.
+The client mutex guards **only mutable state** (`clientState`: `engine`, which is nil
+while the client is not open, and `lastResponseTransactionID`), not the entire request
+lifecycle. `executeRequest` is self-locking: it snapshots the engine under the lock,
+executes without holding it, and updates state under the lock on return.
+`session.Engine` is the sole authority for request-level concurrency. No lock and no
+turn is held while a `PDUTap` or a `ClientMetrics` outcome hook runs; `AttemptMetrics`
+hooks run while the request holds its connection.
+
+On the server, `Server.lock` guards `started`, the connection lists and the fields of
+the current run; it is never held while a handler or a `ServerMetrics` hook runs. Each
+`Start` creates a `serverRun` (stop context, listener, WaitGroup) that the accept loop
+and the connection goroutines of that cycle are counted in; `Shutdown` waits for that
+WaitGroup, which is why it cannot be waited for from a handler or a hook.
 
 ### Request/response flow
 
@@ -122,8 +131,7 @@ c, _ := codec.NewFloat32Codec(codec.Layout32_2143)
 v, err := codec.DecodeRegisters(regs, c)
 ```
 
-The root `modbus` package retains deprecated aliases for backward compatibility.
-These will be removed in a future release.
+The root `modbus` package has no aliases of the codec types: import `codec` for them.
 
 ## SunSpec architecture
 
@@ -135,4 +143,6 @@ import "github.com/otfabric/go-modbus/sunspec"
 result, err := sunspec.Detect(ctx, reader, &sunspec.Options{...})
 ```
 
-The root `ModbusClient` provides thin convenience methods that adapt to `sunspec.Reader`.
+`sunspec` reads through its one-method `Reader` interface. `*modbus.Client` does not
+implement it: an application adapts the client in a few lines, as
+`examples/sunspec_detect` and [API.md § 2.8](API.md#28-sunspec-discovery) show.

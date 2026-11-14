@@ -78,6 +78,26 @@ Callbacks run on the request path and must not block. Absence of a metrics
 implementation is intentional for simple apps — attach one only when you have a
 concrete consumer (Prometheus, statsd, …).
 
+### Callbacks that panic
+
+| Callback | A panic in it |
+|---|---|
+| `ServerMetrics` method | recovered and logged at error level with a stack trace (`panic in ServerMetrics.OnRequest for FC 0x.. from <client>`); the request is answered as if the method had returned |
+| `RequestHandler` method | recovered and logged the same way; the client gets a Server Device Failure exception |
+| `ClientMetrics`, `AttemptMetrics`, `PDUTap` method | not recovered: it reaches the caller of the client method; the client stays usable |
+| `Logger` method | not recovered: on a client it reaches the caller, on a server it ends the process |
+
+`ServerMetrics.OnRequest` sees the function code before the server has checked
+it, so a table indexed by function code needs room for all 256 values.
+
+### Accept errors
+
+A server whose `Accept` fails (other than because it is stopping) logs a warning
+with the error and the wait before the next attempt, `failed to accept client
+connection (next attempt in 5ms): …`: 5 ms after the first failure, doubling to
+at most 1 s, so a listener that keeps failing produces about one line a second.
+There is no metrics hook for accept errors.
+
 ## Related
 
 - Retry classification and write at-least-once: [API.md § 7](API.md#7-retry-policy)

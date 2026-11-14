@@ -25,6 +25,14 @@ jobs:
       bump: ${{ inputs.bump }}
       release-name-prefix: go-modbus
       update-major-tag: false
+      # Direct dependants, built, vetted and tested against the candidate
+      # before the tag is created.
+      consumers: |
+        otfabric/go-sunspec
+        otfabric/go-modbus-trace
+        otfabric/modbusctl
+        otfabric/sunspecctl
+        otfabric/modbus-simulator
     secrets: inherit
 
   release-modbus-cli-binary:

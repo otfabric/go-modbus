@@ -126,7 +126,7 @@ Unsigned range 0–2⁴⁸−1; signed uses 47-bit magnitude, sign-extended to `
 
 ## 3. Text codecs
 
-Text codecs take a **register count** (number of 16-bit registers). ASCII/BCD codecs use two characters per register (high byte, low byte); UTF-16 codecs use one UTF-16 code unit per register. All return `(Codec[string], error)` and reject `registerCount == 0`.
+Text codecs take a **register count** (number of 16-bit registers). ASCII/BCD codecs use two characters per register (high byte, low byte); UTF-16 codecs use one UTF-16 code unit per register. All return `(Codec[string], error)` and accept 1 to 32767 registers: `registerCount == 0` and a count above 32767, whose byte count (two per register) does not fit `ByteSpec.Count`, are rejected with an error wrapping `ErrCodecValue`. A Modbus read returns at most 125 registers; the wider codecs are for data assembled offline.
 
 | Constructor | Description | Decode | Encode |
 |-------------|-------------|--------|--------|

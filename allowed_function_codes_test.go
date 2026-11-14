@@ -189,6 +189,28 @@ func startCountingMBAPServer(t *testing.T, closeAfterReply bool) (addr string, a
 	return ln.Addr().String(), accepts, received
 }
 
+// countingServerBarrier makes one request of its own to a counting server (see
+// startCountingMBAPServer) and waits for the answer. The listener hands out
+// connections in the order they arrived, so once this one has been answered
+// every connection opened before it has been accepted and counted: the counts
+// read after the barrier are final for what the client under test did before
+// it. The barrier itself adds one connection and one read request.
+func countingServerBarrier(t *testing.T, addr string) {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("barrier: dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(e2eWait))
+	if _, err := conn.Write(rawRequestFrame(1, 1, byte(FCReadHoldingRegisters), u16(0, 1))); err != nil {
+		t.Fatalf("barrier: write: %v", err)
+	}
+	if _, err := readMBAPResponse(conn); err != nil {
+		t.Fatalf("barrier: no answer: %v", err)
+	}
+}
+
 // refusedOps returns the operations of e2eAllOps that put nothing on the wire
 // when only FC03 and FC04 are allowed.
 func refusedOps() []e2eOp {
@@ -251,9 +273,11 @@ func TestAllowedFunctionCodes_NothingOnTheWire_TCP(t *testing.T) {
 		if _, err := c.ReadHoldingRegister(ctx, 1, 0); !errors.Is(err, ErrClientNotOpen) {
 			t.Errorf("ReadHoldingRegister: error %v, want ErrClientNotOpen", err)
 		}
-		time.Sleep(50 * time.Millisecond)
-		if a, n := accepts.Load(), received.Load(); a != 0 || n != 0 {
-			t.Errorf("server accepted %d connections and received %d bytes, want none", a, n)
+		// Only the barrier's own connection and request reached the server.
+		countingServerBarrier(t, addr)
+		if a, n := accepts.Load(), received.Load(); a != 1 || n != mbapReadRequestLen {
+			t.Errorf("server accepted %d connections and received %d bytes, want none from the client (1 and %d with the barrier)",
+				a, n, mbapReadRequestLen)
 		}
 	})
 
@@ -278,9 +302,11 @@ func TestAllowedFunctionCodes_NothingOnTheWire_TCP(t *testing.T) {
 				t.Errorf("%s: error %v, want ErrFunctionCodeNotAllowed", op.name, err)
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
-		if a, n := accepts.Load(), received.Load(); a != 1 || n != mbapReadRequestLen {
-			t.Errorf("server accepted %d connections and received %d bytes, want 1 and %d", a, n, mbapReadRequestLen)
+		// The client's one connection and one read, and the barrier's.
+		countingServerBarrier(t, addr)
+		if a, n := accepts.Load(), received.Load(); a != 2 || n != 2*mbapReadRequestLen {
+			t.Errorf("server accepted %d connections and received %d bytes, want 1 and %d from the client (2 and %d with the barrier)",
+				a, n, mbapReadRequestLen, 2*mbapReadRequestLen)
 		}
 		if n := retry.calls.Load(); n != 0 {
 			t.Errorf("retry policy consulted %d times for refused requests", n)

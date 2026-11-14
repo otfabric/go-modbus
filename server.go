@@ -128,6 +128,27 @@ var ErrNoResponse = errors.New("modbus: no response")
 // An error returned by a handler method is sent to the client as the matching
 // Modbus exception (ServerDeviceFailure when there is none), with one exception:
 // ErrNoResponse makes the server send nothing at all.
+//
+// Ownership. The slices in a request (Args, WriteValues, Data, Requests,
+// Records) are the handler's: the server made them for this call and does not
+// use them again. A slice, or a response struct, that a handler returns is read
+// by the server after the handler has returned, while it encodes the response,
+// and not kept after that: return a copy of shared state, not a view of it
+// (h.regs[a:b]) that another call may be writing to. This holds for the
+// optional handler interfaces as well.
+//
+// Stopping the server from a handler. A handler method runs on the goroutine
+// that Stop and Shutdown wait for, so it must not call them and wait for the
+// result: Stop called from a handler method never returns, and Shutdown called
+// from one returns only when its context ends, with that context's error. To
+// stop the server from a handler, start the call on another goroutine
+// (go srv.Stop()), which completes once the handler has returned, or call
+// Shutdown with the handler's own context: the shutdown cancels that context,
+// so the call returns context.Canceled as soon as the server has stopped
+// accepting and closed its connections, without waiting for the handlers.
+// Either way the request being handled may go unanswered: the shutdown closes
+// its connection. The same applies to the ServerMetrics hooks, which run on
+// the same goroutine.
 type RequestHandler interface {
 	HandleCoils(ctx context.Context, req *CoilsRequest) (res []bool, err error)
 	HandleDiscreteInputs(ctx context.Context, req *DiscreteInputsRequest) (res []bool, err error)
@@ -376,6 +397,17 @@ func (ms *Server) Start() (err error) {
 // and waits for the accept loop and the in-flight handler goroutines to exit.
 // If ctx expires before all handlers finish, Shutdown returns ctx.Err(). Use
 // Stop() as a convenience wrapper that waits indefinitely.
+//
+// Only the first Shutdown or Stop of a Start..Stop cycle waits. A call made
+// while that one is still waiting, or after it returned because its context
+// ended, finds the server stopped and returns nil at once, although handler
+// goroutines of the cycle may still be running; nothing else waits for them.
+//
+// Shutdown waits for the goroutines that run the handler methods and the
+// ServerMetrics hooks. Called from one of them it cannot see that goroutine
+// end: it returns ctx.Err() when ctx ends. With the context the handler
+// received, which the shutdown itself cancels, that is context.Canceled, as
+// soon as the listener and the client sockets are closed. See RequestHandler.
 func (ms *Server) Shutdown(ctx context.Context) error {
 	ms.lock.Lock()
 	if !ms.started {
@@ -407,7 +439,15 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 }
 
 // Stop stops the server and blocks until all handler goroutines have exited.
-// It is equivalent to Shutdown(context.Background()).
+// It is equivalent to Shutdown(context.Background()), and like Shutdown it
+// waits only when it is the first such call of a Start..Stop cycle: a Stop
+// after a Shutdown whose context ended, or while another Stop is waiting,
+// returns nil at once.
+//
+// Do not call Stop from a RequestHandler method or a ServerMetrics hook and
+// wait for it: it waits for the goroutine it was called on and never returns.
+// Use go srv.Stop() there, or Shutdown with the handler's context (see
+// RequestHandler).
 func (ms *Server) Stop() error {
 	return ms.Shutdown(context.Background())
 }

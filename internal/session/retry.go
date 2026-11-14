@@ -161,10 +161,18 @@ func (e *exponentialBackoff) ShouldRetry(attempt int, err error) (bool, time.Dur
 		return false, 0
 	}
 
-	delay := time.Duration(float64(e.cfg.BaseDelay) * math.Pow(2, float64(attempt)))
-	if delay > e.cfg.MaxDelay || delay <= 0 {
-		delay = e.cfg.MaxDelay
-	}
+	return true, backoffDelay(e.cfg.BaseDelay, e.cfg.MaxDelay, attempt)
+}
 
-	return true, delay
+// backoffDelay returns base × 2^attempt, capped at maxDelay. The product is
+// compared with the cap as a float64 and converted to a time.Duration only when
+// it is below it: after a few dozen attempts it no longer fits one, and the
+// result of converting such a value depends on the platform. A product below
+// one nanosecond gives maxDelay, as a delay of zero always did.
+func backoffDelay(base, maxDelay time.Duration, attempt int) time.Duration {
+	d := float64(base) * math.Pow(2, float64(attempt))
+	if d >= 1 && d < float64(maxDelay) {
+		return time.Duration(d)
+	}
+	return maxDelay
 }
