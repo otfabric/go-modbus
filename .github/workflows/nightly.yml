@@ -1,6 +1,7 @@
 # Extended tier (otfabric/engineering standards/testing.md#ci-tiers): long
-# fuzzing, and the chaos and stress tests in soak mode. The interop suite is
-# not repeated here: it runs on every push against pinned images.
+# fuzzing, the chaos and stress tests in soak mode, and the test suite on a
+# 32-bit platform. The interop suite is not repeated here: it runs on every
+# push against pinned images.
 #
 # A chaos failure logs its seed: MODBUS_CHAOS_SEED=<seed> replays it. A fuzz
 # failure leaves its input in the artifact: commit it with the fix.
@@ -95,3 +96,30 @@ jobs:
           TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
         run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: make stress-load
+
+  # A 32-bit int: the sizes the framers and the codecs compute must come out
+  # the same as on 64 bits (standards/safety.md, platform width). linux/386
+  # binaries run natively on the amd64 runner; the race detector does not
+  # exist for 386, and cross-compiling alone (make cross) executes nothing.
+  test-386:
+    name: Tests on linux/386
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+      - name: Configure private module access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+      - name: go test on linux/386
+        env:
+          GOARCH: "386"
+        run: go test -count=1 ./...

@@ -448,6 +448,11 @@ func ValidateConfig(conf Config) error {
 // (the peer closed it, or it was dropped after an error that may have left it
 // out of sync, see Config.Timeout) the next request dials a new one; if that
 // fails, the request fails with the dial error and the one after it tries again.
+//
+// Open takes no context, and Close does not end an Open that is in progress: a
+// Close called while Open is still dialling finds nothing to close and returns
+// nil, and Open then completes and leaves the client open. To end up closed,
+// call Close after Open has returned (its dials are bounded by DialTimeout).
 func (mc *Client) Open() (err error) {
 	mc.lock.Lock()
 	if mc.state.engine != nil {
@@ -820,6 +825,10 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 // connection and requests waiting between two retry attempts return promptly
 // with ErrClientNotOpen. After Close returns, the client can be re-opened by
 // calling Open again.
+//
+// Close acts on what Open has established. Called while an Open is still
+// dialling it closes nothing and returns nil; that Open then succeeds and the
+// client is open (see Open).
 func (mc *Client) Close() (err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()

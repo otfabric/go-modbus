@@ -465,19 +465,33 @@ A `*Client` is safe for concurrent use by multiple goroutines.
 
 - `Open()` is idempotent — calling it on an already-open client is a no-op.
 - `Close()` is safe to call multiple times — subsequent calls are no-ops.
-- If `Close()` is called while requests are in flight, those requests may fail with a
-  transport error. There is no graceful drain.
+- If `Close()` is called while requests are in flight, those requests return promptly
+  with `ErrClientNotOpen`. There is no graceful drain.
+- `Close()` does not end an `Open()` that is still dialling: it returns nil, and that
+  `Open()` then leaves the client open. Call `Close()` after `Open()` has returned.
 - A client can be re-opened after `Close()` by calling `Open()` again.
 
 All server handler goroutines are fully concurrent; handler implementations must
-synchronize access to shared state. `*Server` is safe to call `Stop()` or `Shutdown(ctx)`
-from any goroutine. Handler panics are recovered with a full stack trace logged; the
-client receives a `ServerDeviceFailure` exception.
+synchronize access to shared state, and return a copy of it, not a view the next write
+changes: the server encodes what a handler returned after the handler has returned
+([API.md § 13](API.md#13-ownership-of-slices)). Handler panics are recovered with a
+full stack trace logged; the client receives a `ServerDeviceFailure` exception. A
+panic in a `ServerMetrics` hook is recovered and logged the same way, and the request
+is answered as if the hook had returned.
+
+`Stop()` and `Shutdown(ctx)` may be called from any goroutine except the ones the
+server runs its callbacks on. They wait for those goroutines, so from a
+`RequestHandler` method or a `ServerMetrics` hook `Stop()` never returns and
+`Shutdown(ctx)` returns only when `ctx` ends, with its error. To stop the server from
+a handler, use `go srv.Stop()`, or `Shutdown` with the handler's own context, which
+returns `context.Canceled` once the listener and the connections are closed.
 
 **Graceful shutdown:** `Shutdown(ctx)` stops accepting connections, cancels all
 per-connection contexts, closes sockets, and waits for handlers to exit — or returns
 `ctx.Err()` if the context expires first. `Stop()` is equivalent to
-`Shutdown(context.Background())` (waits indefinitely).
+`Shutdown(context.Background())` (waits indefinitely). Only the first `Shutdown` or
+`Stop` waits: a second call, made while the first is waiting or after its context
+ended, returns nil at once, even if handlers are still running.
 
 **Handler validation:** `NewServer()` rejects a nil `reqHandler` at construction time
 with a typed `*ConfigurationError`, preventing surprising nil-pointer panics at runtime.

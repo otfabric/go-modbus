@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
@@ -120,37 +121,45 @@ func TestPool_ExecuteDiscardsOnError(t *testing.T) {
 }
 
 func TestPool_CloseAllWakesAcquire(t *testing.T) {
-	dial := func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
-		return &fakeTransport{execRes: &adu.Response{}}, nil
-	}
-	p, err := NewPool(context.Background(), 1, 1, dial)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx := context.Background()
-	_, err = p.acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := p.acquire(ctx)
-		done <- err
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	_ = p.CloseAll()
-
-	select {
-	case err := <-done:
-		if err != errPoolClosed {
-			t.Errorf("acquire() returned %v, want errPoolClosed", err)
+	synctest.Test(t, func(t *testing.T) {
+		dial := func(context.Context) (Transport[*adu.Request, *adu.Response], error) {
+			return &fakeTransport{execRes: &adu.Response{}}, nil
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("acquire() was not woken by CloseAll()")
-	}
+		p, err := NewPool(context.Background(), 1, 1, dial)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ctx := context.Background()
+		_, err = p.acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := p.acquire(ctx)
+			done <- err
+		}()
+
+		// The only slot is taken: the second acquire is waiting for one.
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("acquire() returned %v with the only slot taken", err)
+		default:
+		}
+		_ = p.CloseAll()
+
+		select {
+		case err := <-done:
+			if err != errPoolClosed {
+				t.Errorf("acquire() returned %v, want errPoolClosed", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("acquire() was not woken by CloseAll()")
+		}
+	})
 }
 
 func TestPool_AcquireAfterClose(t *testing.T) {

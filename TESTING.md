@@ -15,12 +15,44 @@ How to run each test tier. No hardware is needed: tests use in-process servers, 
 | Benchmarks | `make bench` (`BENCHTIME`) | none | no |
 | Interop | `make interop` | Docker | yes, Interop workflow |
 | Cross-compile | `make cross` | none | no |
+| 32-bit | `GOARCH=386 go test ./...` | linux/amd64 (the 386 binaries run there) | nightly |
 
 The end-to-end tier runs the real client against the real server on loopback, over `tcp` and `tcp+tls`; `e2e_matrix_test.go` lists what is covered and where.
 
 `Config.Dialer` is tested in `client_dialer_test.go` (the network and address each transport dials, the dial timeout in the context, wrapped errors, the dialer contract, TLS on a dialer's connection, in-memory connections, the pool and re-dials under the request's context) and in `chaos_dialer_test.go`, which injects faults through the dialer (refused, stalled and contract-breaking dials; connections that are reset, cut short or go silent) and checks that no read returns wrong data, that every connection handed to the client is closed, that the client recovers and that no goroutine leaks. `MODBUS_CHAOS_SEED` replays its fault order.
 
 Serial transports run on a pseudo-terminal on Linux and macOS, and those tests skip elsewhere. The `coverage-packages` job of `ci.yml` sets `MODBUS_REQUIRE_PTY=1`, so there a missing pseudo-terminal is a failure.
+
+The 32-bit tier runs the whole suite with a 32-bit `int`, without the race detector (it does not exist for 386); the sizes the framers and the codecs compute are the same there, and the boundary tables say so (`TestTextCodecs_RegisterCountBoundaries`, `TestExecuteRequest_PayloadSizeBoundary`). `GOOS=linux GOARCH=386 go vet ./...` checks from any host that the tests compile for it.
+
+Tests do not synchronise by sleeping: they wait for the event (a channel a handler or a connection closes, `waitFor` or `e2eEventually` on a condition) or run on the fake clock of `testing/synctest`, which makes a schedule exact (`TestServerAccept_BacksOffAfterErrors`). Sleeps that model a slow peer, pace a stress loop or are the polling step of such a helper remain.
+
+`make bench` runs the end-to-end read-strategy benchmarks over loopback (root package, `batch`) and the CPU-only microbenchmarks of the frame decoders (`BenchmarkDecodeMBAP`, `BenchmarkDecodeRTU`, `BenchmarkDecodeASCII` in `internal/adu`) and of one codec (`BenchmarkDecodeFloat32` in `codec`). Compare a framer or codec change on the microbenchmarks; the loopback ones vary too much from run to run for that. No document states a performance figure.
+
+## Lifecycle contract matrix
+
+The long-lived types are `Client` (with the session engine and the connection pool inside it) and `Server`. Rows L1 to L16 are those of the organisation's lifecycle standard; a row is **n/a** where the type cannot have the feature. A test named `…L<n>_…` was written for that row; the others cover it as part of a wider scenario.
+
+| Row | Scenario | `Client` | `Server` |
+|---|---|---|---|
+| L1 | Close twice | `TestE2E_Client_OpenCloseLifecycle` (Close before Open, three Closes), `TestEngine_Close_NoOp`, `TestPool_CloseAllIdempotent` | `TestServerStart_LifecycleEdgeCases` (second Stop, Shutdown before Start) |
+| L2 | Two goroutines call Close | `TestStressClientOpenCloseRace`, `TestConcurrentOpenClose` | `TestServerL2_OnlyTheFirstStopWaits`: both return, the second at once and with nil while the first still waits (the documented outcome); `TestStressServerStopWithClients` |
+| L3 | Close during a blocked read | `TestE2E_Client_CloseDuringRequest`, `TestCloseDuringInFlightRequest`, `TestHostileClient_CloseWhileTrickled`, `TestEngine_CloseInterrupts`, `TestStressCloseWithRequestsInFlight`, `TestPool_CloseAllClosesBusyAndLateConnections` | `TestHostileServer_ShutdownWithStalledClients`, `TestStressServerStopWithClients` |
+| L4 | Close during a write | `TestClientL4_CloseDuringWrite`: the request returns `ErrClientNotOpen`, the peer gets no byte of it | A response that cannot be written ends its connection within `Timeout` (`TestHostileServer_ClientNeverReads`); `Stop` closes the socket under the write. No test stops the server during a blocked write |
+| L5 | Close during handshake | `TestClientL5_CloseDuringOpen`: `Close` returns nil and closes nothing, `Open` then succeeds (the documented outcome, see LIMITATIONS.md). A dial inside a request: `TestEngine_CloseInterrupts` ("while dialling"), `TestPool_CloseAllClosesBusyAndLateConnections` | TLS handshake: `TestE2E_TLS_HandshakeTimeout`, `TestStressSlowLorisTLSHandshake`, `server_tls_pending_test.go` |
+| L6 | Cancel a pending request | `TestE2E_Client_ContextCancelInFlight`, `TestChaosRegressionCancelInFlight`, `TestRTUOverTCPCancelAfterWriteNotMisread`, `TestEngine_ContextEndsInFlight`, `TestEngine_WaitingForTurnHonoursContext`, `TestStressContextCancellationStorm`; a cancellation that arrives while the request deadline is set, or during a serial drain: `TestClientL6_CancelWhileRequestDeadlineIsSet`, `TestExecuteRequest_CancelledWhileDeadlineIsSet`, `TestExecuteRequest_CancelledWhileDraining` | n/a: the server makes no requests. A handler's context ends when its client leaves (`TestE2E_Server_HandlerContext_ClientDisconnectInFlight`) |
+| L7 | Response after the request timed out | `TestChaosRegressionNoStaleBytesAfterTimeout`, `TestSerialTunnelLateAnswerNotMisread`, `TestRTULateAnswerDrained`, `TestASCIILateAnswerDrained`, `TestHostileUDP_Datagrams`; the limit on a serial line is pinned by `TestSerialLateAnswerMisreadOnce` (LIMITATIONS.md). Late answers are dropped by closing or draining the link; they are not counted | n/a |
+| L8 | Response after reconnect | By construction: a transport belongs to one socket and the transaction counter to one connection. `TestChaosRegressionHalfOpenConnectionReplaced`, `TestSerialTunnelSuspectResponseRedials` | n/a |
+| L9 | Callback calls a public method | `TestClientL9_CallbackMakesARequest` (`PDUTap`, `ClientMetrics.OnResponse`). `AttemptMetrics` methods run while the request holds its connection and must not make requests | The server's public methods are `Start`, `Stop` and `Shutdown`: see L10 |
+| L10 | Callback calls Close | `TestClientL10_CallbackCallsClose` (`PDUTap`, `ClientMetrics.OnResponse`, `AttemptMetrics.OnAttempt`): Close returns, the client is closed and can be opened again | `TestServerL10_HandlerCallsShutdownWithItsContext` (returns `context.Canceled`), `TestServerL10_CallbackCallsShutdownWithAnotherContext` (handler and `ServerMetrics` hook: returns only when that context ends, which is why `Stop` from a callback does not return), `TestServerL10_HandlerStartsStopOnAnotherGoroutine` (completes once the handler has returned) |
+| L11 | Slow callback | `TestPDUTapBlockingTapDoesNotHoldConnection` | `TestChaosRegressionSlowHandlerResponseDelivered`, `TestE2E_Server_HandlerContext_ClientDisconnectInFlight`. That a blocked handler leaves other connections served follows from one goroutine per connection; no test is dedicated to it |
+| L12 | Queue at capacity | Pool: `TestStressPoolExhaustionCancelledWaiters`, `TestChaosRegressionPoolWaitersWoken`, `TestPool_ExhaustedWaiterGetsReleasedConnection` | `TestHostileServer_PipelinedBurst` (pipeline depth), `TestE2E_Server_MaxClients`, `TestHostileServer_ConnectionFlood`, `TestStressTLSHandshakenNotReplaced`. Refused and replaced connections are logged, not counted: there is no metrics hook for them |
+| L13 | Concurrent sessions | `TestHostileClient_ConcurrentNoCrossTalk`, `TestStressSharedPooledClient`, `TestStressPDUTapConcurrentCallers` | `TestStressManyClients`, `TestE2E_ServerFunctions_Parallel`, `TestOwnership_HandlerReturnsACopyOfSharedState` |
+| L14 | Failure during construction or startup | `TestClientOpen_DialErrors`, `TestDialer_ConnWithErrorIsClosed`, `TestDialer_NilConnWithoutError`, `TestDialer_TLSHandshakeFailure`, `TestNewPool_PreWarmFailure`, `TestEngine_OpenPoolPreWarmFails`, `TestClientOpen_ConcurrentCallsDoNotLeakConnections`, `TestChaosDialerFaults` | `TestServerStart_ListenError`; accept errors: `TestServerAccept_BacksOffAfterErrors`, `TestServerAccept_SurvivesTransientErrors` |
+| L15 | `Shutdown(ctx)` | n/a: the client has no graceful drain (documented on `Close`) | `TestServerShutdown_ContextExpiresWhileHandlerRuns`, `TestStressShutdownWithBusyHandlers`, `TestE2E_Server_ShutdownWithInFlightHandler`. After a Shutdown whose context ended nothing waits for the remaining handlers (L2) |
+| L16 | Close racing reconnect | `TestEngine_CloseInterrupts`, `TestEngine_SingleTransport_ClosedDuringRetryStaysClosed`, `TestEngine_PoolMode_ClosedDuringRetry`, `TestStressCloseDuringRetryBackoff` | n/a: the server does not reconnect |
+
+Callbacks that do not return normally have contract tests of their own: `TestServerMetrics_HookThatDoesNotReturnIsContained`, `TestE2E_Server_HandlerPanic`, `TestClientMetrics_HookThatDoesNotReturnReachesTheCaller`, `TestPDUTapPanicLeavesClientUsable`. The ownership of slices that cross the API is tested in `ownership_test.go` ([API.md § 13](API.md#13-ownership-of-slices)).
 
 ## Environment variables
 
@@ -38,7 +70,11 @@ Serial transports run on a pseudo-terminal on Linux and macOS, and those tests s
 
 ## Fuzz regressions
 
-Fuzz targets: `FuzzServerRequest`, `FuzzClientResponseParse`, `FuzzServerFunctions` (root package), `FuzzCompile` (`batch`), `FuzzHostileRuntimeDecode` (`codec`), `FuzzHostileTCPResponse`, `FuzzHostileRTUResponse`, `FuzzHostileASCIIResponse` (`internal/transport`) and `FuzzHostileDiscover` (`sunspec`). `make fuzz` lists its targets by name; a new target must be added there.
+Fuzz targets: `FuzzServerRequest`, `FuzzClientResponseParse`, `FuzzClientResponseDecode`, `FuzzServerFunctions` (root package), `FuzzCompile` (`batch`), `FuzzHostileRuntimeDecode` (`codec`), `FuzzHostileTCPResponse`, `FuzzHostileRTUResponse`, `FuzzHostileASCIIResponse` (`internal/transport`) and `FuzzHostileDiscover` (`sunspec`). `make fuzz` lists its targets by name; a new target must be added there.
+
+`FuzzClientResponseParse` and the three `FuzzHostile…Response` targets feed bytes to the framers; `FuzzClientResponseDecode` feeds a response PDU to the client's function-level decoders through the scripted transport, with no framing in between. Each asserts more than the absence of a failure: an accepted frame is a frame of the input and fits its framing, and a call that succeeds returns a result that agrees with its request (lengths, echoes, at most one of each device identification object, at most 256 round trips). `TestFuzzClientResponseDecode_Seeds` checks that the seeds reach the accepting side of every decoder.
+
+Allocation is tested apart from fuzzing: `TestResponseReaders_AllocationBudget` feeds each framer the largest length its field can declare (MBAP length `0xFFFF`, RTU byte count 255, FIFO byte count `0xFFFF`, a 64 KiB ASCII line) and bounds the allocations and the bytes allocated per request.
 
 A failing input is written to `testdata/fuzz/<target>/`. Commit that file with the fix: `go test` replays it from then on.
 
@@ -53,7 +89,7 @@ Reduce a failing chaos scenario to a deterministic test, usually a scripted faul
 | Pull request | `pr.yml` | `docs.yml` (docsync, otfabric-policy) always; `ci.yml`, `interop.yml` unless every changed file is documentation; then `OT Fabric Required Checks` |
 | Push to a branch | none | nothing; dispatch `ci.yml`, `interop.yml` to test a branch without a pull request |
 | Push to `main` | `docs.yml` | the light checks; the merged commit was tested as the pull request's merge commit |
-| Schedule | `nightly.yml` | the scheduled runs, on `main` |
+| Schedule | `nightly.yml` | the scheduled runs, on `main`: long fuzzing, soak, the chaos regressions under load, the suite on linux/386 |
 | Release | `release.yml` | the release workflow tests the release commit again |
 
 Documentation means an added or modified `*.md` file outside `.github/`, `testdata/` and `vendor/`, other than `AGENTS.md` and `CLAUDE.md`. A deleted or renamed document, or any other file, runs everything. `OT Fabric Required Checks` fails unless every job that applies succeeded; its summary lists them.

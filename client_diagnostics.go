@@ -482,7 +482,8 @@ func (mc *Client) ReportServerID(ctx context.Context, unitID uint8) (rs *ReportS
 			fmt.Sprintf("byte count %d does not match payload length %d", byteCount, len(res.Payload)-1))
 		return
 	}
-	data := append([]byte(nil), res.Payload[1:1+byteCount]...)
+	// The length was checked above: the data is the rest of the payload.
+	data := append([]byte(nil), res.Payload[1:]...)
 	rs = &ReportServerIDResponse{
 		Data: data,
 	}

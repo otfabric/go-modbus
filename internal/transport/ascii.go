@@ -75,14 +75,25 @@ func (at *ASCII) Resync() {
 func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
 	switch {
 	case at.drain:
-		drainLink(at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout)
+		drainLink(ctx, at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout)
+		if err := ctx.Err(); err != nil {
+			// The drain was cut short: the next request starts with it again.
+			return nil, err
+		}
 		at.drain = false
 		at.verify = true
 	case at.verify:
-		at.verify = drainLink(at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout) > 0
+		n := drainLink(ctx, at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		at.verify = n > 0
 	}
 	deadline := requestDeadline(ctx, at.Timeout)
 	if err := at.Link.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	if err := ctxAfterDeadline(ctx); err != nil {
 		return nil, err
 	}
 	if 2+len(req.Payload)+1 > (adu.MaxASCIIFrameLength-3)/2 {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
@@ -128,32 +129,53 @@ func TestRTUExecuteRequest_WriteError(t *testing.T) {
 	}
 }
 
-// A cancelled context aborts the pre-transmit inter-frame wait before any
-// byte is put on the wire.
+// A context cancelled during the pre-transmit inter-frame wait aborts it
+// before any byte is put on the wire.
 func TestRTUExecuteRequest_CancelledDuringInterFrameGap(t *testing.T) {
-	link := &hookLink{}
-	rt := rawRTU(link)
-	rt.lastActivity = time.Now().Add(time.Hour)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := rt.ExecuteRequest(ctx, rtuReq()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("want context.Canceled, got %v", err)
-	}
-	if link.written.Len() != 0 {
-		t.Fatalf("request was written despite cancellation: % X", link.written.Bytes())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		link := &hookLink{}
+		rt := rawRTU(link)
+		rt.lastActivity = time.Now().Add(time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := rt.ExecuteRequest(ctx, rtuReq())
+			done <- err
+		}()
+		synctest.Wait() // ExecuteRequest is in the inter-frame wait
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+		if link.written.Len() != 0 {
+			t.Fatalf("request was written despite cancellation: % X", link.written.Bytes())
+		}
+	})
 }
 
-// A cancelled context aborts the post-transmit turnaround wait: the request
-// has been sent but no response is read.
+// cancelOnWriteLink cancels a context once a request has been written to it.
+type cancelOnWriteLink struct {
+	hookLink
+	cancel context.CancelFunc
+}
+
+func (l *cancelOnWriteLink) Write(p []byte) (int, error) {
+	n, err := l.hookLink.Write(p)
+	l.cancel()
+	return n, err
+}
+
+// A context cancelled once the request is on the wire aborts the post-transmit
+// turnaround wait: the request has been sent but no response is read.
 func TestRTUExecuteRequest_CancelledAfterTransmit(t *testing.T) {
-	link := &hookLink{scriptedLink: scriptedLink{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	link := &cancelOnWriteLink{cancel: cancel, hookLink: hookLink{scriptedLink: scriptedLink{
 		chunks: [][]byte{adu.AssembleRTUFrame(0x11, byte(protocol.FCReadHoldingRegisters), []byte{0x02, 0x00, 0x01})},
-	}}
+	}}}
 	rt := rawRTU(link)
 	rt.t1 = time.Hour // makes the computed end-of-transmission lie far in the future
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	if _, err := rt.ExecuteRequest(ctx, rtuReq()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}

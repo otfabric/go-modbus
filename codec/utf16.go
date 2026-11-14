@@ -14,7 +14,7 @@ type utf16BECodec struct{ registerCount uint16 }
 func (c utf16BECodec) ID() string                 { return fmt.Sprintf("utf16be/registers:%d", c.registerCount) }
 func (c utf16BECodec) Name() string               { return "utf16be" }
 func (c utf16BECodec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: c.registerCount} }
-func (c utf16BECodec) ByteSpec() ByteSpec         { return ByteSpec{Count: c.registerCount * 2} }
+func (c utf16BECodec) ByteSpec() ByteSpec         { return textByteSpec(c.registerCount) }
 
 func (c utf16BECodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -40,7 +40,7 @@ type utf16LECodec struct{ registerCount uint16 }
 func (c utf16LECodec) ID() string                 { return fmt.Sprintf("utf16le/registers:%d", c.registerCount) }
 func (c utf16LECodec) Name() string               { return "utf16le" }
 func (c utf16LECodec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: c.registerCount} }
-func (c utf16LECodec) ByteSpec() ByteSpec         { return ByteSpec{Count: c.registerCount * 2} }
+func (c utf16LECodec) ByteSpec() ByteSpec         { return textByteSpec(c.registerCount) }
 
 func (c utf16LECodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -81,17 +81,17 @@ func isHighSurrogate(u uint16) bool {
 	return u >= 0xD800 && u <= 0xDBFF
 }
 
-// NewUTF16BECodec returns a codec for fixed-width UTF-16 big-endian (one code unit per register, high byte first). registerCount must be >= 1.
+// NewUTF16BECodec returns a codec for fixed-width UTF-16 big-endian (one code unit per register, high byte first). registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewUTF16BECodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return utf16BECodec{registerCount: registerCount}, nil
 }
 
-// NewUTF16LECodec returns a codec for fixed-width UTF-16 little-endian (one code unit per register, low byte first on wire). registerCount must be >= 1.
+// NewUTF16LECodec returns a codec for fixed-width UTF-16 little-endian (one code unit per register, low byte first on wire). registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewUTF16LECodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return utf16LECodec{registerCount: registerCount}, nil

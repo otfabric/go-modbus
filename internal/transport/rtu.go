@@ -49,8 +49,10 @@ func discardLink(link RTULink, drainTimeout time.Duration) {
 // and its tail taken for the start of the next answer (MODBUS over Serial Line
 // V1.02, 2.5.1.1: frames are delimited by a silent interval of t3.5).
 //
-// It returns the number of bytes discarded.
-func drainLink(link RTULink, minWindow, quiet, maxWindow time.Duration) int {
+// It returns the number of bytes discarded. A context that ends stops the
+// drain before its next read; the caller looks at ctx to tell a drain that was
+// cut short from one that found the link quiet.
+func drainLink(ctx context.Context, link RTULink, minWindow, quiet, maxWindow time.Duration) int {
 	buf := make([]byte, 1024)
 	total := 0
 	start := time.Now()
@@ -62,6 +64,9 @@ func drainLink(link RTULink, minWindow, quiet, maxWindow time.Duration) int {
 			return total
 		}
 		if err := link.SetDeadline(start.Add(min(end, maxWindow))); err != nil {
+			return total
+		}
+		if ctxAfterDeadline(ctx) != nil {
 			return total
 		}
 		n, err := link.Read(buf)
@@ -141,9 +146,10 @@ func (rt *RTU) Resync() {
 
 // drainBeforeRequest discards what is left of an earlier exchange: at least
 // 3 x t3.5, and until the line has been silent for t3.5, bounded by the
-// request timeout. It returns the number of bytes discarded.
-func (rt *RTU) drainBeforeRequest() int {
-	return drainLink(rt.Link, rt.t35*3, rt.t35, rt.Timeout)
+// request timeout, and cut short when ctx ends. It returns the number of bytes
+// discarded.
+func (rt *RTU) drainBeforeRequest(ctx context.Context) int {
+	return drainLink(ctx, rt.Link, rt.t35*3, rt.t35, rt.Timeout)
 }
 
 // sleepCtx sleeps for d, returning early if ctx is cancelled.
@@ -165,17 +171,34 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
 	switch {
 	case rt.drain:
-		rt.drainBeforeRequest()
+		rt.drainBeforeRequest(ctx)
+		if err := ctx.Err(); err != nil {
+			// The drain was cut short: the next request starts with it again.
+			return nil, err
+		}
 		rt.drain = false
 		rt.verify = true
 	case rt.verify:
 		// Bytes on a line that should be quiet: the last answer read may have
 		// been another request's. Keep checking until the line is found quiet.
-		rt.verify = rt.drainBeforeRequest() > 0
+		n := rt.drainBeforeRequest(ctx)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		rt.verify = n > 0
 	}
 	deadline := requestDeadline(ctx, rt.Timeout)
 	if err := rt.Link.SetDeadline(deadline); err != nil {
 		return nil, err
+	}
+	if err := ctxAfterDeadline(ctx); err != nil {
+		return nil, err
+	}
+	// Unit ID, function code, payload and CRC must fit in one frame: a request
+	// that does not is refused here and nothing is written (the ASCII and
+	// Modbus/TCP framers refuse it too).
+	if 2+len(req.Payload)+2 > adu.MaxRTUFrameLength {
+		return nil, protocol.ErrProtocolError
 	}
 	gap := time.Until(rt.lastActivity.Add(rt.t35))
 	if gap > 0 {
@@ -207,8 +230,11 @@ func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 	case protocol.ErrBadCRC, protocol.ErrProtocolError, protocol.ErrShortFrame:
 		// Wait out the rest of the frame, but not past the request deadline.
 		if sleepCtx(ctx, min(time.Duration(adu.MaxRTUFrameLength)*rt.t1, time.Until(deadline))) == nil {
-			rt.drainBeforeRequest()
-			rt.drain = false
+			rt.drainBeforeRequest(ctx)
+			// A drain that ctx cut short is repeated before the next request.
+			if ctx.Err() == nil {
+				rt.drain = false
+			}
 		}
 	}
 	if err != protocol.ErrRequestTimedOut {

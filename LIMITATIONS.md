@@ -54,6 +54,10 @@ from the same host, or from many hosts a client whose handshake is slow.
 - `Open` takes no context: its dials are bounded by `DialTimeout` (or its
   default) and cannot be cancelled. The dials that replace a lost connection
   during a request run under the request's context as well.
+- `Close` does not end an `Open` that is in progress. Called while `Open` is
+  still dialling it returns nil and closes nothing; `Open` then completes and
+  the client is open. A shutdown path that may race an `Open` calls `Close`
+  again after `Open` has returned.
 - For `udp` and `rtuoverudp`, a connection from the dialer must keep datagram
   boundaries (one `Read` per datagram, one datagram per `Write`); a stream
   connection, such as most proxies give, will not frame Modbus/UDP correctly.
@@ -68,6 +72,13 @@ from the same host, or from many hosts a client whose handshake is slow.
   libmodbus, PyModbus, digitalpetri/modbus, NModbus and tokio-modbus
   servers answer 11 ([INTEROPERABILITY.md](INTEROPERABILITY.md)).
 - The server does not filter unit identifiers: that is the handler's job.
+- `Server.Stop` and `Server.Shutdown` wait for the goroutines that run the
+  handler methods and the `ServerMetrics` hooks. Called from one of those,
+  `Stop` never returns and `Shutdown` returns only when its context ends; use
+  `go srv.Stop()` or `Shutdown` with the handler's context
+  ([API.md § 3.2](API.md#32-lifecycle)). Only the first `Stop` or `Shutdown`
+  waits: after a `Shutdown` whose context ended, nothing waits for the handlers
+  that are still running.
 - The serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`,
   `asciiovertcp`) carry no transaction ID. The tunnelled ones replace their
   socket after a timeout, a cancelled request or a response that does not match

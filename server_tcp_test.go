@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 )
 
 func TestTCPServerWithConcurrentConnections(t *testing.T) {
@@ -66,14 +65,9 @@ func TestTCPServerWithConcurrentConnections(t *testing.T) {
 		t.Errorf("c1.Connect() should have succeeded, got: %v", err)
 	}
 
-	// the server should have 1 client connection at this point
-	time.Sleep(time.Millisecond)
-	server.lock.Lock()
-	if len(server.tcpClients) != 1 {
-		t.Errorf("expected server.tcpClients to hold 1 entry, got: %v",
-			len(server.tcpClients))
-	}
-	server.lock.Unlock()
+	// the server should have 1 client connection at this point: it registers
+	// the connection a moment after the client's Open has returned
+	waitFor(t, "the server to hold 1 connection", func() bool { return e2eServerConns(server) == 1 })
 
 	// connect client #2
 	err = c2.Open()
@@ -81,14 +75,8 @@ func TestTCPServerWithConcurrentConnections(t *testing.T) {
 		t.Errorf("c2.Connect() should have succeeded, got: %v", err)
 	}
 
-	time.Sleep(time.Millisecond)
 	// the server should now have 2 client connections, its maximum allowed
-	server.lock.Lock()
-	if len(server.tcpClients) != 2 {
-		t.Errorf("expected server.tcpClients to hold 2 entries, got: %v",
-			len(server.tcpClients))
-	}
-	server.lock.Unlock()
+	waitFor(t, "the server to hold 2 connections", func() bool { return e2eServerConns(server) == 2 })
 
 	// connect client #3
 	err = c3.Open()
@@ -130,13 +118,7 @@ func TestTCPServerWithConcurrentConnections(t *testing.T) {
 
 	// close c2 and make sure the connection is freed
 	_ = c2.Close()
-	time.Sleep(time.Millisecond)
-	server.lock.Lock()
-	if len(server.tcpClients) != 1 {
-		t.Errorf("expected server.tcpClients to hold 1 entry, got: %v",
-			len(server.tcpClients))
-	}
-	server.lock.Unlock()
+	waitFor(t, "the server to release the connection of c2", func() bool { return e2eServerConns(server) == 1 })
 
 	// reconnect c2
 	err = c2.Open()
@@ -168,18 +150,12 @@ func TestTCPServerWithConcurrentConnections(t *testing.T) {
 
 	// close c1 and make sure the connection is freed
 	_ = c1.Close()
-	time.Sleep(time.Millisecond)
-	server.lock.Lock()
-	if len(server.tcpClients) != 1 {
-		t.Errorf("expected server.tcpClients to hold 1 entry, got: %v",
-			len(server.tcpClients))
-	}
-	server.lock.Unlock()
+	waitFor(t, "the server to release the connection of c1", func() bool { return e2eServerConns(server) == 1 })
 
-	// stopping the server should disconnect all clients
+	// stopping the server should disconnect all clients: Stop returns once
+	// every connection goroutine has released its connection
 	_ = server.Stop()
 
-	time.Sleep(time.Millisecond)
 	server.lock.Lock()
 	if len(server.tcpClients) != 0 {
 		t.Errorf("expected server.tcpClients to hold 0 entries, got: %v",
