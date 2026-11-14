@@ -1,13 +1,15 @@
 # go-modbus Releases
 
-## v1.15.2
+## v1.15.3
 
 **Date:** 2026-11-14
-**Previous release:** v1.15.1
+**Previous release:** v1.15.2
+
+The server, codec and request fixes of the policy 1.6 review. They were prepared for v1.15.2, which was tagged without them; v1.15.2 contains only the go-serial update below it.
 
 ### Changed
 
-- Built on go-serial v0.4.0 (was v0.3.0). For the `rtu` and `ascii` transports on Linux, macOS and the BSDs: closing a client whose request is waiting on the serial port now wakes that read and waits until it has let go of the port before the port is closed. The request returns `ErrClientNotOpen`, as before. Each open serial port holds a pipe for this and uses two more file descriptors. On Windows, `Open` refuses a `Speed` above 2^32−1 instead of truncating it. go-modbus opens the port with a 10 ms read timeout and does not use RS-485 mode, so the other changes of go-serial v0.4.0 (long and sub-millisecond timeouts, RS-485 on MIPS and macOS) do not change what it does. The bundled `modbus-cli` stays on v1.15.1 until the next release.
+- The bundled `modbus-cli` is built on v1.15.2 (was v1.15.1).
 - Server: after an `Accept` that failed, the accept loop waits before it tries again: 5 ms, then twice as long after each failure that follows, up to 1 s. A connection that is accepted starts the sequence over, and `Stop` and `Shutdown` end the wait. Before, it tried again at once. The warning it logs names the wait.
 - The constructors of the text, BCD and UTF-16 codecs (`NewAsciiCodec`, `NewAsciiFixedCodec`, `NewAsciiReverseCodec`, `NewBCDCodec`, `NewPackedBCDCodec`, `NewSignedPackedBCDCodec`, `NewPackedBCDReverseCodec`, `NewUTF16BECodec`, `NewUTF16LECodec`) accept 1 to 32767 registers and return an error wrapping `codec.ErrCodecValue` for more. A codec of more than 32767 registers could not work before: its byte count, twice the register count, does not fit `ByteSpec.Count`, so `ByteSpec` and a direct `EncodeRegisters` call gave another length than the register count. No Modbus request carries more than 125 registers.
 
@@ -41,6 +43,19 @@
 
 - The nightly workflow runs the test suite on linux/386.
 - The release workflow builds, vets and tests go-sunspec, go-modbus-trace, modbusctl, sunspecctl and modbus-simulator against the candidate before it tags.
+
+---
+
+## v1.15.2
+
+**Date:** 2026-11-14
+**Previous release:** v1.15.1
+
+### Changed
+
+- Built on go-serial v0.4.0 (was v0.3.0). For the `rtu` and `ascii` transports on Linux, macOS and the BSDs: closing a client whose request is waiting on the serial port now wakes that read and waits until it has let go of the port before the port is closed. The request returns `ErrClientNotOpen`, as before. Each open serial port holds a pipe for this and uses two more file descriptors. On Windows, `Open` refuses a `Speed` above 2^32−1 instead of truncating it. go-modbus opens the port with a 10 ms read timeout and does not use RS-485 mode, so the other changes of go-serial v0.4.0 (long and sub-millisecond timeouts, RS-485 on MIPS and macOS) do not change what it does.
+- spec/README.md records where the vendored MODBUS specification comes from (V1.1b3) and the hashes of the source PDF and of `spec/MODBUS-SPEC.md`.
+- No change to the library code otherwise. The bundled `modbus-cli` is built on v1.15.1.
 
 ---
 
