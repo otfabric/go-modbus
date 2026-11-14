@@ -1,3 +1,5 @@
+# Called by pr.yml on every pull request that is not documentation only;
+# dispatch it to run it on a branch without a pull request.
 name: Interop
 run-name: "Interop (${{ github.event_name }}) on ${{ github.ref_name }} by @${{ github.actor }}"
 
@@ -6,12 +8,40 @@ run-name: "Interop (${{ github.event_name }}) on ${{ github.ref_name }} by @${{ 
 # published: nothing of modbus-interop is cloned or built here.
 
 on:
-  push:
-    branches: ["**"]
-    paths-ignore: ["**/*.md"]
-  pull_request:
-    branches: ["**"]
-    paths-ignore: ["**/*.md"]
+  workflow_call:
+    inputs:
+      libmodbus_image:
+        description: "libmodbus reference image (default: the pinned release)"
+        type: string
+        default: ""
+      pymodbus_image:
+        description: "PyModbus reference image (default: the pinned release)"
+        type: string
+        default: ""
+      digitalpetri_image:
+        description: "digitalpetri/modbus reference image (default: the pinned release)"
+        type: string
+        default: ""
+      nmodbus_image:
+        description: "NModbus reference image (default: the pinned release)"
+        type: string
+        default: ""
+      tokiomodbus_image:
+        description: "tokio-modbus reference image (default: the pinned release)"
+        type: string
+        default: ""
+      j2mod_image:
+        description: "j2mod reference image (default: the pinned release)"
+        type: string
+        default: ""
+      jsmodbus_image:
+        description: "jsmodbus reference image (default: the pinned release)"
+        type: string
+        default: ""
+      modbusesp_image:
+        description: "modbus-esp8266 reference image (default: the pinned release)"
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       libmodbus_image:

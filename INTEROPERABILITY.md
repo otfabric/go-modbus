@@ -111,7 +111,7 @@ category the device has objects for, with the bit for individual access
 ## Verification status
 
 Besides its own tests the library is run against eight independent
-implementations, as client and as server, on every push. The reference
+implementations, as client and as server, on every pull request. The reference
 builds are the images of
 [otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.4.1.
 A ninth, modbus4j, is GPL-3.0 and its image is not published. It is run

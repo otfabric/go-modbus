@@ -1,11 +1,12 @@
 # Documents against the code (DOC-008, standards/documentation.md#doc-sync).
-# No path filter: this is the check that runs when ci.yml skips a
-# Markdown-only change, so branch protection can require it.
+# pr.yml calls it on every pull request; on main it runs on every push, with
+# no path filter.
 name: Docs
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,18 +14,17 @@ permissions:
 jobs:
   docs:
     name: Docs (library)
-    uses: otfabric/.github/.github/workflows/docs-check.yml@v3.5.0
+    uses: otfabric/.github/.github/workflows/docs-check.yml@v3.8.0
     with:
       docsync-version: v0.3.1
-      policy-version: v1.4.2
+      policy-version: v1.6.1
     secrets: inherit
 
   docs-cli:
     name: Docs (cmd/modbus-cli)
-    uses: otfabric/.github/.github/workflows/docs-check.yml@v3.5.0
+    uses: otfabric/.github/.github/workflows/docs-check.yml@v3.8.0
     with:
       module-dir: cmd/modbus-cli
       docsync-version: v0.3.1
-      policy-version: v1.4.2
-      run-policy: false
+      policy-version: v1.6.1
     secrets: inherit

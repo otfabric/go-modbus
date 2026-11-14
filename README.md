@@ -636,7 +636,7 @@ PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
 0.17.0, j2mod 3.4.0, jsmodbus 5.0.0, modbus-esp8266 4.1.1; modbus4j 3.1.0
 from a local build). The eight published images are named in
 `interop/harness.go`, the Makefile and the Interop workflow, which runs on
-every push and pull request. To test against another build, set
+every pull request. To test against another build, set
 `MODBUS_INTEROP_<ADAPTER>_IMAGE` (`LIBMODBUS`, `PYMODBUS`, `DIGITALPETRI`,
 `NMODBUS`, `TOKIOMODBUS`, `J2MOD`, `JSMODBUS`, `MODBUSESP`, `MODBUS4J`); to run
 some stacks only, `MODBUS_INTEROP_ADAPTERS=libmodbus,pymodbus`. Against the
