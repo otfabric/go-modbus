@@ -36,6 +36,7 @@ defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
 10. [Type constants](#10-type-constants)
 11. [Codec API](#11-codec-api)
 12. [Batch reads (package batch)](#12-batch-reads-package-batch)
+13. [Ownership of slices](#13-ownership-of-slices)
 
 ---
 
@@ -273,6 +274,12 @@ already-open client is a no-op. `Close` closes all connections, including the
 ones requests are running on: requests in flight, callers waiting for a
 connection and requests sleeping between two retry attempts return promptly with
 `ErrClientNotOpen`.
+
+**`Close` during `Open`.** `Open` takes no context, and `Close` does not end an
+`Open` that is in progress. A `Close` called while `Open` is still dialling finds
+nothing to close and returns nil; `Open` then completes, and the client is open on
+the connection it dialled. To end up with a closed client, call `Close` after
+`Open` has returned; its dials are bounded by `DialTimeout`.
 
 **An open client stays open.** Between `Open` and `Close` a request never fails
 with `ErrClientNotOpen`. When the client has no usable connection, the next
@@ -996,6 +1003,8 @@ const (
 
 `DiagnosticSubFunction` has a `String()` method for logging. Raw `uint16` values can be cast to `DiagnosticSubFunction` for reserved or vendor sub-functions.
 
+`data` may hold at most 250 bytes: with the function code and the sub-function that is the 253 bytes a PDU carries. `Diagnostics` does not check the length itself; a longer request is refused by the framer of the transport before anything is written, with an error matching `ErrInvalidMBAPLength` on `tcp`, `tcp+tls` and `udp` and `ErrProtocolError` on the serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`).
+
 ```go
 type DiagnosticResponse struct {
     SubFunction DiagnosticSubFunction // echoed from request
@@ -1145,6 +1154,32 @@ accept loop and all handler goroutines exit or `ctx` expires (returning
 `ctx.Err()`). `Stop()` is equivalent to `Shutdown(context.Background())` — it
 blocks indefinitely. A stopped server can be started again with `Start`.
 
+**Only the first `Shutdown` or `Stop` waits.** A call made while that one is still
+waiting, or after it returned because its context ended, finds the server stopped
+and returns nil at once, although handler goroutines of that cycle may still be
+running. Nothing else waits for them: after a `Shutdown` that returned
+`ctx.Err()`, a `Stop` does not block.
+
+**Not from a callback.** `Shutdown` and `Stop` wait for the goroutines that run
+the `RequestHandler` methods and the `ServerMetrics` hooks, so a callback must not
+call them and wait for the result:
+
+| Called from a handler method or a `ServerMetrics` hook | Outcome |
+|---|---|
+| `Stop()` | never returns: it waits for the goroutine it was called on |
+| `Shutdown(ctx)`, any `ctx` but the handler's | the server stops accepting and closes its connections; the call returns `ctx.Err()` when `ctx` ends |
+| `Shutdown(ctx)` with the `ctx` the handler received | returns `context.Canceled` at once after the listener and the connections are closed (the shutdown cancels that context) |
+| `go srv.Stop()` | completes once the handler has returned |
+
+In every case the request being handled may go unanswered, because the shutdown
+closes its connection.
+
+**Accept errors.** When `Accept` fails for a reason other than the listener being
+closed (no file descriptors left, for example), the server logs a warning and
+waits before it tries again: 5 ms after the first failure, twice as long after
+each one that follows, up to 1 s; a connection that is accepted starts the
+sequence over. `Shutdown` and `Stop` end the wait.
+
 **Responses that do not fit.** If a handler returns more data than one Modbus
 frame can carry (for example an FC43 object longer than 244 bytes, or an FC0C
 event log of several hundred events), the server logs an error and answers with a
@@ -1226,6 +1261,16 @@ reading the connection during a handler call. (A client that only shuts down
 its sending side cannot be told apart from one that left, and has the same
 effect.) Requests a client pipelined before disconnecting are still dispatched,
 in order.
+
+**Slices.** The slices in a request (`Args`, `WriteValues`, `Data`, `Requests`,
+`Records`) are the handler's to keep or change. A slice, or a response struct, a
+handler returns is read by the server after the handler has returned, while the
+response is encoded, and not kept after that: return a copy of shared state, not
+a view of it (`h.regs[a:b]`) that another connection's write may be changing. See
+[§ 13](#13-ownership-of-slices).
+
+**Stopping the server.** A handler method must not call `Stop`, or `Shutdown` and
+wait for it: see [§ 3.2](#32-lifecycle) for what each call does from a handler.
 
 ```go
 type RequestHandler interface {
@@ -1729,6 +1774,12 @@ type Logger interface {
 }
 ```
 
+The methods are called synchronously: on a client from the goroutine of the
+method that logs, on a server from the server's own goroutines (the accept loop
+and one per connection). They must not panic. A panic in a `Logger` method is not
+recovered: on a client it reaches the caller of the client method, on a server it
+ends the process.
+
 ### Structured logging (FieldLogger)
 
 For richer observability, the library supports `FieldLogger` — an optional extension
@@ -1823,6 +1874,23 @@ Attach metric callbacks via the `Metrics` field of `Config` or
 retries are internal to the client). All methods are called synchronously;
 implementations must be **non-blocking** (e.g. increment an atomic counter, send
 on a buffered channel).
+
+**A method that panics.**
+
+| Interface | Runs on | A panic in a method |
+|---|---|---|
+| `ClientMetrics`, `AttemptMetrics` | the goroutine that called the client method | is not recovered: it unwinds through the client into that caller, like a panic in the caller's own code. The client stays usable |
+| `ServerMetrics` | the goroutine that serves the client's connection | is recovered and logged at error level with a stack trace, as for a handler method. The request is served and answered as if the method had returned, and the other methods are still called for it |
+
+`ServerMetrics` methods get the unit ID and the function code as the client sent
+them. `OnRequest` is called before the server has checked that it serves the
+function code, so any value from 0 to 255 can arrive: do not index a table with
+it without a bound.
+
+`ClientMetrics` methods may call the client, `Close` included; `AttemptMetrics`
+methods run while the request holds its connection and must not make requests on
+the same client. `ServerMetrics` methods must not call `Stop`, or `Shutdown` and
+wait for it ([§ 3.2](#32-lifecycle)).
 
 ### `ClientMetrics`
 
@@ -1969,7 +2037,8 @@ type RetryPolicy interface {
 func NoRetry() RetryPolicy
 
 // Exponential back-off with common settings.
-// delay = base × 2^attempt, capped at maxDelay. Stops after maxAttempts retries.
+// delay = base × 2^attempt, capped at maxDelay for every attempt number. Stops
+// after maxAttempts retries.
 // maxAttempts = 0 means unlimited (always pair with a context deadline).
 func ExponentialBackoff(base, maxDelay time.Duration, maxAttempts int) RetryPolicy
 
@@ -2339,7 +2408,7 @@ func MustNewInt64M10kCodec(order DecimalLimbOrder) Codec[int64]
 
 Stable IDs: `uint32_m10k/order:low_to_high`, `uint32_m10k/order:high_to_low`, `int32_m10k/order:...`, and similarly for 48/64.
 
-**Text (register count = width in registers):**
+**Text (register count = width in registers, 1 to 32767):** a constructor returns an error wrapping `ErrCodecValue` for 0 and for more than 32767 registers, whose byte count (two per register) would not fit `ByteSpec.Count`.
 
 ```go
 func NewAsciiCodec(registerCount uint16) (Codec[string], error)
@@ -2685,3 +2754,53 @@ for _, it := range res.Items {
 }
 ```
 
+---
+
+## 13. Ownership of slices
+
+Who may keep or change a slice that crosses the API. **Owned** means the receiver
+has storage of its own and may keep and change it. **Borrowed** means the receiver
+may read it until the stated point and must copy what it keeps.
+
+### Client
+
+| Data | Mode | Notes |
+|---|---|---|
+| Slices returned by a client method: `[]bool`, `[]uint16`, `[]byte`, `[][]uint16` of `ReadFileRecords`, `DeviceIdentification.Objects`, `CommEventLogResponse.Events`, `DiagnosticResponse.Data`, `ReportServerIDResponse.Data` | owned by the caller | The client keeps no reference: changing a result does not change a later one |
+| Slices passed to a client method: `values` of the writes, `data` of `Diagnostics`, `requests` and `records` of the file functions | borrowed until the method returns | Encoded into the request before the method returns; not kept |
+| `PDUExchange.Request`, `PDUExchange.Response` given to a `PDUTap` | owned by the tap | Copies, made only when a tap is set |
+| `Config.AllowedFunctionCodes` | copied by `New` | Changing the slice afterwards has no effect |
+
+### Server
+
+| Data | Mode | Notes |
+|---|---|---|
+| Slices in a handler request: `CoilsRequest.Args`, `HoldingRegistersRequest.Args`, `ReadWriteRegistersRequest.WriteValues`, `DiagnosticsRequest.Data`, `ReadFileRecordsRequest.Requests`, `WriteFileRecordsRequest.Records` and each record's `Data` | owned by the handler | Made for that call; the server does not read or reuse them afterwards, so a handler may keep them |
+| Slices and response structs returned by a handler: `[]bool`, `[]uint16`, `[]byte`, `[][]uint16`, `*CommEventLogResponse`, `*CommEventCounterResponse`, `*DeviceIdentificationResponse` | borrowed by the server until the response is encoded | Read after the handler has returned, on the goroutine of that connection, before the next request of that connection is dispatched; never written to and not kept. Other connections run their handlers meanwhile: return a copy of state they can change |
+
+A handler that serves a table shared between connections therefore copies under
+its lock:
+
+```go
+func (h *handler) HandleHoldingRegisters(ctx context.Context, req *modbus.HoldingRegistersRequest) ([]uint16, error) {
+    h.mu.Lock()
+    defer h.mu.Unlock()
+    if req.IsWrite {
+        copy(h.regs[req.Addr:], req.Args)
+        return nil, nil
+    }
+    // Not h.regs[req.Addr:end]: the server would read it after the unlock.
+    return slices.Clone(h.regs[req.Addr : req.Addr+req.Quantity]), nil
+}
+```
+
+### Codecs and batch
+
+| Data | Mode | Notes |
+|---|---|---|
+| `RegisterLayout.BytePositions()` | owned by the caller | A copy |
+| Registers passed to a codec's `DecodeRegisters`; values passed to `EncodeRegisters` | borrowed for the call | Results are new slices |
+| `batch.Result` and its items | owned by the caller | The slices of one `Result` may share storage with each other ([§ 12](#12-batch-reads-package-batch)) |
+
+The tests are in `ownership_test.go`; `TestPDUTap_ContextAndOwnership` and
+`TestAllowedFunctionCodes_CopiedAndGrouped` cover the tap and the allow-list.

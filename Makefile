@@ -139,6 +139,7 @@ fuzz: ## Run back-to-back fuzz targets for FUZZTIME each (default 30s)
 	@echo "Fuzzing (FUZZTIME=$(FUZZTIME))"
 	@go test -run='^$$' -fuzz='^FuzzServerRequest$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzClientResponseParse$$' -fuzztime=$(FUZZTIME) .
+	@go test -run='^$$' -fuzz='^FuzzClientResponseDecode$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzServerFunctions$$' -fuzztime=$(FUZZTIME) .
 	@go test -run='^$$' -fuzz='^FuzzCompile$$' -fuzztime=$(FUZZTIME) ./batch
 	@go test -run='^$$' -fuzz='^FuzzHostileRuntimeDecode$$' -fuzztime=$(FUZZTIME) ./codec

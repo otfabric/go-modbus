@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
@@ -254,71 +255,84 @@ func TestEngine_ContextEndsInFlight(t *testing.T) {
 func TestEngine_CloseInterrupts(t *testing.T) {
 	t.Run("in flight and queued", func(t *testing.T) {
 		for _, pooled := range []bool{false, true} {
-			bt := newBlockingTransport()
+			synctest.Test(t, func(t *testing.T) {
+				bt := newBlockingTransport()
+				e := NewEngine(Config{
+					UsePool:  pooled,
+					MaxConns: 2,
+					MinConns: 1,
+					Dial:     func(context.Context) (aduTransport, error) { return bt, nil },
+				})
+				if err := e.Open(context.Background()); err != nil {
+					t.Fatalf("Open: %v", err)
+				}
+				const callers = 4
+				done := make(chan error, callers)
+				for range callers {
+					go func() {
+						_, err := e.Execute(context.Background(), &adu.Request{})
+						done <- err
+					}()
+				}
+				// Every caller is blocked: in the transport, or waiting for its
+				// turn or for a pooled connection.
+				synctest.Wait()
+				if n := len(bt.entered); n == 0 || n == callers {
+					t.Fatalf("pooled=%v: %d of %d requests in flight, want some in flight and some queued", pooled, n, callers)
+				}
+				if err := e.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+				for range callers {
+					select {
+					case err := <-done:
+						if !errors.Is(err, protocol.ErrClientNotOpen) {
+							t.Errorf("pooled=%v: request interrupted by Close: %v, want ErrClientNotOpen", pooled, err)
+						}
+					case <-time.After(3 * time.Second):
+						t.Fatalf("pooled=%v: a request did not return after Close", pooled)
+					}
+				}
+			})
+		}
+	})
+	t.Run("retry back-off", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
 			e := NewEngine(Config{
-				UsePool:  pooled,
-				MaxConns: 2,
-				MinConns: 1,
-				Dial:     func(context.Context) (aduTransport, error) { return bt, nil },
+				Retry: fixedRetry{max: 5, delay: time.Minute},
+				Dial: func(context.Context) (aduTransport, error) {
+					return &mockTransport{execFn: func(context.Context, *adu.Request) (*adu.Response, error) {
+						return nil, io.EOF
+					}}, nil
+				},
 			})
 			if err := e.Open(context.Background()); err != nil {
 				t.Fatalf("Open: %v", err)
 			}
-			const callers = 4
-			done := make(chan error, callers)
-			for range callers {
-				go func() {
-					_, err := e.Execute(context.Background(), &adu.Request{})
-					done <- err
-				}()
-			}
-			<-bt.entered
-			time.Sleep(10 * time.Millisecond)
-			if err := e.Close(); err != nil {
-				t.Fatalf("Close: %v", err)
-			}
-			for range callers {
-				select {
-				case err := <-done:
-					if !errors.Is(err, protocol.ErrClientNotOpen) {
-						t.Errorf("pooled=%v: request interrupted by Close: %v, want ErrClientNotOpen", pooled, err)
-					}
-				case <-time.After(3 * time.Second):
-					t.Fatalf("pooled=%v: a request did not return after Close", pooled)
+			done := make(chan error, 1)
+			start := time.Now()
+			go func() {
+				_, err := e.Execute(context.Background(), &adu.Request{})
+				done <- err
+			}()
+			// The first attempt has failed and the request waits out its delay.
+			synctest.Wait()
+			_ = e.Close()
+			select {
+			case err := <-done:
+				if !errors.Is(err, protocol.ErrClientNotOpen) || !errors.Is(err, io.EOF) {
+					t.Errorf("request interrupted in its back-off: %v, want io.EOF joined with ErrClientNotOpen", err)
 				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("Close did not end the retry back-off")
 			}
-		}
-	})
-	t.Run("retry back-off", func(t *testing.T) {
-		e := NewEngine(Config{
-			Retry: fixedRetry{max: 5, delay: time.Minute},
-			Dial: func(context.Context) (aduTransport, error) {
-				return &mockTransport{execFn: func(context.Context, *adu.Request) (*adu.Response, error) {
-					return nil, io.EOF
-				}}, nil
-			},
+			if d := time.Since(start); d != 0 {
+				t.Errorf("the request returned %v into its one-minute delay, want at once", d)
+			}
+			if err := e.Open(context.Background()); !errors.Is(err, protocol.ErrClientNotOpen) {
+				t.Errorf("Open on a closed engine: %v, want ErrClientNotOpen", err)
+			}
 		})
-		if err := e.Open(context.Background()); err != nil {
-			t.Fatalf("Open: %v", err)
-		}
-		done := make(chan error, 1)
-		go func() {
-			_, err := e.Execute(context.Background(), &adu.Request{})
-			done <- err
-		}()
-		time.Sleep(20 * time.Millisecond)
-		_ = e.Close()
-		select {
-		case err := <-done:
-			if !errors.Is(err, protocol.ErrClientNotOpen) || !errors.Is(err, io.EOF) {
-				t.Errorf("request interrupted in its back-off: %v, want io.EOF joined with ErrClientNotOpen", err)
-			}
-		case <-time.After(3 * time.Second):
-			t.Fatal("Close did not end the retry back-off")
-		}
-		if err := e.Open(context.Background()); !errors.Is(err, protocol.ErrClientNotOpen) {
-			t.Errorf("Open on a closed engine: %v, want ErrClientNotOpen", err)
-		}
 	})
 	t.Run("while dialling", func(t *testing.T) {
 		var dials atomic.Int32
@@ -389,63 +403,66 @@ func TestEngine_WaitingForTurnHonoursContext(t *testing.T) {
 // A caller waiting for a pooled connection is woken when a connection in use is
 // discarded, and when another caller's dial fails.
 func TestPool_WaitersWokenOnDiscardAndDialFailure(t *testing.T) {
-	var dials atomic.Int32
-	dialErr := errors.New("refused")
-	gate := make(chan struct{})
-	p, err := NewPool(context.Background(), 0, 1, func(context.Context) (aduTransport, error) {
-		switch dials.Add(1) {
-		case 1:
-			return &fakeTransport{}, nil
-		case 2:
-			<-gate
-			return nil, dialErr
-		default:
-			return &fakeTransport{}, nil
+	synctest.Test(t, func(t *testing.T) {
+		var dials atomic.Int32
+		dialErr := errors.New("refused")
+		gate := make(chan struct{})
+		p, err := NewPool(context.Background(), 0, 1, func(context.Context) (aduTransport, error) {
+			switch dials.Add(1) {
+			case 1:
+				return &fakeTransport{}, nil
+			case 2:
+				<-gate
+				return nil, dialErr
+			default:
+				return &fakeTransport{}, nil
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = p.CloseAll() }()
+
+		first, err := p.acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		results := make(chan error, 2)
+		for range 2 {
+			go func() {
+				tr, err := p.acquire(context.Background())
+				if err == nil {
+					p.release(tr)
+				}
+				results <- err
+			}()
+		}
+		// Both waiters are blocked: the only slot is taken.
+		synctest.Wait()
+		// Discarding the only connection lets one waiter dial (and fail); its failure
+		// lets the other one dial.
+		p.discard(first)
+		close(gate)
+		var failed, ok int
+		for range 2 {
+			select {
+			case err := <-results:
+				if errors.Is(err, dialErr) {
+					failed++
+				} else if err == nil {
+					ok++
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("a waiter was not woken")
+			}
+		}
+		if failed != 1 || ok != 1 {
+			t.Fatalf("waiters: %d dial failure(s), %d success(es); want 1 and 1", failed, ok)
+		}
+		if p.total() != 1 {
+			t.Fatalf("total = %d, want 1", p.total())
 		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = p.CloseAll() }()
-
-	first, err := p.acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	results := make(chan error, 2)
-	for range 2 {
-		go func() {
-			tr, err := p.acquire(context.Background())
-			if err == nil {
-				p.release(tr)
-			}
-			results <- err
-		}()
-	}
-	time.Sleep(10 * time.Millisecond)
-	// Discarding the only connection lets one waiter dial (and fail); its failure
-	// lets the other one dial.
-	p.discard(first)
-	close(gate)
-	var failed, ok int
-	for range 2 {
-		select {
-		case err := <-results:
-			if errors.Is(err, dialErr) {
-				failed++
-			} else if err == nil {
-				ok++
-			}
-		case <-time.After(3 * time.Second):
-			t.Fatal("a waiter was not woken")
-		}
-	}
-	if failed != 1 || ok != 1 {
-		t.Fatalf("waiters: %d dial failure(s), %d success(es); want 1 and 1", failed, ok)
-	}
-	if p.total() != 1 {
-		t.Fatalf("total = %d, want 1", p.total())
-	}
 }
 
 // CloseAll closes connections in use, and a connection whose dial completes

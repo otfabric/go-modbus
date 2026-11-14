@@ -12,6 +12,12 @@ import (
 // Logger is the logging interface accepted by Config and ServerConfig.
 // Implement this interface to integrate any structured or levelled logging library
 // (e.g. zap, zerolog, slog, logrus).
+//
+// The methods are called synchronously: on a client from the goroutine of the
+// method that logs, on a server from the server's own goroutines (the accept
+// loop and one per connection). They must not panic: a panic in a Logger method
+// is not recovered. On a client it reaches the caller of the client method; on
+// a server it ends the process, like any panic that no one recovers.
 type Logger interface {
 	Debugf(format string, args ...any)
 	Infof(format string, args ...any)

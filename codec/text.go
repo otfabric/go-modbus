@@ -2,7 +2,12 @@
 
 package codec
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+
+	"github.com/otfabric/go-modbus/internal/adu"
+)
 
 // Text codec behavioral contract:
 //
@@ -24,6 +29,36 @@ func textCodecRejectZeroRegisters(registerCount uint16) error {
 	return nil
 }
 
+// maxTextRegisterCount is the largest register count of a text, BCD or UTF-16
+// codec. Such a codec holds two bytes per register, and ByteSpec counts bytes
+// in 16 bits: more registers than this have no byte count.
+const maxTextRegisterCount = math.MaxUint16 / 2
+
+// checkTextRegisterCount is what the constructors of the text, BCD and UTF-16
+// codecs accept: 1..maxTextRegisterCount registers.
+func checkTextRegisterCount(registerCount uint16) error {
+	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+		return err
+	}
+	if registerCount > maxTextRegisterCount {
+		return fmt.Errorf("%w: register count %d exceeds the maximum of %d", ErrCodecValue, registerCount, maxTextRegisterCount)
+	}
+	return nil
+}
+
+// textByteCount returns the number of bytes in registerCount registers. It is
+// computed in int: twice a register count does not always fit in 16 bits.
+func textByteCount(registerCount uint16) int {
+	return int(registerCount) * 2
+}
+
+// textByteSpec returns the ByteSpec of a codec of registerCount registers. The
+// constructors bound registerCount (checkTextRegisterCount), so the byte count
+// fits.
+func textByteSpec(registerCount uint16) ByteSpec {
+	return ByteSpec{Count: adu.Uint16(textByteCount(registerCount))}
+}
+
 // validateASCII returns an error if any byte in the entire input s is > 0x7f.
 // The full string is validated so that non-ASCII in overlong input is rejected
 // rather than silently truncated.
@@ -42,7 +77,7 @@ type asciiCodec struct{ registerCount uint16 }
 func (c asciiCodec) ID() string                 { return fmt.Sprintf("ascii/registers:%d", c.registerCount) }
 func (c asciiCodec) Name() string               { return "ascii" }
 func (c asciiCodec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: c.registerCount} }
-func (c asciiCodec) ByteSpec() ByteSpec         { return ByteSpec{Count: c.registerCount * 2} }
+func (c asciiCodec) ByteSpec() ByteSpec         { return textByteSpec(c.registerCount) }
 
 func (c asciiCodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -53,7 +88,7 @@ func (c asciiCodec) DecodeRegisters(regs []uint16) (string, error) {
 }
 
 func (c asciiCodec) EncodeRegisters(s string) ([]uint16, error) {
-	byteCount := c.registerCount * 2
+	byteCount := textByteCount(c.registerCount)
 	if err := validateASCII(s, c.ID()); err != nil {
 		return nil, err
 	}
@@ -71,7 +106,7 @@ type asciiFixedCodec struct{ registerCount uint16 }
 func (c asciiFixedCodec) ID() string                 { return fmt.Sprintf("ascii_fixed/registers:%d", c.registerCount) }
 func (c asciiFixedCodec) Name() string               { return "ascii_fixed" }
 func (c asciiFixedCodec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: c.registerCount} }
-func (c asciiFixedCodec) ByteSpec() ByteSpec         { return ByteSpec{Count: c.registerCount * 2} }
+func (c asciiFixedCodec) ByteSpec() ByteSpec         { return textByteSpec(c.registerCount) }
 
 func (c asciiFixedCodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -82,7 +117,7 @@ func (c asciiFixedCodec) DecodeRegisters(regs []uint16) (string, error) {
 }
 
 func (c asciiFixedCodec) EncodeRegisters(s string) ([]uint16, error) {
-	byteCount := c.registerCount * 2
+	byteCount := textByteCount(c.registerCount)
 	if err := validateASCII(s, c.ID()); err != nil {
 		return nil, err
 	}
@@ -99,7 +134,7 @@ func (c asciiReverseCodec) ID() string {
 }
 func (c asciiReverseCodec) Name() string               { return "ascii_reverse" }
 func (c asciiReverseCodec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: c.registerCount} }
-func (c asciiReverseCodec) ByteSpec() ByteSpec         { return ByteSpec{Count: c.registerCount * 2} }
+func (c asciiReverseCodec) ByteSpec() ByteSpec         { return textByteSpec(c.registerCount) }
 
 func (c asciiReverseCodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -110,7 +145,7 @@ func (c asciiReverseCodec) DecodeRegisters(regs []uint16) (string, error) {
 }
 
 func (c asciiReverseCodec) EncodeRegisters(s string) ([]uint16, error) {
-	byteCount := c.registerCount * 2
+	byteCount := textByteCount(c.registerCount)
 	if err := validateASCII(s, c.ID()); err != nil {
 		return nil, err
 	}
@@ -136,7 +171,7 @@ type bcdCodec struct{ registerCount uint16 }
 func (c bcdCodec) ID() string                 { return fmt.Sprintf("bcd/registers:%d", c.registerCount) }
 func (c bcdCodec) Name() string               { return "bcd" }
 func (c bcdCodec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: c.registerCount} }
-func (c bcdCodec) ByteSpec() ByteSpec         { return ByteSpec{Count: c.registerCount * 2} }
+func (c bcdCodec) ByteSpec() ByteSpec         { return textByteSpec(c.registerCount) }
 
 func (c bcdCodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -152,7 +187,7 @@ func (c bcdCodec) DecodeRegisters(regs []uint16) (string, error) {
 }
 
 func (c bcdCodec) EncodeRegisters(s string) ([]uint16, error) {
-	digitCount := int(c.registerCount * 2)
+	digitCount := textByteCount(c.registerCount)
 	for _, r := range s {
 		if r < '0' || r > '9' {
 			return nil, &CodecValueError{Codec: c.ID(), Reason: "BCD string must contain only digits 0-9"}
@@ -174,7 +209,7 @@ type packedBCDCodec struct{ registerCount uint16 }
 func (c packedBCDCodec) ID() string                 { return fmt.Sprintf("packed_bcd/registers:%d", c.registerCount) }
 func (c packedBCDCodec) Name() string               { return "packed_bcd" }
 func (c packedBCDCodec) RegisterSpec() RegisterSpec { return RegisterSpec{Count: c.registerCount} }
-func (c packedBCDCodec) ByteSpec() ByteSpec         { return ByteSpec{Count: c.registerCount * 2} }
+func (c packedBCDCodec) ByteSpec() ByteSpec         { return textByteSpec(c.registerCount) }
 
 func (c packedBCDCodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -190,7 +225,7 @@ func (c packedBCDCodec) DecodeRegisters(regs []uint16) (string, error) {
 }
 
 func (c packedBCDCodec) EncodeRegisters(s string) ([]uint16, error) {
-	digitCount := int(c.registerCount * 4)
+	digitCount := 2 * textByteCount(c.registerCount)
 	for _, r := range s {
 		if r < '0' || r > '9' {
 			return nil, &CodecValueError{Codec: c.ID(), Reason: "packed BCD string must contain only digits 0-9"}
@@ -218,7 +253,7 @@ func (c signedPackedBCDCodec) Name() string { return "signed_packed_bcd" }
 func (c signedPackedBCDCodec) RegisterSpec() RegisterSpec {
 	return RegisterSpec{Count: c.registerCount}
 }
-func (c signedPackedBCDCodec) ByteSpec() ByteSpec { return ByteSpec{Count: c.registerCount * 2} }
+func (c signedPackedBCDCodec) ByteSpec() ByteSpec { return textByteSpec(c.registerCount) }
 
 func (c signedPackedBCDCodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -233,7 +268,7 @@ func (c signedPackedBCDCodec) DecodeRegisters(regs []uint16) (string, error) {
 }
 
 func (c signedPackedBCDCodec) EncodeRegisters(s string) ([]uint16, error) {
-	totalNibbles := int(c.registerCount * 4)
+	totalNibbles := 2 * textByteCount(c.registerCount)
 	b, err := signedPackedBCDToBytes(s, totalNibbles)
 	if err != nil {
 		return nil, &CodecValueError{Codec: c.ID(), Reason: err.Error()}
@@ -251,7 +286,7 @@ func (c packedBCDReverseCodec) Name() string { return "packed_bcd_reverse" }
 func (c packedBCDReverseCodec) RegisterSpec() RegisterSpec {
 	return RegisterSpec{Count: c.registerCount}
 }
-func (c packedBCDReverseCodec) ByteSpec() ByteSpec { return ByteSpec{Count: c.registerCount * 2} }
+func (c packedBCDReverseCodec) ByteSpec() ByteSpec { return textByteSpec(c.registerCount) }
 
 func (c packedBCDReverseCodec) DecodeRegisters(regs []uint16) (string, error) {
 	if err := ValidateRegisterSpec(c.RegisterSpec(), regs, c.ID()); err != nil {
@@ -268,7 +303,7 @@ func (c packedBCDReverseCodec) DecodeRegisters(regs []uint16) (string, error) {
 }
 
 func (c packedBCDReverseCodec) EncodeRegisters(s string) ([]uint16, error) {
-	digitCount := int(c.registerCount * 4)
+	digitCount := 2 * textByteCount(c.registerCount)
 	for _, r := range s {
 		if r < '0' || r > '9' {
 			return nil, &CodecValueError{Codec: c.ID(), Reason: "packed BCD string must contain only digits 0-9"}
@@ -297,57 +332,57 @@ func padLeadingZeros(s string, length int) string {
 	return string(b)
 }
 
-// NewAsciiCodec returns a codec for ASCII text: high byte first per register, decode trims trailing spaces, encode right-pads with space. registerCount must be >= 1.
+// NewAsciiCodec returns a codec for ASCII text: high byte first per register, decode trims trailing spaces, encode right-pads with space. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewAsciiCodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return asciiCodec{registerCount: registerCount}, nil
 }
 
-// NewAsciiFixedCodec returns a codec for fixed-width ASCII: no trim on decode, encode right-pads with NUL. registerCount must be >= 1.
+// NewAsciiFixedCodec returns a codec for fixed-width ASCII: no trim on decode, encode right-pads with NUL. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewAsciiFixedCodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return asciiFixedCodec{registerCount: registerCount}, nil
 }
 
-// NewAsciiReverseCodec returns a codec for ASCII with low byte first per register; decode trims trailing spaces. registerCount must be >= 1.
+// NewAsciiReverseCodec returns a codec for ASCII with low byte first per register; decode trims trailing spaces. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewAsciiReverseCodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return asciiReverseCodec{registerCount: registerCount}, nil
 }
 
-// NewBCDCodec returns a codec for one-byte-per-digit BCD (0-9). Encode pads with leading zeros; non-digit input is rejected. registerCount must be >= 1.
+// NewBCDCodec returns a codec for one-byte-per-digit BCD (0-9). Encode pads with leading zeros; non-digit input is rejected. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewBCDCodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return bcdCodec{registerCount: registerCount}, nil
 }
 
-// NewPackedBCDCodec returns a codec for packed BCD (two digits per byte). Encode pads with leading zeros; non-digit input is rejected. registerCount must be >= 1.
+// NewPackedBCDCodec returns a codec for packed BCD (two digits per byte). Encode pads with leading zeros; non-digit input is rejected. registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewPackedBCDCodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return packedBCDCodec{registerCount: registerCount}, nil
 }
 
-// NewSignedPackedBCDCodec returns a codec for signed packed BCD: trailing nibble 0xC/0xD/0xF = negative, 0x0-0x9 = positive. Decode returns e.g. "-1234" or "1234"; encode accepts optional leading "-". registerCount must be >= 1.
+// NewSignedPackedBCDCodec returns a codec for signed packed BCD: trailing nibble 0xC/0xD/0xF = negative, 0x0-0x9 = positive. Decode returns e.g. "-1234" or "1234"; encode accepts optional leading "-". registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewSignedPackedBCDCodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return signedPackedBCDCodec{registerCount: registerCount}, nil
 }
 
-// NewPackedBCDReverseCodec returns a codec for packed BCD with low byte first per register (byte-swap within each word on wire). registerCount must be >= 1.
+// NewPackedBCDReverseCodec returns a codec for packed BCD with low byte first per register (byte-swap within each word on wire). registerCount must be 1..32767 (the byte count, twice that, must fit ByteSpec).
 func NewPackedBCDReverseCodec(registerCount uint16) (Codec[string], error) {
-	if err := textCodecRejectZeroRegisters(registerCount); err != nil {
+	if err := checkTextRegisterCount(registerCount); err != nil {
 		return nil, err
 	}
 	return packedBCDReverseCodec{registerCount: registerCount}, nil

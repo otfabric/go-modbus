@@ -33,6 +33,19 @@ func writeFull(w io.Writer, buf []byte) error {
 	return nil
 }
 
+// ctxAfterDeadline returns ctx.Err(). A transport calls it right after it has
+// set a deadline on its link and before it uses the link.
+//
+// The session layer honours a cancelled context by setting the link's deadline
+// in the past (Interrupt), from another goroutine. A deadline the transport
+// sets after that replaces it, and the I/O that follows would run its full
+// time. Looking at the context after the deadline is set closes that window:
+// a cancellation that came first is seen here, and one that comes later sets
+// its deadline after the transport's.
+func ctxAfterDeadline(ctx context.Context) error {
+	return ctx.Err()
+}
+
 // requestDeadline returns the I/O deadline of a request: timeout from now,
 // or the context's deadline when that comes first. A timeout of zero or less
 // leaves the context's deadline alone.

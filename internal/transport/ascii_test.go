@@ -172,6 +172,18 @@ func TestASCIIExecuteRequestErrors(t *testing.T) {
 			t.Fatalf("want context.Canceled, got %v", err)
 		}
 	})
+	t.Run("context cancelled after the write", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		link := &cancelOnWriteLink{cancel: cancel}
+		at := NewASCII(link, time.Minute, logging.NopLogger())
+		if _, err := at.ExecuteRequest(ctx, asciiReq()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled, got %v", err)
+		}
+		if link.written.Len() == 0 {
+			t.Fatal("the request was not written before the cancellation")
+		}
+	})
 	t.Run("read error", func(t *testing.T) {
 		at := NewASCII(&scriptedLink{readErr: sentinel}, time.Second, logging.NopLogger())
 		if _, err := at.ExecuteRequest(context.Background(), asciiReq()); !errors.Is(err, sentinel) {

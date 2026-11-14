@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -168,5 +169,72 @@ func TestExponentialBackoff_ZeroMaxDelayUsesDefault(t *testing.T) {
 	_, delay := policy.ShouldRetry(15, io.EOF)
 	if delay != 30*time.Second {
 		t.Errorf("zero MaxDelay should default to 30s cap, got %v", delay)
+	}
+}
+
+// The delay doubles from BaseDelay and stops at MaxDelay, for every attempt
+// number: the cap is applied before the product is converted to a
+// time.Duration, so an attempt number whose product does not fit one gives
+// MaxDelay like any other past the cap.
+func TestExponentialBackoff_DelayIsCappedForEveryAttempt(t *testing.T) {
+	const base, maxDelay = 100 * time.Millisecond, 30 * time.Second
+	policy := NewExponentialBackoff(ExponentialBackoffConfig{BaseDelay: base, MaxDelay: maxDelay})
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, 100 * time.Millisecond},
+		{1, 200 * time.Millisecond},
+		{2, 400 * time.Millisecond},
+		{8, 25600 * time.Millisecond}, // the last one below the cap
+		{9, maxDelay},                 // 51.2 s
+		{10, maxDelay},
+		{36, maxDelay}, // 100 ms × 2^36 still fits a time.Duration
+		{37, maxDelay}, // 100 ms × 2^37 does not
+		{63, maxDelay},
+		{64, maxDelay},
+		{1023, maxDelay}, // 2^1023 is the largest finite power of two
+		{1024, maxDelay}, // 2^1024 is +Inf
+		{10000, maxDelay},
+		{math.MaxInt32, maxDelay},
+		{math.MaxInt, maxDelay},
+	}
+	for _, tc := range cases {
+		retry, delay := policy.ShouldRetry(tc.attempt, io.EOF)
+		if !retry || delay != tc.want {
+			t.Errorf("attempt %d: retry %v after %v, want true after %v", tc.attempt, retry, delay, tc.want)
+		}
+	}
+	for attempt := range 2000 {
+		if _, delay := policy.ShouldRetry(attempt, io.EOF); delay <= 0 || delay > maxDelay {
+			t.Fatalf("attempt %d: delay %v outside (0, %v]", attempt, delay, maxDelay)
+		}
+	}
+}
+
+// backoffDelay at the edges of its inputs: the largest cap, a product below one
+// nanosecond, and attempt numbers below zero (which no caller passes).
+func TestBackoffDelay_Boundaries(t *testing.T) {
+	const maxDuration = time.Duration(math.MaxInt64)
+	cases := []struct {
+		name            string
+		base, max, want time.Duration
+		attempt         int
+	}{
+		{"first attempt", time.Second, time.Minute, time.Second, 0},
+		{"one below the cap", time.Second, 8*time.Second + 1, 8 * time.Second, 3},
+		{"exactly the cap", time.Second, 8 * time.Second, 8 * time.Second, 3},
+		{"one above the cap", time.Second, 8*time.Second - 1, 8*time.Second - 1, 3},
+		{"largest cap, product fits", time.Nanosecond, maxDuration, 1 << 62, 62},
+		{"largest cap, product does not fit", time.Nanosecond, maxDuration, maxDuration, 63},
+		{"largest cap, far past it", time.Hour, maxDuration, maxDuration, 5000},
+		{"negative attempt halves", time.Second, time.Minute, 500 * time.Millisecond, -1},
+		{"product below one nanosecond", time.Nanosecond, time.Minute, time.Minute, -1},
+		{"product of zero", time.Second, time.Minute, time.Minute, math.MinInt},
+	}
+	for _, tc := range cases {
+		if got := backoffDelay(tc.base, tc.max, tc.attempt); got != tc.want {
+			t.Errorf("%s: backoffDelay(%v, %v, %d) = %v, want %v", tc.name, tc.base, tc.max, tc.attempt, got, tc.want)
+		}
 	}
 }

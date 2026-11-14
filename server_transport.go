@@ -18,19 +18,49 @@ import (
 	inttrans "github.com/otfabric/go-modbus/internal/transport"
 )
 
+// The accept loop waits after an Accept that failed before it tries again: 5 ms
+// after the first failure, twice as long after each one that follows, up to 1 s.
+// An Accept that succeeds starts the sequence over. (net/http's Server does the
+// same.) A listener that keeps failing, for want of file descriptors say, is
+// then retried about once a second and logged as often, not in a tight loop.
+const (
+	acceptBackoffMin = 5 * time.Millisecond
+	acceptBackoffMax = time.Second
+)
+
+// nextAcceptBackoff returns the wait after one more failed Accept, given the
+// previous wait (zero after an Accept that succeeded).
+func nextAcceptBackoff(prev time.Duration) time.Duration {
+	if prev <= 0 {
+		return acceptBackoffMin
+	}
+	return min(2*prev, acceptBackoffMax)
+}
+
 // acceptTCPClients accepts new client connections for one Start..Stop cycle, as
 // long as the configured connection limit allows it.
 func (ms *Server) acceptTCPClients(run *serverRun) {
 	defer run.wg.Done()
+	var backoff time.Duration
 	for {
 		sock, err := run.listener.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			ms.logger.Warningf("failed to accept client connection: %v", err)
+			backoff = nextAcceptBackoff(backoff)
+			ms.logger.Warningf("failed to accept client connection (next attempt in %v): %v", backoff, err)
+			// The wait ends early when the server stops.
+			timer := time.NewTimer(backoff)
+			select {
+			case <-timer.C:
+			case <-run.ctx.Done():
+				timer.Stop()
+				return
+			}
 			continue
 		}
+		backoff = 0
 
 		accepted := false
 		var evicted net.Conn
@@ -364,7 +394,7 @@ func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, cl
 func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (res *adu.Response, closeLink bool) {
 	var reqStart time.Time
 	if ms.metrics != nil {
-		ms.metrics.OnRequest(req.UnitID, FunctionCode(req.FunctionCode))
+		ms.reportMetrics(metricsOnRequest, req, clientAddr, 0, nil)
 		reqStart = time.Now()
 	}
 
@@ -386,13 +416,13 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 		if err == ErrProtocolError {
 			ms.logger.Warningf("protocol error, closing link (client address: '%s')", clientAddr)
 			if ms.metrics != nil {
-				ms.metrics.OnError(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart), err)
+				ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
 			}
 			return nil, true
 		}
 
 		if ms.metrics != nil {
-			ms.metrics.OnError(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart), err)
+			ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
 		}
 		if errors.Is(err, ErrNoResponse) {
 			return nil, false
@@ -404,9 +434,53 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 			TransactionID: txnID,
 		}
 	} else if ms.metrics != nil {
-		ms.metrics.OnResponse(req.UnitID, FunctionCode(req.FunctionCode), time.Since(reqStart))
+		ms.reportMetrics(metricsOnResponse, req, clientAddr, time.Since(reqStart), nil)
 	}
 	return res, false
+}
+
+// metricsHook names one method of ServerMetrics.
+type metricsHook uint8
+
+const (
+	metricsOnRequest metricsHook = iota
+	metricsOnResponse
+	metricsOnError
+)
+
+func (h metricsHook) String() string {
+	switch h {
+	case metricsOnRequest:
+		return "OnRequest"
+	case metricsOnResponse:
+		return "OnResponse"
+	default:
+		return "OnError"
+	}
+}
+
+// reportMetrics calls one ServerMetrics hook for req. It is the only place the
+// server calls them. The hooks are application code running on the connection's
+// goroutine, with the unit ID and function code as the client sent them: like
+// safeDispatch for a handler, it recovers a panic in the hook and logs it with
+// the stack, and the request is then served as if the hook had returned.
+// ms.metrics must not be nil.
+func (ms *Server) reportMetrics(hook metricsHook, req *adu.Request, clientAddr string, d time.Duration, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			ms.logger.Errorf("panic in ServerMetrics.%s for FC 0x%02x from %s: %v\n%s",
+				hook, req.FunctionCode, clientAddr, r, debug.Stack())
+		}
+	}()
+	fc := FunctionCode(req.FunctionCode)
+	switch hook {
+	case metricsOnRequest:
+		ms.metrics.OnRequest(req.UnitID, fc)
+	case metricsOnResponse:
+		ms.metrics.OnResponse(req.UnitID, fc, d)
+	case metricsOnError:
+		ms.metrics.OnError(req.UnitID, fc, d, err)
+	}
 }
 
 // safeDispatch wraps dispatchRequest with panic recovery so that a handler

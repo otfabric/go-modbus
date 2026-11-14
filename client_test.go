@@ -1850,7 +1850,14 @@ func TestConcurrentClientRequests(t *testing.T) {
 }
 
 func TestCloseDuringInFlightRequest(t *testing.T) {
-	handler := &typedReadHandler{}
+	// The handler reports that it has the request and holds it until the
+	// client is gone, so that Close finds the request in flight.
+	entered := make(chan struct{})
+	var once sync.Once
+	handler := &blockingHandler{fn: func(ctx context.Context) {
+		once.Do(func() { close(entered) })
+		<-ctx.Done()
+	}}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -1878,13 +1885,17 @@ func TestCloseDuringInFlightRequest(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	var reqErr error
 	wg.Go(func() {
-		_, _ = client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
+		_, reqErr = client.ReadRegister(context.Background(), 1, 0, HoldingRegister)
 	})
 
-	time.Sleep(10 * time.Millisecond)
+	<-entered
 	_ = client.Close()
 	wg.Wait()
+	if !errors.Is(reqErr, ErrClientNotOpen) {
+		t.Errorf("request in flight at Close: %v, want ErrClientNotOpen", reqErr)
+	}
 }
 
 func TestConcurrentOpenClose(t *testing.T) {

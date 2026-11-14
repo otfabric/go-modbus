@@ -1,5 +1,64 @@
 # go-modbus Releases
 
+## v1.15.3
+
+**Date:** 2026-11-14
+**Previous release:** v1.15.2
+
+The server, codec and request fixes of the policy 1.6 review. They were prepared for v1.15.2, which was tagged without them; v1.15.2 contains only the go-serial update below it.
+
+### Changed
+
+- The bundled `modbus-cli` is built on v1.15.2 (was v1.15.1).
+- Server: after an `Accept` that failed, the accept loop waits before it tries again: 5 ms, then twice as long after each failure that follows, up to 1 s. A connection that is accepted starts the sequence over, and `Stop` and `Shutdown` end the wait. Before, it tried again at once. The warning it logs names the wait.
+- The constructors of the text, BCD and UTF-16 codecs (`NewAsciiCodec`, `NewAsciiFixedCodec`, `NewAsciiReverseCodec`, `NewBCDCodec`, `NewPackedBCDCodec`, `NewSignedPackedBCDCodec`, `NewPackedBCDReverseCodec`, `NewUTF16BECodec`, `NewUTF16LECodec`) accept 1 to 32767 registers and return an error wrapping `codec.ErrCodecValue` for more. A codec of more than 32767 registers could not work before: its byte count, twice the register count, does not fit `ByteSpec.Count`, so `ByteSpec` and a direct `EncodeRegisters` call gave another length than the register count. No Modbus request carries more than 125 registers.
+
+### Fixed
+
+- Server: a `ServerMetrics` method that does not return normally is treated like a handler method that does not. The server logs it at error level with a stack trace and serves the request as if the method had returned. `OnRequest` receives the function code before the server has checked it, so a hook sees every code a client sends.
+- `Diagnostics` with more than 250 data bytes on `rtu`, `rtuovertcp` and `rtuoverudp` returns `ErrProtocolError` and sends nothing, as it does on `ascii` and `asciiovertcp` (on `tcp` it returns `ErrInvalidMBAPLength`, as before). Before, the RTU framer wrote a frame longer than the 256 bytes an RTU frame may have, and the request then failed on its answer, with a timeout or a CRC error.
+- A request whose context is cancelled at the moment the transport sets the request deadline, or while a serial transport discards the rest of an earlier exchange, returns `context.Canceled` at once and is not sent. Before, it could be sent and return only when the answer arrived or `Timeout` had passed.
+- Packed BCD codecs of 16384 registers or more encode their full width; the digit count was computed in 16 bits.
+- `ExponentialBackoff` compares the delay with `MaxDelay` before it converts it to a `time.Duration`, so the result does not depend on how a platform converts a value that does not fit. The delays are unchanged on the platforms the library is built for.
+- `ReportServerID` no longer computes the end of the data in 8 bits. No transport delivers a payload long enough for that to matter.
+
+### Documentation
+
+- What `Stop` and `Shutdown` do when a `RequestHandler` method or a `ServerMetrics` hook calls them: `Stop` does not return and `Shutdown` returns when its context ends; use `go srv.Stop()` or `Shutdown` with the handler's context. README said both were safe from any goroutine ([API.md § 3.2](API.md#32-lifecycle)).
+- Only the first `Shutdown` or `Stop` of a cycle waits for the handlers; a later call returns nil at once.
+- `Close` does not end an `Open` that is still dialling: it returns nil and `Open` then leaves the client open ([LIMITATIONS.md](LIMITATIONS.md)).
+- Who owns the slices that cross the API ([API.md § 13](API.md#13-ownership-of-slices)): what the client returns is the caller's, what a handler is given is the handler's, and what a handler returns is read after it has returned, so a handler returns a copy of shared state.
+- What a `ServerMetrics`, `ClientMetrics`, `AttemptMetrics` or `Logger` method that does not return normally costs ([OBSERVABILITY.md](OBSERVABILITY.md)).
+- TESTING.md lists the lifecycle rows L1 to L16 for `Client` and `Server` with the test of each, or the reason a row does not apply.
+- ARCHITECTURE.md no longer describes aliases, a `ModbusClient` type and an `isOpen` field that do not exist; README names `ErrClientNotOpen` as the error of a request in flight at `Close`, as ERRORS.md does.
+
+### Tests
+
+- Fuzz target `FuzzClientResponseDecode` for the client's function-level response decoders, with the result checked against the request; `FuzzClientResponseParse` now checks what it accepts.
+- Lifecycle tests for a `Close` during a write, a `Close` during `Open`, callbacks that call the client or `Close`, and callbacks that stop the server; ownership tests; boundary tables for request sizes and codec widths; allocation budgets for the largest lengths a frame can declare.
+- Twelve tests that waited with a sleep wait for the event, or run on the fake clock of `testing/synctest`.
+- CPU-only benchmarks of the frame decoders and of one codec.
+
+### CI
+
+- The nightly workflow runs the test suite on linux/386.
+- The release workflow builds, vets and tests go-sunspec, go-modbus-trace, modbusctl, sunspecctl and modbus-simulator against the candidate before it tags.
+
+---
+
+## v1.15.2
+
+**Date:** 2026-11-14
+**Previous release:** v1.15.1
+
+### Changed
+
+- Built on go-serial v0.4.0 (was v0.3.0). For the `rtu` and `ascii` transports on Linux, macOS and the BSDs: closing a client whose request is waiting on the serial port now wakes that read and waits until it has let go of the port before the port is closed. The request returns `ErrClientNotOpen`, as before. Each open serial port holds a pipe for this and uses two more file descriptors. On Windows, `Open` refuses a `Speed` above 2^32−1 instead of truncating it. go-modbus opens the port with a 10 ms read timeout and does not use RS-485 mode, so the other changes of go-serial v0.4.0 (long and sub-millisecond timeouts, RS-485 on MIPS and macOS) do not change what it does.
+- spec/README.md records where the vendored MODBUS specification comes from (V1.1b3) and the hashes of the source PDF and of `spec/MODBUS-SPEC.md`.
+- No change to the library code otherwise. The bundled `modbus-cli` is built on v1.15.1.
+
+---
+
 ## v1.15.1
 
 **Date:** 2026-11-13

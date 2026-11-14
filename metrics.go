@@ -9,6 +9,11 @@ import "time"
 // request; implementations must be non-blocking (e.g. increment an atomic counter,
 // send on a buffered channel). A nil ClientMetrics is valid and disables collection.
 //
+// The methods must not panic. The client does not recover a panic in a
+// ClientMetrics (or AttemptMetrics) method: it unwinds through the client into
+// the goroutine that called the client method, like a panic in that caller's
+// own code. A method may call the client, Close included.
+//
 // Metrics are request-level, not attempt-level: individual retry attempts within
 // a single request are not observable through this interface. OnRequest fires once
 // before the first attempt; the outcome callback (OnResponse/OnError/OnTimeout)
@@ -41,7 +46,10 @@ type ClientMetrics interface {
 // AttemptMetrics is an optional extension of ClientMetrics that provides per-attempt
 // visibility into retries and reconnects. If the value assigned to Config.Metrics
 // also implements AttemptMetrics, the library calls its methods for every individual
-// attempt and dial within a retried request. Implementations must be non-blocking.
+// attempt and dial within a retried request. Implementations must be non-blocking,
+// and must not make requests on the same client: on a single connection the
+// methods run while the request holds that connection. As for ClientMetrics, a
+// panic in a method is not recovered.
 type AttemptMetrics interface {
 	// OnAttempt is called after each individual transport attempt (including the first).
 	// attempt is the zero-based attempt index (0 = first try). err is nil on success.
@@ -62,6 +70,17 @@ type AttemptMetrics interface {
 // Metrics are request-level: each incoming request triggers exactly one OnRequest
 // call and exactly one outcome call (OnResponse or OnError). There is no retry
 // concept on the server side.
+//
+// The methods run on the goroutine that serves the client's connection, with
+// the unit ID and the function code as the client sent them: OnRequest is
+// called before the server has checked that it serves the function code, so
+// any value from 0 to 255 can arrive. A panic in a method is recovered and
+// logged at error level with a stack trace, as for a handler method; the
+// request is then served and answered as if the method had returned, and the
+// other methods are still called for it.
+//
+// A method must not call Stop, or Shutdown and wait for it, on the server that
+// calls it; see RequestHandler.
 type ServerMetrics interface {
 	// OnRequest is called immediately before the handler is invoked.
 	// unitID and functionCode identify the incoming request.

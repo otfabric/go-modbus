@@ -53,6 +53,9 @@ func (tt *TCP) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 	if err := tt.Socket.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
+	if err := ctxAfterDeadline(ctx); err != nil {
+		return nil, err
+	}
 	if len(req.Payload)+2 > adu.MBAPLengthMax {
 		return nil, fmt.Errorf("%w: would be %d", protocol.ErrInvalidMBAPLength, len(req.Payload)+2)
 	}

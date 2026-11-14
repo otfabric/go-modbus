@@ -1,6 +1,6 @@
 # Support and feature matrix
 
-What go-modbus supports, how each feature is tested, and against what. Status: v1.14.5. Function-by-function detail, server behaviour on invalid requests and per-stack results are in [INTEROPERABILITY.md](../INTEROPERABILITY.md); what is out of scope is in [LIMITATIONS.md](../LIMITATIONS.md).
+What go-modbus supports, how each feature is tested, and against what. Status: v1.15.2. Function-by-function detail, server behaviour on invalid requests and per-stack results are in [INTEROPERABILITY.md](../INTEROPERABILITY.md); what is out of scope is in [LIMITATIONS.md](../LIMITATIONS.md).
 
 None of this is a conformance claim: nothing is certified, and no Modbus Organization conformance test has been attempted.
 
@@ -8,7 +8,7 @@ None of this is a conformance claim: nothing is certified, and no Modbus Organiz
 
 | go-modbus | Go | modbus-interop | Supported |
 |---|---|---|---|
-| **v1.14.5** | 1.26 or later (CI: 1.26 and 1.27) | v0.4.1 | **yes** |
+| **v1.15.2** | 1.26 or later (CI: 1.26 and 1.27) | v0.4.1 | **yes** |
 
 Security fixes: see [SECURITY.md](../SECURITY.md).
 
@@ -18,6 +18,7 @@ Security fixes: see [SECURITY.md](../SECURITY.md).
 |---|---|---|
 | Linux amd64 | the test suite with the race detector; Interop | CI runs on `ubuntu-latest` |
 | Linux and macOS | serial tests on a pseudo-terminal | they skip on other platforms |
+| Linux 386 | the test suite without the race detector, nightly | a 32-bit `int`; the race detector does not exist for 386 |
 | Linux arm64 and arm, macOS arm64, Windows amd64 | `make cross` builds them without cgo | a build, not a test run |
 
 ## 3. Feature support
