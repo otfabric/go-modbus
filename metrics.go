@@ -2,17 +2,20 @@
 
 package modbus
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // ClientMetrics is an optional callback interface for observing client-side request
 // outcomes. All methods are called synchronously in the goroutine executing the
 // request; implementations must be non-blocking (e.g. increment an atomic counter,
 // send on a buffered channel). A nil ClientMetrics is valid and disables collection.
 //
-// The methods must not panic. The client does not recover a panic in a
-// ClientMetrics (or AttemptMetrics) method: it unwinds through the client into
-// the goroutine that called the client method, like a panic in that caller's
-// own code. A method may call the client, Close included.
+// A method that does not return normally (of ClientMetrics or AttemptMetrics)
+// is stopped there and logged at error level with its stack, through
+// Config.Logger; the request goes on as if the method had returned and its
+// result is not affected. A method may call the client, Close included.
 //
 // Metrics are request-level, not attempt-level: individual retry attempts within
 // a single request are not observable through this interface. OnRequest fires once
@@ -49,7 +52,7 @@ type ClientMetrics interface {
 // attempt and dial within a retried request. Implementations must be non-blocking,
 // and must not make requests on the same client: on a single connection the
 // methods run while the request holds that connection. As for ClientMetrics, a
-// panic in a method is not recovered.
+// method that does not return normally is logged, and the request goes on.
 type AttemptMetrics interface {
 	// OnAttempt is called after each individual transport attempt (including the first).
 	// attempt is the zero-based attempt index (0 = first try). err is nil on success.
@@ -74,13 +77,13 @@ type AttemptMetrics interface {
 // The methods run on the goroutine that serves the client's connection, with
 // the unit ID and the function code as the client sent them: OnRequest is
 // called before the server has checked that it serves the function code, so
-// any value from 0 to 255 can arrive. A panic in a method is recovered and
-// logged at error level with a stack trace, as for a handler method; the
-// request is then served and answered as if the method had returned, and the
-// other methods are still called for it.
+// any value from 0 to 255 can arrive. A method that does not return normally
+// is stopped there and logged at error level with its stack, as for a handler
+// method; the request is then served and answered as if the method had
+// returned, and the other methods are still called for it.
 //
-// A method must not call Stop, or Shutdown and wait for it, on the server that
-// calls it; see RequestHandler.
+// A method may call Stop or Shutdown on the server that calls it; see
+// RequestHandler.
 type ServerMetrics interface {
 	// OnRequest is called immediately before the handler is invoked.
 	// unitID and functionCode identify the incoming request.
@@ -95,4 +98,56 @@ type ServerMetrics interface {
 	// code it does not serve, ErrServerDeviceFailure for a response too large
 	// to send. duration is the handler execution time.
 	OnError(unitID uint8, functionCode FunctionCode, duration time.Duration, err error)
+}
+
+// ConnectionMetrics is an optional extension of ServerMetrics. If the value
+// assigned to ServerConfig.Metrics also implements ConnectionMetrics, the
+// server calls OnConnectionRejected for every connection it closes to keep
+// within ServerConfig.MaxClients:
+//
+//   - a connection it accepted when every slot was taken, which it closes at
+//     once (RejectMaxClients);
+//   - on tcp+tls, a connection whose TLS handshake had not completed, which it
+//     closed to make room for a newer one (RejectTLSHandshakeEvicted).
+//
+// Connections accepted while the server is stopping, and connections that
+// close for any other reason, are not reported.
+//
+// addr is the remote address of the connection (host:port). The method is
+// called on the server's accept loop, after the connection was closed and
+// with no lock held, so it delays the next Accept: it must be non-blocking.
+// Like the ServerMetrics methods, a method that does not return normally is
+// logged at error level with the stack, and the server goes on as if it had
+// returned. It may call Stop or Shutdown (see RequestHandler).
+type ConnectionMetrics interface {
+	OnConnectionRejected(addr string, reason RejectReason)
+}
+
+// RejectReason says why the server closed a connection it reports to
+// ConnectionMetrics.OnConnectionRejected.
+type RejectReason uint8
+
+const (
+	// RejectMaxClients is a connection the server closed as soon as it was
+	// accepted, because every ServerConfig.MaxClients slot was taken: by
+	// connections that completed their TLS handshake on tcp+tls, by any
+	// connection on tcp.
+	RejectMaxClients RejectReason = iota + 1
+	// RejectTLSHandshakeEvicted is a tcp+tls connection whose TLS handshake had
+	// not completed, closed to make room for a newer connection (see
+	// ServerConfig.MaxClients).
+	RejectTLSHandshakeEvicted
+)
+
+// String returns the name of the reason ("max clients", "tls handshake
+// evicted"), or "RejectReason(n)" for a value without one.
+func (r RejectReason) String() string {
+	switch r {
+	case RejectMaxClients:
+		return "max clients"
+	case RejectTLSHandshakeEvicted:
+		return "tls handshake evicted"
+	default:
+		return "RejectReason(" + strconv.Itoa(int(r)) + ")"
+	}
 }

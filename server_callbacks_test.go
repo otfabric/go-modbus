@@ -224,9 +224,10 @@ func TestMetricsHook_String(t *testing.T) {
 	}
 }
 
-// L10, server. A handler method runs on a goroutine that Shutdown waits for.
-// With the handler's own context, which the shutdown cancels, Shutdown returns
-// context.Canceled once the listener and the connections are closed.
+// L10, server. With the handler's own context, which the shutdown cancels,
+// Shutdown called from the handler returns context.Canceled once the listener
+// and the connections are closed, without waiting. (server_stop_test.go has the
+// other contexts, Stop, and the callbacks other than a handler.)
 func TestServerL10_HandlerCallsShutdownWithItsContext(t *testing.T) {
 	returned := make(chan error, 1)
 	h := &blockingHandler{}
@@ -252,83 +253,6 @@ func TestServerL10_HandlerCallsShutdownWithItsContext(t *testing.T) {
 	}
 	if err := mustReturn(t, "Stop after the handler's Shutdown", ms.Stop); err != nil {
 		t.Errorf("Stop after the handler's Shutdown: %v", err)
-	}
-}
-
-// L10, server. With any other context, a Shutdown called from a handler method
-// or a ServerMetrics hook returns only when that context ends, with its error:
-// it waits for the goroutine it was called on. Stop is Shutdown with a context
-// that never ends.
-func TestServerL10_CallbackCallsShutdownWithAnotherContext(t *testing.T) {
-	for _, site := range []string{"handler", "metrics hook"} {
-		t.Run(site, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			returned := make(chan error, 1)
-			var ms *Server
-			var once sync.Once
-			shutdown := func() { once.Do(func() { returned <- ms.Shutdown(ctx) }) }
-
-			h := &blockingHandler{fn: func(context.Context) {}}
-			m := &hookMetrics{}
-			if site == "handler" {
-				h.fn = func(context.Context) { shutdown() }
-			} else {
-				m.onRequest = func(uint8, FunctionCode) { shutdown() }
-			}
-			var conn net.Conn
-			ms, conn = startCallbackServer(t, h, func(c *ServerConfig) { c.Metrics = m })
-
-			sendReadRequest(t, conn)
-			// The shutdown has closed the connection: from here it only waits.
-			wantClosedUnanswered(t, conn)
-			select {
-			case err := <-returned:
-				t.Fatalf("Shutdown returned %v before its context ended", err)
-			default:
-			}
-			cancel()
-			select {
-			case err := <-returned:
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("Shutdown returned %v, want its context's error", err)
-				}
-			case <-time.After(e2eWait):
-				t.Fatalf("Shutdown did not return within %v of its context ending", e2eWait)
-			}
-		})
-	}
-}
-
-// L10, server. A Stop started from a handler on another goroutine completes
-// once the handler has returned, and not before.
-func TestServerL10_HandlerStartsStopOnAnotherGoroutine(t *testing.T) {
-	stopped := make(chan error, 1)
-	release := make(chan struct{})
-	h := &blockingHandler{}
-	ms, conn := startCallbackServer(t, h, nil)
-	var once sync.Once
-	h.fn = func(context.Context) {
-		once.Do(func() { go func() { stopped <- ms.Stop() }() })
-		<-release
-	}
-
-	sendReadRequest(t, conn)
-	// Stop has closed the connection and waits for the handler.
-	wantClosedUnanswered(t, conn)
-	select {
-	case err := <-stopped:
-		t.Fatalf("Stop returned %v while the handler was still running", err)
-	default:
-	}
-	close(release)
-	select {
-	case err := <-stopped:
-		if err != nil {
-			t.Fatalf("Stop: %v", err)
-		}
-	case <-time.After(e2eWait):
-		t.Fatalf("Stop did not return within %v of the handler returning", e2eWait)
 	}
 }
 

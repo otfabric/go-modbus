@@ -404,46 +404,76 @@ func TestClientL10_CallbackCallsClose(t *testing.T) {
 	}
 }
 
-// A ClientMetrics or AttemptMetrics hook runs on the goroutine that called the
-// client. The client does not recover a hook that does not return normally: the
-// caller sees it, like one of its own. Nothing of the client is left held, so
-// the next request is served, on a single connection too.
-func TestClientMetrics_HookThatDoesNotReturnReachesTheCaller(t *testing.T) {
-	for _, site := range []string{"ClientMetrics.OnResponse", "AttemptMetrics.OnAttempt"} {
-		t.Run(site, func(t *testing.T) {
-			dev := e2eNewDevice()
-			dev.setHolding(1, 0x0101)
-			m := &reentrantMetrics{}
-			p := e2eStart(t, "tcp", dev, e2eOpts{client: func(conf *Config) { conf.Metrics = m }})
-			stop := func() { panic("metrics hook") }
-			if site == "ClientMetrics.OnResponse" {
-				m.onResponse.Store(&stop)
-			} else {
-				m.onAttempt.Store(&stop)
-			}
+// closeHookConn is a connection whose Close runs onClose first.
+type closeHookConn struct {
+	net.Conn
+	onClose func()
+}
 
-			var recovered any
-			func() {
-				defer func() { recovered = recover() }()
-				_, _ = p.client.ReadHoldingRegister(context.Background(), e2eUnit, 1)
-			}()
-			if recovered != "metrics hook" {
-				t.Fatalf("the caller recovered %v, want what the hook raised", recovered)
-			}
+func (c *closeHookConn) Close() error {
+	c.onClose()
+	return c.Conn.Close()
+}
 
-			err := mustReturn(t, "the next request", func() error {
-				v, err := p.client.ReadHoldingRegister(context.Background(), e2eUnit, 1)
-				if err == nil && v != 0x0101 {
-					err = errors.New("wrong value")
-				}
-				return err
+// Close closes the connections without the client's lock, so the Close of a
+// Config.Dialer connection may call the client: Info returns during it and the
+// client is no longer open, and a second Close returns once the first has. On
+// v1.15.3 Close held the lock while it closed them, and such a call never
+// returned.
+func TestClientClose_ConnectionCloseRunsWithoutTheLock(t *testing.T) {
+	entered := make(chan ClientInfo, 1)
+	release := make(chan struct{})
+	var c atomic.Pointer[Client]
+	var once sync.Once
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &closeHookConn{Conn: conn, onClose: func() {
+			once.Do(func() {
+				entered <- c.Load().Info()
+				<-release
 			})
-			if err != nil {
-				t.Errorf("request after the hook: %v", err)
-			}
-			if !p.client.Info().IsOpen {
-				t.Error("the client is no longer open")
-			}
-		})
+		}}, nil
+	}
+	p := e2eStart(t, "tcp", e2eNewDevice(), e2eOpts{client: func(conf *Config) { conf.Dialer = dial }})
+	c.Store(p.client)
+
+	closed := func() <-chan error {
+		ch := make(chan error, 1)
+		go func() { ch <- p.client.Close() }()
+		return ch
+	}
+	first := closed()
+	select {
+	case info := <-entered:
+		if info.IsOpen {
+			t.Error("Info in the connection's Close: the client is open")
+		}
+	case <-time.After(e2eWait):
+		close(release)
+		t.Fatalf("Info called in the connection's Close did not return within %v", e2eWait)
+	}
+	info := make(chan ClientInfo, 1)
+	go func() { info <- p.client.Info() }()
+	select {
+	case i := <-info:
+		if i.IsOpen {
+			t.Error("Info during Close: the client is open")
+		}
+	case <-time.After(e2eWait):
+		t.Fatalf("Info during Close did not return within %v", e2eWait)
+	}
+	second := closed()
+	close(release)
+	for _, ch := range []<-chan error{first, second} {
+		if err := wantResult(t, "Close", ch); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
+	if err := p.client.Open(); err != nil {
+		t.Fatalf("Open after Close: %v", err)
 	}
 }

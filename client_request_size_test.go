@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/otfabric/go-modbus/internal/adu"
+	intsession "github.com/otfabric/go-modbus/internal/session"
 )
 
 // startEchoPeer starts a loopback listener that sends back whatever its one
@@ -111,6 +113,9 @@ func TestDiagnostics_RequestDataBoundary(t *testing.T) {
 			if !errors.Is(err, sc.tooLong) || dr != nil {
 				t.Errorf("%s, %d data bytes: %v, want %v", sc.scheme, sz.n, err, sc.tooLong)
 			}
+			if pe, ok := errors.AsType[*ParameterError](err); !ok || pe.Method != "Diagnostics" || pe.Param != "data" {
+				t.Errorf("%s, %d data bytes: %v, want a *ParameterError for Diagnostics, data", sc.scheme, sz.n, err)
+			}
 			if got != 0 {
 				t.Errorf("%s, %d data bytes: the peer received %d bytes, want none", sc.scheme, sz.n, got)
 			}
@@ -173,6 +178,115 @@ func TestReportServerID_ByteCountBoundaries(t *testing.T) {
 				if payload[1] != 0xFF {
 					t.Error("the returned data aliases the response payload")
 				}
+			}
+		})
+	}
+}
+
+// diagnosticsSchemes are the transports of the client, with the error their
+// framer gave a request too long for a frame on v1.15.3.
+var diagnosticsSchemes = []struct {
+	url    string
+	framer error
+}{
+	{"tcp://scripted.invalid:502", ErrInvalidMBAPLength},
+	{"tcp+tls://scripted.invalid:802", ErrInvalidMBAPLength},
+	{"udp://scripted.invalid:502", ErrInvalidMBAPLength},
+	{"rtu:///dev/scripted", ErrProtocolError},
+	{"rtuovertcp://scripted.invalid:502", ErrProtocolError},
+	{"rtuoverudp://scripted.invalid:502", ErrProtocolError},
+	{"ascii:///dev/scripted", ErrProtocolError},
+	{"asciiovertcp://scripted.invalid:502", ErrProtocolError},
+}
+
+// newScriptedClientFor is newScriptedClient for any URL: the client's engine
+// runs on a scripted transport, so nothing is dialled. mut adjusts the
+// configuration; open false leaves the client closed.
+func newScriptedClientFor(t *testing.T, url string, mut func(*Config), open bool, fn scriptFn) (*Client, *scriptedTransport, *eventMetrics) {
+	t.Helper()
+	m := &eventMetrics{}
+	conf := Config{URL: url, Speed: 19200, Metrics: m}
+	if strings.HasPrefix(url, "tcp+tls") {
+		pki := e2ePKI(t)
+		conf.TLSClientCert, conf.TLSRootCAs = &pki.clientCert, pki.ca.pool
+	}
+	if mut != nil {
+		mut(&conf)
+	}
+	c, err := New(conf)
+	if err != nil {
+		t.Fatalf("New(%s): %v", url, err)
+	}
+	tr := &scriptedTransport{fn: fn}
+	if open {
+		eng := intsession.NewEngine(intsession.Config{
+			Dial: func(context.Context) (intsession.Transport[*adu.Request, *adu.Response], error) { return tr, nil },
+		})
+		if err := eng.Open(context.Background()); err != nil {
+			t.Fatalf("engine Open: %v", err)
+		}
+		c.lock.Lock()
+		c.state.engine = eng
+		c.lock.Unlock()
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c, tr, m
+}
+
+// More than 250 bytes of Diagnostics data are refused before anything is
+// sent, on every transport, with a *ParameterError that also matches what the
+// transport's framer returned for them on v1.15.3. 250 bytes are still sent.
+// A function code that AllowedFunctionCodes refuses, and a client that is not
+// open, are reported first; ClientMetrics sees the request and its error.
+func TestDiagnostics_TooMuchDataIsAParameterError(t *testing.T) {
+	echo := func(req *adu.Request) (*adu.Response, error) { return okRes(req, req.Payload...), nil }
+	for _, sc := range diagnosticsSchemes {
+		scheme, _, _ := strings.Cut(sc.url, ":")
+		other := ErrProtocolError
+		if sc.framer == ErrProtocolError {
+			other = ErrInvalidMBAPLength
+		}
+		t.Run(scheme, func(t *testing.T) {
+			for _, n := range []int{251, 252, 0xFFFF, 0x10000} {
+				c, tr, m := newScriptedClientFor(t, sc.url, nil, true, echo)
+				dr, err := c.Diagnostics(context.Background(), 1, DiagReturnQueryData, make([]byte, n))
+				pe, ok := errors.AsType[*ParameterError](err)
+				if !ok || pe.Method != "Diagnostics" || pe.Param != "data" || dr != nil {
+					t.Fatalf("%d bytes: %+v, %v; want a *ParameterError for Diagnostics, data", n, dr, err)
+				}
+				if err.Error() != pe.Error() {
+					t.Errorf("%d bytes: message %q, want the ParameterError's %q", n, err.Error(), pe.Error())
+				}
+				if !errors.Is(err, ErrUnexpectedParameters) || !errors.Is(err, sc.framer) || errors.Is(err, other) {
+					t.Errorf("%d bytes: %v matches ErrUnexpectedParameters %v, %v %v, %v %v",
+						n, err, errors.Is(err, ErrUnexpectedParameters), sc.framer, errors.Is(err, sc.framer), other, errors.Is(err, other))
+				}
+				if reqs := tr.requests(); len(reqs) != 0 {
+					t.Errorf("%d bytes: %d requests reached the transport, want none", n, len(reqs))
+				}
+				checkEvents(t, m, []metricEvent{
+					{kind: "request", unit: 1, fc: FCDiagnostics},
+					{kind: "error", unit: 1, fc: FCDiagnostics},
+				}, err)
+			}
+
+			c, tr, _ := newScriptedClientFor(t, sc.url, nil, true, echo)
+			data := make([]byte, 250)
+			if dr, err := c.Diagnostics(context.Background(), 1, DiagReturnQueryData, data); err != nil || len(dr.Data) != 250 {
+				t.Errorf("250 bytes: %v, want them echoed", err)
+			}
+			if reqs := tr.requests(); len(reqs) != 1 || len(reqs[0].Payload) != 252 {
+				t.Errorf("250 bytes: requests %d, want one of 252 payload bytes", len(reqs))
+			}
+
+			c, _, _ = newScriptedClientFor(t, sc.url, nil, false, echo)
+			if _, err := c.Diagnostics(context.Background(), 1, DiagReturnQueryData, make([]byte, 251)); !errors.Is(err, ErrClientNotOpen) || errors.Is(err, ErrUnexpectedParameters) {
+				t.Errorf("closed client: %v, want ErrClientNotOpen first", err)
+			}
+			allowed := func(conf *Config) { conf.AllowedFunctionCodes = []FunctionCode{FCReadHoldingRegisters} }
+			c, _, _ = newScriptedClientFor(t, sc.url, allowed, false, echo)
+			if _, err := c.Diagnostics(context.Background(), 1, DiagReturnQueryData, make([]byte, 251)); !errors.Is(err, ErrFunctionCodeNotAllowed) || errors.Is(err, ErrUnexpectedParameters) {
+				t.Errorf("FC08 not allowed: %v, want ErrFunctionCodeNotAllowed first", err)
 			}
 		})
 	}

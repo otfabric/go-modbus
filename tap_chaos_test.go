@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -352,10 +353,12 @@ func TestPDUTapBlockingTapDoesNotHoldConnection(t *testing.T) {
 	})
 }
 
-// A tap that panics takes down only the call it reports. The panic reaches the
-// caller (as a panicking ClientMetrics does) and the client stays usable, with
-// concurrent callers unaffected.
-func TestPDUTapPanicLeavesClientUsable(t *testing.T) {
+// A tap that does not return normally costs nothing but its own entry: the
+// call it reports returns its value, as if the tap had returned, the failure is
+// logged at error level with its stack, once per tap, and concurrent callers
+// are unaffected. On v1.15.3 the tap's value reached the caller of the client
+// method.
+func TestPDUTapThatDoesNotReturnNormallyIsRecovered(t *testing.T) {
 	for _, mode := range []chaosMode{chaosModeSingle, chaosModePool} {
 		t.Run(mode.name, func(t *testing.T) {
 			baseline := chaosGoroutines()
@@ -363,16 +366,20 @@ func TestPDUTapPanicLeavesClientUsable(t *testing.T) {
 			srv := chaosStartServer(t, "tcp", dev, nil)
 			defer srv.stop()
 
+			log := &e2eLogger{}
 			conf := chaosClientConfig(t, "tcp", srv.port(), mode, 5*time.Second, nil)
+			conf.Logger = log
+			var tapped atomic.Int64
 			conf.PDUTap = PDUTapFunc(func(ctx context.Context, _ PDUExchange) {
 				if ctx.Value(tapCallKey{}) != nil {
-					panic("tap panic")
+					tapped.Add(1)
+					panic("tap does not return")
 				}
 			})
 			client := chaosOpenClient(t, conf)
 
 			const workers, ops = 8, 25
-			var panics, oks atomic.Int64
+			var reached atomic.Int64
 			var wg sync.WaitGroup
 			for w := range workers {
 				wg.Go(func() {
@@ -383,8 +390,8 @@ func TestPDUTapPanicLeavesClientUsable(t *testing.T) {
 						}
 						func() {
 							defer func() {
-								if recover() != nil {
-									panics.Add(1)
+								if r := recover(); r != nil {
+									reached.Add(1)
 								}
 							}()
 							got, err := client.ReadRegisters(ctx, refUnitID, uint16(w), 1, InputRegister)
@@ -395,20 +402,22 @@ func TestPDUTapPanicLeavesClientUsable(t *testing.T) {
 							if got[0] != chaosInputValue(w) {
 								t.Errorf("worker %d call %d: 0x%04X, want 0x%04X", w, i, got[0], chaosInputValue(w))
 							}
-							oks.Add(1)
 						}()
 						cancel()
 					}
 				})
 			}
 			chaosWait(t, &wg, 30*time.Second, "callers")
-			if panics.Load() == 0 || oks.Load() == 0 {
-				t.Fatalf("%d panics, %d successful calls: the test did not exercise both", panics.Load(), oks.Load())
+			if n := reached.Load(); n != 0 {
+				t.Fatalf("%d calls did not return normally: the tap's failure reached the caller", n)
 			}
-			if got := panics.Load() + oks.Load(); got != workers*ops {
-				t.Errorf("%d calls accounted for, want %d", got, workers*ops)
+			if tapped.Load() == 0 {
+				t.Fatal("no tap failed: the test did not exercise it")
 			}
-			chaosAssertUsable(t, client, "client after tap panics")
+			if got, want := int64(strings.Count(log.dump(), "PDUTap.OnPDU did not return normally: tap does not return")), tapped.Load(); got != want {
+				t.Errorf("%d failures logged, want one per failing tap (%d)", got, want)
+			}
+			chaosAssertUsable(t, client, "client after taps that did not return")
 			_ = client.Close()
 			srv.stop()
 			chaosLeakCheck(t, baseline)

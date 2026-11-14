@@ -21,6 +21,21 @@ type RetryPolicy = intsession.RetryPolicy
 // ExponentialBackoffConfig is the public alias for the internal/session.ExponentialBackoffConfig.
 type ExponentialBackoffConfig = intsession.ExponentialBackoffConfig
 
+// Jitter selects how a policy of NewExponentialBackoff spreads its waits, so
+// that clients that fail at the same moment do not retry in step (see
+// ExponentialBackoffConfig.Jitter). The zero value, JitterNone, keeps the
+// exact schedule.
+type Jitter = intsession.Jitter
+
+const (
+	// JitterNone waits exactly BaseDelay × 2^attempt, capped at MaxDelay.
+	JitterNone = intsession.JitterNone
+	// JitterFull waits a duration drawn uniformly from zero to that delay.
+	JitterFull = intsession.JitterFull
+	// JitterEqual waits at least half of that delay and at most all of it.
+	JitterEqual = intsession.JitterEqual
+)
+
 // NoRetry returns a RetryPolicy that never retries; requests fail on the first error.
 // This is the default behaviour when Config.RetryPolicy is nil.
 func NoRetry() RetryPolicy { return intsession.NoRetry() }
@@ -33,7 +48,9 @@ func ExponentialBackoff(base, maxDelay time.Duration, maxAttempts int) RetryPoli
 }
 
 // NewExponentialBackoff constructs an exponential back-off RetryPolicy from a
-// full ExponentialBackoffConfig, allowing control over RetryOnTimeout and unlimited attempts.
+// full ExponentialBackoffConfig, allowing control over RetryOnTimeout, Jitter
+// and unlimited attempts. With Jitter set it draws each wait from a source of
+// its own that is safe for concurrent use.
 func NewExponentialBackoff(cfg ExponentialBackoffConfig) RetryPolicy {
 	return intsession.NewExponentialBackoff(cfg)
 }

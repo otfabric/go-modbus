@@ -232,8 +232,9 @@ client, err := modbus.New(modbus.Config{URL: "tcp://plc.local:502", Dialer: d.Di
   `tcp+tls` the same deadline also bounds the handshake. When the dial
   replaces a lost connection during a request (see "An open client stays open"
   below), the context is also the request's: cancelling the request ends the
-  dial. `Open` dials with the dial timeout only. The context ends once the dial
-  (and handshake) returns, so the connection must not depend on it.
+  dial. `Open` dials with the dial timeout only; `OpenContext` with the dial
+  timeout and its own context. The context ends once the dial (and handshake)
+  returns, so the connection must not depend on it.
 - The dialer must return a connection exactly when the error is nil. A
   connection returned together with an error is closed. A nil connection
   without an error fails the dial.
@@ -249,6 +250,15 @@ client, err := modbus.New(modbus.Config{URL: "tcp://plc.local:502", Dialer: d.Di
   times out also matches `ErrRequestTimedOut`.
 - The pool (`MaxConns > 1`) dials every connection through it, pre-warmed or
   not.
+- A dialer that does not return normally fails the dial with an error that
+  says so (`Config.Dialer did not return normally: …`), logged at error level
+  with its stack. So does a method of a connection it returned: that method
+  fails with such an error, the request using it fails and the connection is
+  not used again; `LocalAddr` and `RemoteAddr` return nil then, and `Close`
+  returns the error. This holds on the client's own goroutines too, such as the
+  one that interrupts the I/O of a request whose context ended. The errors the
+  dialer or its connections return are not guarded: `errors.Is` and `errors.As`
+  call their methods on the caller's goroutine.
 - Everything that runs on a client goes through it: the probe and detection
   helpers, `batch`, `codec` and `sunspec`. `modbus-cli` does not set one.
 
@@ -259,6 +269,7 @@ func New(conf Config) (*Client, error)
 func ValidateConfig(conf Config) error
 func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) Config
 func (mc *Client) Open() error
+func (mc *Client) OpenContext(ctx context.Context) error
 func (mc *Client) Close() error
 func (mc *Client) Info() ClientInfo
 func (mc *Client) LastObservedTransactionID() uint16
@@ -280,6 +291,23 @@ connection and requests sleeping between two retry attempts return promptly with
 nothing to close and returns nil; `Open` then completes, and the client is open on
 the connection it dialled. To end up with a closed client, call `Close` after
 `Open` has returned; its dials are bounded by `DialTimeout`.
+
+**`OpenContext`.** `OpenContext(ctx)` is `Open` bounded by `ctx`, with the same
+results: nil, or the error of the dial that failed. `ctx` ends the dials it
+makes (the TLS handshake included); `DialTimeout` bounds them as well.
+
+| When | `OpenContext` returns | The client |
+|---|---|---|
+| `ctx` is already done | `ctx.Err()`, before anything is dialled | stays closed |
+| `ctx` ends while it dials | an error that matches `ctx.Err()` with `errors.Is` (and the dial's own error, when it had one) | stays closed; what was dialled is closed |
+| `ctx` ends once the dials succeeded (a `Dialer` that does not honour it) | `ctx.Err()` | stays closed; the connections are closed |
+| the client is already open | nil, whatever `ctx` | stays open |
+| `Close` is called while it dials | what it would have returned without the `Close`; the `Close` returns nil | open, as after `Open` |
+
+To end an `OpenContext` in progress, cancel its context: `Close` does not end it,
+as it does not end an `Open`. A `Config.Dialer` ends a dial when `ctx` ends only
+if it honours its context. The serial lines (`rtu`, `ascii`) open their device
+without a context; `ctx` is checked before and after.
 
 **An open client stays open.** Between `Open` and `Close` a request never fails
 with `ErrClientNotOpen`. When the client has no usable connection, the next
@@ -1003,7 +1031,7 @@ const (
 
 `DiagnosticSubFunction` has a `String()` method for logging. Raw `uint16` values can be cast to `DiagnosticSubFunction` for reserved or vendor sub-functions.
 
-`data` may hold at most 250 bytes: with the function code and the sub-function that is the 253 bytes a PDU carries. `Diagnostics` does not check the length itself; a longer request is refused by the framer of the transport before anything is written, with an error matching `ErrInvalidMBAPLength` on `tcp`, `tcp+tls` and `udp` and `ErrProtocolError` on the serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`).
+`data` may hold at most 250 bytes: with the function code and the sub-function that is the 253 bytes a PDU carries. With more, `Diagnostics` returns a `*ParameterError` (`Method` `"Diagnostics"`, `Param` `"data"`, matching `ErrUnexpectedParameters`) and sends nothing, on every transport. The error also matches, with `errors.Is`, what the transport's framer returned for such a request up to v1.15.3: `ErrInvalidMBAPLength` on `tcp`, `tcp+tls` and `udp`, `ErrProtocolError` on the serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`). A function code that `AllowedFunctionCodes` refuses and a client that is not open are reported first, as for a request that fits. `ClientMetrics` sees `OnRequest` and `OnError` for it; no attempt is made, so `AttemptMetrics` sees nothing and the connection is kept.
 
 ```go
 type DiagnosticResponse struct {
@@ -1160,19 +1188,28 @@ and returns nil at once, although handler goroutines of that cycle may still be
 running. Nothing else waits for them: after a `Shutdown` that returned
 `ctx.Err()`, a `Stop` does not block.
 
-**Not from a callback.** `Shutdown` and `Stop` wait for the goroutines that run
-the `RequestHandler` methods and the `ServerMetrics` hooks, so a callback must not
-call them and wait for the result:
+**From a callback.** A `RequestHandler` method, a `ServerMetrics` or
+`ConnectionMetrics` method and the `Logger` may call `Stop` or `Shutdown`. The call
+stops the server as from any other goroutine (stops accepting, cancels every
+connection's context, closes the listener and the client sockets), then waits for
+every goroutine of the server except the ones of the connection it was called on
+(the accept loop's own, for a `ConnectionMetrics` method or a log entry of the
+accept loop). Up to v1.15.3 a `Stop` called there never returned.
 
-| Called from a handler method or a `ServerMetrics` hook | Outcome |
+| Called from a callback | Outcome |
 |---|---|
-| `Stop()` | never returns: it waits for the goroutine it was called on |
-| `Shutdown(ctx)`, any `ctx` but the handler's | the server stops accepting and closes its connections; the call returns `ctx.Err()` when `ctx` ends |
-| `Shutdown(ctx)` with the `ctx` the handler received | returns `context.Canceled` at once after the listener and the connections are closed (the shutdown cancels that context) |
-| `go srv.Stop()` | completes once the handler has returned |
+| `Stop()` | returns nil once every other goroutine of the server has ended: the handlers running for other connections are waited for |
+| `Shutdown(ctx)`, `ctx` not done | the same; it returns `ctx.Err()` if `ctx` ends first |
+| `Shutdown(ctx)` with the `ctx` the handler received | returns `context.Canceled` at once after the listener and the connections are closed (the shutdown cancels that context, and a `ctx` that is done is not waited on) |
+| `go srv.Stop()` | waits for every goroutine, so it completes once the handler that started it has returned |
 
-In every case the request being handled may go unanswered, because the shutdown
-closes its connection.
+When the call returns, the listener and the client sockets are closed and every
+other goroutine of the server has ended. The caller's connection is still served
+on the caller's goroutine until the request in progress is complete: that request
+is not answered (its connection is closed), its handler is still called, with its
+context cancelled, when the call came from `OnRequest`, and its outcome is reported
+to `ServerMetrics` as usual. Then no further request of the connection is
+dispatched and its goroutines end; they may still write log entries.
 
 **Accept errors.** When `Accept` fails for a reason other than the listener being
 closed (no file descriptors left, for example), the server logs a warning and
@@ -1195,9 +1232,12 @@ Identification). The function codes beyond the first eight are served when the
 handler implements the corresponding optional interface; otherwise, and for any
 other function code, the client receives an `Illegal Function` exception.
 
-**Panic recovery:** Handler panics are caught by the server. A panic in any handler
-method results in a `ServerDeviceFailure` exception response and a log entry; the
-client goroutine continues processing subsequent requests.
+**Callbacks that do not return normally:** a handler method that does not return
+normally is stopped there; the client receives a `ServerDeviceFailure` exception
+response, the server logs it at error level with its stack, and the connection
+goes on with the next request. The same holds for the other code of the
+application the server runs; see
+[OBSERVABILITY.md](OBSERVABILITY.md#callbacks-that-do-not-return-normally).
 
 ```go
 server, err := modbus.NewServer(&modbus.ServerConfig{
@@ -1228,11 +1268,10 @@ served in its own goroutine, so handler methods may be called concurrently from
 different client goroutines. Implementations must be safe for concurrent use
 (e.g. use `sync.Mutex` or other synchronization when accessing shared state).
 
-A panic inside any handler method is recovered and logged with a full stack
-trace; the client receives a `ServerDeviceFailure` exception response. A nil
+A handler method that does not return normally is stopped there and logged with
+its stack; the client receives a `ServerDeviceFailure` exception response. A nil
 response pointer from `HandleCommEventCounter`, `HandleCommEventLog` or
-`HandleDeviceIdentification` is answered with `ServerDeviceFailure` as well,
-without a panic.
+`HandleDeviceIdentification` is answered with `ServerDeviceFailure` as well.
 
 An error returned by a handler method is sent to the client as the matching
 Modbus exception (`ErrIllegalDataAddress` → exception 2, and so on;
@@ -1269,8 +1308,14 @@ response is encoded, and not kept after that: return a copy of shared state, not
 a view of it (`h.regs[a:b]`) that another connection's write may be changing. See
 [§ 13](#13-ownership-of-slices).
 
-**Stopping the server.** A handler method must not call `Stop`, or `Shutdown` and
-wait for it: see [§ 3.2](#32-lifecycle) for what each call does from a handler.
+**Stopping the server.** A handler method may call `Stop` or `Shutdown`: the call
+returns once the server's other goroutines have ended; see
+[§ 3.2](#32-lifecycle) for what each call does from a handler.
+
+**The handler's error.** The server reads the error a handler returns with
+`errors.Is` to choose the answer, which calls its `Is` and `Unwrap` methods. One
+that does not return normally is logged with its stack and answered with
+`ServerDeviceFailure`.
 
 ```go
 type RequestHandler interface {
@@ -1775,10 +1820,17 @@ type Logger interface {
 ```
 
 The methods are called synchronously: on a client from the goroutine of the
-method that logs, on a server from the server's own goroutines (the accept loop
-and one per connection). They must not panic. A panic in a `Logger` method is not
-recovered: on a client it reaches the caller of the client method, on a server it
-ends the process.
+method that logs, on a server from the server's own goroutines (the accept loop,
+and per connection the goroutine that serves it and the one that reads its
+requests). A method that does not return normally is stopped there: its entry is
+lost, the library goes on, and the failure is written once, at error level with
+the stack, through the same Logger's `Errorf` (on the formatted path, whatever
+the Logger implements); if that does not return normally either, it is dropped.
+The same holds for the `FieldLogger` methods, `With` included: a `FieldLogger`
+whose `With` does not return normally is used through its plain methods. Up to
+v1.15.3 the value reached the caller of the client method, and ended the process
+on a server. A `Logger` method may call the server's `Stop` or `Shutdown`
+([§ 3.2](#32-lifecycle)).
 
 ### Structured logging (FieldLogger)
 
@@ -1875,12 +1927,12 @@ retries are internal to the client). All methods are called synchronously;
 implementations must be **non-blocking** (e.g. increment an atomic counter, send
 on a buffered channel).
 
-**A method that panics.**
+**A method that does not return normally.**
 
-| Interface | Runs on | A panic in a method |
+| Interface | Runs on | A method that does not return normally |
 |---|---|---|
-| `ClientMetrics`, `AttemptMetrics` | the goroutine that called the client method | is not recovered: it unwinds through the client into that caller, like a panic in the caller's own code. The client stays usable |
-| `ServerMetrics` | the goroutine that serves the client's connection | is recovered and logged at error level with a stack trace, as for a handler method. The request is served and answered as if the method had returned, and the other methods are still called for it |
+| `ClientMetrics`, `AttemptMetrics` | the goroutine that called the client method | is stopped there and logged at error level with its stack, through `Config.Logger`. The request goes on as if the method had returned; its result is unchanged. Up to v1.15.3 it unwound into the caller |
+| `ServerMetrics`, `ConnectionMetrics` | the goroutine that serves the client's connection; the accept loop for `ConnectionMetrics` | is stopped there and logged at error level with its stack, as for a handler method. The request is served and answered as if the method had returned, and the other methods are still called for it |
 
 `ServerMetrics` methods get the unit ID and the function code as the client sent
 them. `OnRequest` is called before the server has checked that it serves the
@@ -1889,8 +1941,8 @@ it without a bound.
 
 `ClientMetrics` methods may call the client, `Close` included; `AttemptMetrics`
 methods run while the request holds its connection and must not make requests on
-the same client. `ServerMetrics` methods must not call `Stop`, or `Shutdown` and
-wait for it ([§ 3.2](#32-lifecycle)).
+the same client. `ServerMetrics` and `ConnectionMetrics` methods may call `Stop`
+or `Shutdown` ([§ 3.2](#32-lifecycle)).
 
 ### `ClientMetrics`
 
@@ -1954,6 +2006,33 @@ a function code it does not serve (`ErrIllegalFunction`, whether the code is
 unknown or its optional handler is not implemented) and a response too large
 for one frame (`ErrServerDeviceFailure`).
 
+### `ConnectionMetrics` (optional, server)
+
+```go
+type ConnectionMetrics interface {
+    OnConnectionRejected(addr string, reason RejectReason)
+}
+
+type RejectReason uint8
+
+const (
+    RejectMaxClients          RejectReason = iota + 1 // closed as soon as accepted: every MaxClients slot taken
+    RejectTLSHandshakeEvicted                         // tcp+tls: handshake not completed, closed to make room
+)
+```
+
+If the value assigned to `ServerConfig.Metrics` also implements
+`ConnectionMetrics`, the server calls `OnConnectionRejected` once for every
+connection it closes to keep within `MaxClients`: a connection it accepted when
+every slot was taken (on `tcp+tls`, by connections that completed their
+handshake), and a `tcp+tls` connection whose handshake had not completed, closed
+to make room for a newer one. `addr` is its remote `host:port`. Connections
+accepted while the server is stopping, and connections closed for any other
+reason, are not reported. The method runs on the accept loop after the
+connection was closed, with no lock held, and delays the next `Accept`: it must
+not block. `RejectReason` has a `String` method (`"max clients"`, `"tls
+handshake evicted"`).
+
 ### `PDUTap` (client)
 
 `Config.PDUTap` sees the raw PDUs (function code + data, no MBAP/CRC/LRC
@@ -1978,7 +2057,9 @@ type PDUTapFunc func(ctx context.Context, ex PDUExchange)
 ```
 
 - Called synchronously, once per answered request, in the goroutine of the
-  calling method, with that method's `ctx`. Must not block.
+  calling method, with that method's `ctx`. Must not block. An `OnPDU` that does
+  not return normally is logged at error level with its stack, and the call goes
+  on as if it had returned (up to v1.15.3 it reached the caller).
 - Every request on the wire is reported: reads, writes and probes alike.
   `ReadAllDeviceIdentification` reports each FC43 page; `WriteRegisterBit` and
   `UpdateRegisterMask` report the read and the write. Filtering is up to the tap.
@@ -2050,8 +2131,30 @@ type ExponentialBackoffConfig struct {
     MaxDelay       time.Duration // default 30 s
     MaxAttempts    int           // 0 = unlimited
     RetryOnTimeout bool          // default false: timeouts are not retried
+    Jitter         Jitter        // default JitterNone: the delays above, exactly
 }
+
+type Jitter uint8
+
+const (
+    JitterNone  Jitter = iota // wait d exactly (the zero value)
+    JitterFull                // wait a delay drawn uniformly from [0, d]
+    JitterEqual               // wait d − d/2 plus a delay drawn uniformly from [0, d/2]
+)
 ```
+
+**Jitter.** Let `d` be `BaseDelay × 2^attempt`, capped at `MaxDelay`. `JitterNone`,
+the zero value, waits `d` exactly, as every release before v1.16.0 did.
+`JitterFull` and `JitterEqual` spread the retries of many clients that failed at
+the same moment: the delay is drawn uniformly from `[0, d]` or from `[d − d/2, d]`.
+Either way it never exceeds `MaxDelay`. A value other than these three waits as
+`JitterNone`. The policy draws from its own source, `math/rand/v2`, which is safe
+for concurrent use; a policy can be shared between clients. `ExponentialBackoff`
+does not jitter.
+
+**A `ShouldRetry` that does not return normally** is logged at error level with
+its stack and counts as `(false, 0)`: the request is not retried and returns the
+error of its attempt.
 
 ### Example
 
@@ -2065,6 +2168,16 @@ conf.RetryPolicy = modbus.NewExponentialBackoff(modbus.ExponentialBackoffConfig{
     MaxDelay:       10 * time.Second,
     MaxAttempts:    0,
     RetryOnTimeout: true,
+})
+
+// Up to 5 retries, each after a random delay of at most 200 ms × 2^attempt
+// (and at most 5 s): many clients that lost the same device do not all
+// reconnect at once.
+conf.RetryPolicy = modbus.NewExponentialBackoff(modbus.ExponentialBackoffConfig{
+    BaseDelay:   200 * time.Millisecond,
+    MaxDelay:    5 * time.Second,
+    MaxAttempts: 5,
+    Jitter:      modbus.JitterFull,
 })
 ```
 

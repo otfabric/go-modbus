@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -359,7 +360,8 @@ func TestE2E_Server_ClientAddr(t *testing.T) {
 func TestE2E_Server_MaxClients(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, kind string) {
 		dev := e2eNewDevice()
-		p := e2eStart(t, kind, dev, e2eOpts{server: func(c *ServerConfig) { c.MaxClients = 2 }})
+		m := &rejectMetrics{}
+		p := e2eStart(t, kind, dev, e2eOpts{server: func(c *ServerConfig) { c.MaxClients = 2; c.Metrics = m }})
 		ctx := context.Background()
 		c1 := p.client
 		c2 := p.newClient(nil)
@@ -394,6 +396,11 @@ func TestE2E_Server_MaxClients(t *testing.T) {
 		if p.conns() != 2 {
 			t.Errorf("server connections = %d, want 2", p.conns())
 		}
+		// ConnectionMetrics hears of it, once, with the client's address.
+		e2eEventually(t, "the rejection to be reported", func() bool { return len(m.snapshot()) == 1 })
+		if r := m.snapshot()[0]; r.reason != RejectMaxClients || !strings.HasPrefix(r.addr, "127.0.0.1:") {
+			t.Errorf("rejection %+v, want RejectMaxClients from 127.0.0.1", r)
+		}
 		_ = c3.Close()
 		// The two admitted clients are unaffected.
 		for i, c := range []*Client{c1, c2} {
@@ -415,6 +422,9 @@ func TestE2E_Server_MaxClients(t *testing.T) {
 		}
 		if p.conns() != 2 {
 			t.Errorf("server connections = %d, want 2", p.conns())
+		}
+		if got := m.snapshot(); len(got) != 1 {
+			t.Errorf("rejections %v, want only the third client's first connection", got)
 		}
 	})
 }

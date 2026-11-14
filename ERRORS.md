@@ -26,10 +26,12 @@ Modbus exception from the unit.
 | Configured timeout, or context deadline expiring in flight | `ErrRequestTimedOut` |
 | Context already cancelled or expired when the call starts | `ctx.Err()` (`context.Canceled` / `context.DeadlineExceeded`); nothing is sent |
 | Context cancelled while the request is in flight | `context.Canceled` (`errors.Is`); returns promptly. A cancellation that arrives just before the request would be written is honoured before it is: nothing is sent |
-| Request that does not fit a frame (`Diagnostics` with more than 250 data bytes; every other method bounds its arguments) | `ErrInvalidMBAPLength` on `tcp`, `tcp+tls` and `udp`, `ErrProtocolError` on the serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`); nothing is sent |
+| Request that does not fit a frame (`Diagnostics` with more than 250 data bytes; every other method bounds its arguments) | `*ParameterError` (`Method` `"Diagnostics"`, `Param` `"data"`; `errors.Is` → `ErrUnexpectedParameters`), which also matches what v1.15.3 returned: `ErrInvalidMBAPLength` on `tcp`, `tcp+tls` and `udp`, `ErrProtocolError` on the serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`); nothing is sent |
 | Connection lost, refused or reset | stdlib error (`io.EOF`, `*net.OpError`, …); the next request reconnects |
 | Dial or TLS handshake failed (default or `Config.Dialer`) | error starting `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:` (or `modbus: ` followed by a `*net.OpError` that already names the same dial), wrapping the cause (`errors.Is` / `errors.As` reach `*net.OpError` or the dialer's own error); `Timeout()` when the cause timed out |
 | `Config.Dialer` returned neither a connection nor an error | dial error with the message `dialer returned no connection`; no sentinel |
+| `OpenContext` whose context ended | `ctx.Err()` when it was done before the call; an error that matches `ctx.Err()` (`errors.Is`) when it ended during the dials, also matching the dial's own error when there was one; the client stays closed |
+| Application code the library called did not return normally (a `Config.Dialer`, a method of its connection, the private key of `TLSClientCert`) | the error of that call: a dial error, or the error of the request or of `Close`, whose message says `… did not return normally: <value>`; no sentinel. A `RetryPolicy` that does not return normally stops the retries: the call returns its attempt's error |
 | Re-dial during a request ran out of the dial timeout or the request's deadline | `ErrRequestTimedOut` wrapping the dial error (`errors.Is` reaches both, and `context.DeadlineExceeded` when the context ended it) |
 | Malformed / unexpected peer response | `*ProtocolError` (`errors.Is` → `ErrProtocolError`) |
 | RTU CRC / ASCII LRC / short frame | `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` |
@@ -174,10 +176,16 @@ On the server, a response that cannot be written in full within
 `Start`, `Shutdown` and `Stop` return the listener's error or nil; `Shutdown`
 returns `ctx.Err()` when its context ends before the handlers have. Only the
 first `Shutdown` or `Stop` of a cycle waits: a later one returns nil at once.
-Called from a `RequestHandler` method or a `ServerMetrics` hook, `Shutdown`
-returns `ctx.Err()` when its context ends (`context.Canceled` at once with the
-handler's own context) and `Stop` does not return. See
+Called from a `RequestHandler` method, a `ServerMetrics` or `ConnectionMetrics`
+method or the `Logger`, they return the same, once the server's other goroutines
+have ended; `Shutdown` with a context that is already done, such as the
+handler's own (the shutdown cancels it), returns `ctx.Err()` at once. Up to
+v1.15.3 a `Stop` called there did not return. See
 [API.md § 3.2](API.md#32-lifecycle).
+
+A handler error whose `Is` or `Unwrap` method does not return normally is
+answered with `ServerDeviceFailure`, as a handler that does not return normally
+is.
 
 ## Batch execution
 

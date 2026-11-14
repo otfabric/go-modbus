@@ -40,8 +40,9 @@ type PDUExchange struct {
 // exchange with the call that caused it. Implementations must be non-blocking
 // and safe for concurrent use when the client is shared between goroutines.
 // The connection is released before OnPDU runs, so a slow tap delays only the
-// call it reports. A panic in OnPDU is not recovered: it reaches the caller of
-// the client method, and the client stays usable.
+// call it reports. An OnPDU that does not return normally is stopped there and
+// logged at error level with its stack, through Config.Logger; the call goes
+// on as if OnPDU had returned, and its result is not affected.
 //
 // OnPDU is called once for every request answered with a response that has the
 // request's unit id and either its function code or its exception code
@@ -70,21 +71,25 @@ type PDUTapFunc func(ctx context.Context, ex PDUExchange)
 // OnPDU calls f(ctx, ex).
 func (f PDUTapFunc) OnPDU(ctx context.Context, ex PDUExchange) { f(ctx, ex) }
 
-// tapExchange reports the exchange of req and res to tap, when there is one
-// and res answers req. received is the time res was taken from the transport.
-func tapExchange(ctx context.Context, tap PDUTap, req *adu.Request, res *adu.Response, received time.Time) {
+// tapExchange reports the exchange of req and res to Config.PDUTap, when there
+// is one and res answers req. received is the time res was taken from the
+// transport. OnPDU is called through call: one that does not return normally
+// is logged, and the request goes on as if it had returned.
+func (mc *Client) tapExchange(ctx context.Context, req *adu.Request, res *adu.Response, received time.Time) {
+	tap := mc.tap
 	if tap == nil {
 		return
 	}
 	if res.FunctionCode != req.FunctionCode && res.FunctionCode != req.FunctionCode|0x80 {
 		return
 	}
-	tap.OnPDU(ctx, PDUExchange{
+	ex := PDUExchange{
 		UnitID:   req.UnitID,
 		Request:  pduBytes(req.FunctionCode, req.Payload),
 		Response: pduBytes(res.FunctionCode, res.Payload),
 		Received: received,
-	})
+	}
+	_ = mc.call("PDUTap.OnPDU", func() error { tap.OnPDU(ctx, ex); return nil })
 }
 
 // pduBytes returns a fresh PDU: the function code, then the payload.

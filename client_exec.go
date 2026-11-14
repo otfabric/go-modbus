@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/session"
 )
 
 // executeRequest sends req via the session engine and returns the response.
@@ -31,17 +32,10 @@ import (
 // (checkResponseFC, payload checks, echo mismatches) completes, so that
 // metrics accurately reflect the logical API outcome.
 func (mc *Client) executeRequest(ctx context.Context, req *adu.Request) (res *adu.Response, err error) {
-	if mc.allowedFCs != nil && !mc.allowedFCs[req.FunctionCode] {
-		return nil, fmt.Errorf("%w: %s", ErrFunctionCodeNotAllowed, FunctionCode(req.FunctionCode))
+	engine, err := mc.requestEngine(req)
+	if err != nil {
+		return nil, err
 	}
-
-	mc.lock.Lock()
-	engine := mc.state.engine
-	if engine == nil {
-		mc.lock.Unlock()
-		return nil, ErrClientNotOpen
-	}
-	mc.lock.Unlock()
 
 	res, err = engine.Execute(ctx, req)
 	if err != nil {
@@ -59,17 +53,63 @@ func (mc *Client) executeRequest(ctx context.Context, req *adu.Request) (res *ad
 	if res.UnitID != req.UnitID {
 		return nil, ErrBadUnitID
 	}
-	tapExchange(ctx, mc.tap, req, res, received)
+	mc.tapExchange(ctx, req, res, received)
 
 	return res, nil
 }
 
-// getMetrics returns the current ClientMetrics under lock.
-func (mc *Client) getMetrics() ClientMetrics {
+// requestEngine returns the engine req is to run on: the checks executeRequest
+// makes before the request reaches the session, in its order. A function code
+// that Config.AllowedFunctionCodes refuses fails first (an error wrapping
+// ErrFunctionCodeNotAllowed), then a client that is not open
+// (ErrClientNotOpen).
+func (mc *Client) requestEngine(req *adu.Request) (*session.Engine, error) {
+	if mc.allowedFCs != nil && !mc.allowedFCs[req.FunctionCode] {
+		return nil, fmt.Errorf("%w: %s", ErrFunctionCodeNotAllowed, FunctionCode(req.FunctionCode))
+	}
+
 	mc.lock.Lock()
-	m := mc.conf.Metrics
+	engine := mc.state.engine
 	mc.lock.Unlock()
-	return m
+	if engine == nil {
+		return nil, ErrClientNotOpen
+	}
+	return engine, nil
+}
+
+// requestSizeError is the error of a call whose arguments make a request that
+// does not fit one frame. It is a *ParameterError (errors.As reaches it, and
+// errors.Is ErrUnexpectedParameters), and it also matches framer, the error
+// the transport's framer gives such a request, which is what the call returned
+// before its arguments were checked.
+type requestSizeError struct {
+	param  *ParameterError
+	framer error
+}
+
+func (e *requestSizeError) Error() string   { return e.param.Error() }
+func (e *requestSizeError) Unwrap() []error { return []error{e.param, e.framer} }
+
+// requestSizeError returns the error of method for an argument param that
+// makes a request too long for one frame of this client's transport:
+// ErrInvalidMBAPLength is what the MBAP framer (tcp, tcp+tls, udp) refuses
+// such a request with, ErrProtocolError what the RTU and ASCII framers do.
+func (mc *Client) requestSizeError(method, param, reason string) error {
+	framer := ErrProtocolError
+	switch mc.transportType {
+	case modbusTCP, modbusTCPOverTLS, modbusTCPOverUDP:
+		framer = ErrInvalidMBAPLength
+	default:
+	}
+	return &requestSizeError{
+		param:  &ParameterError{Method: method, Param: param, Reason: reason},
+		framer: framer,
+	}
+}
+
+// getMetrics returns Config.Metrics, guarded (see guardedMetrics), or nil.
+func (mc *Client) getMetrics() ClientMetrics {
+	return mc.metrics
 }
 
 // reportOutcome reports the logical outcome of a completed request to

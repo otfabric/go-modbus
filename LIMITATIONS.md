@@ -52,12 +52,19 @@ from the same host, or from many hosts a client whose handshake is slow.
 - `Config.Dialer` covers the network transports only; `rtu` and `ascii` open
   their serial device directly.
 - `Open` takes no context: its dials are bounded by `DialTimeout` (or its
-  default) and cannot be cancelled. The dials that replace a lost connection
-  during a request run under the request's context as well.
-- `Close` does not end an `Open` that is in progress. Called while `Open` is
-  still dialling it returns nil and closes nothing; `Open` then completes and
-  the client is open. A shutdown path that may race an `Open` calls `Close`
-  again after `Open` has returned.
+  default) and cannot be cancelled. `OpenContext` is `Open` with a context that
+  ends its dials. The dials that replace a lost connection during a request run
+  under the request's context as well.
+- `Close` does not end an `Open` or `OpenContext` that is in progress. Called
+  while either is still dialling it returns nil and closes nothing; the open
+  then completes and the client is open. A shutdown path that may race an open
+  cancels the context of its `OpenContext`, or calls `Close` again after `Open`
+  has returned.
+- A dialer ends its dial when the context of `OpenContext` ends only if it
+  honours its context. When the dial succeeds although the context has ended,
+  `OpenContext` closes the connection and returns the context's error.
+- The serial lines (`rtu`, `ascii`) open their device without a context:
+  `OpenContext` checks its context before and after, not during.
 - For `udp` and `rtuoverudp`, a connection from the dialer must keep datagram
   boundaries (one `Read` per datagram, one datagram per `Write`); a stream
   connection, such as most proxies give, will not frame Modbus/UDP correctly.
@@ -72,13 +79,19 @@ from the same host, or from many hosts a client whose handshake is slow.
   libmodbus, PyModbus, digitalpetri/modbus, NModbus and tokio-modbus
   servers answer 11 ([INTEROPERABILITY.md](INTEROPERABILITY.md)).
 - The server does not filter unit identifiers: that is the handler's job.
-- `Server.Stop` and `Server.Shutdown` wait for the goroutines that run the
-  handler methods and the `ServerMetrics` hooks. Called from one of those,
-  `Stop` never returns and `Shutdown` returns only when its context ends; use
-  `go srv.Stop()` or `Shutdown` with the handler's context
+- `Server.Stop` and `Server.Shutdown` called from a handler method, a
+  `ServerMetrics` or `ConnectionMetrics` method or the `Logger` do not wait for
+  the connection (or the accept loop) they were called on: when they return,
+  that connection's goroutines are still finishing the request in progress (its
+  outcome hook included) and end afterwards
   ([API.md § 3.2](API.md#32-lifecycle)). Only the first `Stop` or `Shutdown`
   waits: after a `Shutdown` whose context ended, nothing waits for the handlers
   that are still running.
+- The guard on the application's code stops a call that does not return
+  normally, not one that ends its goroutine with `runtime.Goexit`. The methods
+  of errors a `Config.Dialer` or its connections return, and the interfaces of
+  `batch`, `sunspec` and `codec`, run on the caller's goroutine unguarded
+  ([OBSERVABILITY.md](OBSERVABILITY.md#callbacks-that-do-not-return-normally)).
 - The serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`,
   `asciiovertcp`) carry no transaction ID. The tunnelled ones replace their
   socket after a timeout, a cancelled request or a response that does not match
