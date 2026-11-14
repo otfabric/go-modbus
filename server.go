@@ -12,7 +12,10 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/otfabric/go-modbus/internal/goid"
 )
 
 // Modbus Role PEM OID (see R-21 of the MBAPS spec).
@@ -121,13 +124,16 @@ var ErrNoResponse = errors.New("modbus: no response")
 //
 // Each handler method receives a context that is cancelled when the client
 // disconnects (also while the handler is running; a client that merely shuts
-// down its sending side counts as disconnected) or the server stops. A panic
-// inside any handler method is recovered and logged (with a stack trace); the
-// client receives a ServerDeviceFailure exception response.
+// down its sending side counts as disconnected) or the server stops. A handler
+// method that does not return normally is stopped there and logged at error
+// level with its stack; the client receives a ServerDeviceFailure exception
+// response, and the connection and the server go on.
 //
 // An error returned by a handler method is sent to the client as the matching
 // Modbus exception (ServerDeviceFailure when there is none), with one exception:
-// ErrNoResponse makes the server send nothing at all.
+// ErrNoResponse makes the server send nothing at all. The server calls the
+// error's methods (Is, Unwrap) to choose the exception; one that does not
+// return normally is logged the same way and answered with ServerDeviceFailure.
 //
 // Ownership. The slices in a request (Args, WriteValues, Data, Requests,
 // Records) are the handler's: the server made them for this call and does not
@@ -137,18 +143,28 @@ var ErrNoResponse = errors.New("modbus: no response")
 // (h.regs[a:b]) that another call may be writing to. This holds for the
 // optional handler interfaces as well.
 //
-// Stopping the server from a handler. A handler method runs on the goroutine
-// that Stop and Shutdown wait for, so it must not call them and wait for the
-// result: Stop called from a handler method never returns, and Shutdown called
-// from one returns only when its context ends, with that context's error. To
-// stop the server from a handler, start the call on another goroutine
-// (go srv.Stop()), which completes once the handler has returned, or call
-// Shutdown with the handler's own context: the shutdown cancels that context,
-// so the call returns context.Canceled as soon as the server has stopped
-// accepting and closed its connections, without waiting for the handlers.
-// Either way the request being handled may go unanswered: the shutdown closes
-// its connection. The same applies to the ServerMetrics hooks, which run on
-// the same goroutine.
+// Stopping the server from a handler. A handler method may call Stop or
+// Shutdown, and so may a ServerMetrics or ConnectionMetrics method and the
+// Logger. The call stops the server as a call from any other goroutine does:
+// it stops accepting, cancels the context of every connection and closes the
+// listener and the client sockets. Then it waits for the server's goroutines,
+// the handlers running for other connections included, except the ones of the
+// connection it was called on (or the accept loop, for a ConnectionMetrics
+// method or a log entry of the accept loop). Stop returns once they have
+// ended. Shutdown also returns when its context ends, and at once when that
+// context is already done: Shutdown with the handler's own context, which the
+// shutdown cancels, returns context.Canceled without waiting.
+//
+// When the call returns, the listener and the client sockets are closed and
+// every other goroutine of the server has ended. The caller's connection is
+// still served on the caller's goroutine until the request in progress is
+// complete: that request is not answered (its connection is closed), its
+// handler is still called, with its context cancelled, when the call came
+// from OnRequest, and its outcome is reported to ServerMetrics as usual. Then
+// no further request of the connection is dispatched and its goroutines end;
+// they may still write log entries. A Stop on any other goroutine (go
+// srv.Stop() from a handler, say) waits for them too, and so for the handler
+// that started it to return.
 type RequestHandler interface {
 	HandleCoils(ctx context.Context, req *CoilsRequest) (res []bool, err error)
 	HandleDiscreteInputs(ctx context.Context, req *DiscreteInputsRequest) (res []bool, err error)
@@ -276,6 +292,56 @@ type serverRun struct {
 	listener net.Listener
 	// wg counts the accept loop and the client goroutines of this cycle.
 	wg *sync.WaitGroup
+	// goroutines maps the id of every goroutine of this cycle that runs the
+	// application's code (the accept loop, each connection's goroutine and
+	// its reader) to the share of wg it belongs to. Shutdown looks its caller
+	// up here, so that it does not wait for itself. Guarded by Server.lock.
+	goroutines map[uint64]*runShare
+}
+
+// runShare is one count of serverRun.wg: the accept loop, or one connection
+// (its goroutine and the goroutine that reads its requests).
+type runShare struct {
+	wg   *sync.WaitGroup
+	once sync.Once
+	// released is set when a Shutdown called on one of the share's goroutines
+	// gave the count back, so that it would not wait for itself. The share's
+	// goroutines then make no further callback that the shutdown would not
+	// wait for: no request is dispatched and no response is written.
+	released atomic.Bool
+}
+
+// done gives the share's count back to wg, once.
+func (s *runShare) done() { s.once.Do(s.wg.Done) }
+
+// release is done for a Shutdown called on one of the share's goroutines.
+func (s *runShare) release() {
+	s.released.Store(true)
+	s.done()
+}
+
+// join registers the calling goroutine with share, which is created (and
+// counted in run.wg by the caller) when nil, and returns share.
+func (ms *Server) join(run *serverRun, share *runShare) *runShare {
+	if share == nil {
+		share = &runShare{wg: run.wg}
+	}
+	id := goid.ID()
+	ms.lock.Lock()
+	if run.goroutines == nil {
+		run.goroutines = make(map[uint64]*runShare)
+	}
+	run.goroutines[id] = share
+	ms.lock.Unlock()
+	return share
+}
+
+// leave removes the calling goroutine from run.goroutines.
+func (ms *Server) leave(run *serverRun) {
+	id := goid.ID()
+	ms.lock.Lock()
+	delete(run.goroutines, id)
+	ms.lock.Unlock()
 }
 
 // Returns a new modbus server.
@@ -403,12 +469,16 @@ func (ms *Server) Start() (err error) {
 // ended, finds the server stopped and returns nil at once, although handler
 // goroutines of the cycle may still be running; nothing else waits for them.
 //
-// Shutdown waits for the goroutines that run the handler methods and the
-// ServerMetrics hooks. Called from one of them it cannot see that goroutine
-// end: it returns ctx.Err() when ctx ends. With the context the handler
-// received, which the shutdown itself cancels, that is context.Canceled, as
-// soon as the listener and the client sockets are closed. See RequestHandler.
+// Shutdown may be called from the application's code that the server runs: a
+// RequestHandler method, a ServerMetrics or ConnectionMetrics method, the
+// Logger. It then waits for every goroutine of the server except the ones of
+// the connection, or of the accept loop, that it was called on (see
+// RequestHandler, "Stopping the server from a handler"). When ctx is already
+// done once the listener and the client sockets are closed, as the context a
+// handler received is (the shutdown cancels it), such a call returns ctx.Err()
+// without waiting.
 func (ms *Server) Shutdown(ctx context.Context) error {
+	caller := goid.ID()
 	ms.lock.Lock()
 	if !ms.started {
 		ms.lock.Unlock()
@@ -422,7 +492,17 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 	for _, sock := range ms.tcpClients {
 		_ = sock.Close()
 	}
+	own := run.goroutines[caller]
 	ms.lock.Unlock()
+
+	if own != nil {
+		// Called from the application's code on one of the cycle's goroutines:
+		// do not wait for it.
+		own.release()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -444,10 +524,10 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 // after a Shutdown whose context ended, or while another Stop is waiting,
 // returns nil at once.
 //
-// Do not call Stop from a RequestHandler method or a ServerMetrics hook and
-// wait for it: it waits for the goroutine it was called on and never returns.
-// Use go srv.Stop() there, or Shutdown with the handler's context (see
-// RequestHandler).
+// Called from a RequestHandler method, a ServerMetrics or ConnectionMetrics
+// method or the Logger, Stop returns once every other goroutine of the server
+// has ended; it does not wait for the connection, or the accept loop, it was
+// called on (see RequestHandler).
 func (ms *Server) Stop() error {
 	return ms.Shutdown(context.Background())
 }

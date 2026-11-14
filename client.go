@@ -157,6 +157,14 @@ type Config struct {
 //
 // For udp and rtuoverudp, each Read of the connection must return one datagram
 // and each Write must send one, as a connected *net.UDPConn does.
+//
+// A Dialer, or a method of a connection it returned, that does not return
+// normally is stopped there and logged at error level with its stack, through
+// Config.Logger, and fails as if it had returned an error that describes it:
+// the dial fails, or the request using the connection does and the connection
+// is not used again. The errors a Dialer or its connections return are not
+// guarded: errors.Is and errors.As call their methods on the goroutine that
+// called the client.
 type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
 // TransportConfig groups transport-related settings. Use with NewConfig
@@ -219,7 +227,10 @@ func NewConfig(tc TransportConfig, ec ExecutionConfig, oc ObservabilityConfig) C
 
 // clientState holds the mutable fields of Client, guarded by lock.
 type clientState struct {
-	engine                    *session.Engine
+	engine *session.Engine
+	// closing is closed once the Close in progress has closed its engine; nil
+	// while no Close is closing one.
+	closing                   chan struct{}
 	lastResponseTransactionID uint16
 }
 
@@ -238,6 +249,9 @@ type Client struct {
 	// tap is Config.PDUTap. It is never modified after New, so it is read
 	// without the lock.
 	tap PDUTap
+	// metrics is Config.Metrics called through call (guardedMetrics), nil
+	// without one. It is never modified after New.
+	metrics ClientMetrics
 }
 
 // New creates, configures and returns a modbus client object.
@@ -258,6 +272,9 @@ func New(conf Config) (mc *Client, err error) {
 
 	mc.logger = newLogger(
 		fmt.Sprintf("modbus-client(%s)", mc.endpoint), conf.Logger)
+	if conf.Metrics != nil {
+		mc.metrics = guardedMetrics{m: conf.Metrics, mc: mc}
+	}
 
 	switch clientType {
 	case "rtu":
@@ -453,19 +470,50 @@ func ValidateConfig(conf Config) error {
 // Close called while Open is still dialling finds nothing to close and returns
 // nil, and Open then completes and leaves the client open. To end up closed,
 // call Close after Open has returned (its dials are bounded by DialTimeout).
-func (mc *Client) Open() (err error) {
+// OpenContext is Open with a context that ends the dials.
+func (mc *Client) Open() error {
+	return mc.open(context.Background())
+}
+
+// OpenContext is Open bounded by ctx: it returns the same results as Open
+// (nil, or the error of the dial that failed), and ctx ends the dials it
+// makes. On a client that is not open, a ctx that is already done returns
+// ctx.Err() before anything is dialled. When ctx ends while OpenContext dials, the dial fails and
+// OpenContext returns an error that matches ctx.Err() (errors.Is), closes
+// what it had dialled and leaves the client closed; the same holds when ctx
+// is done once the dials have succeeded. The dials are bounded by DialTimeout
+// (or its default) as well. A Config.Dialer ends a dial when its ctx ends
+// only if it honours ctx, as Dialer asks. The serial transports (rtu, ascii)
+// open their device without a context: ctx is checked before and after.
+//
+// Close does not end an OpenContext in progress, as it does not end an Open:
+// it finds nothing to close and returns nil, and OpenContext then completes
+// as if Close had not been called. To end an OpenContext, cancel its context.
+//
+// Like Open, OpenContext on an open client is a no-op and returns nil,
+// whatever ctx.
+func (mc *Client) OpenContext(ctx context.Context) error {
+	return mc.open(ctx)
+}
+
+// open is Open and OpenContext. ctx bounds the dials; context.Background()
+// never ends, so Open behaves as it did before OpenContext existed.
+func (mc *Client) open(ctx context.Context) error {
 	mc.lock.Lock()
-	if mc.state.engine != nil {
-		mc.lock.Unlock()
-		return
-	}
+	open := mc.state.engine != nil
 	mc.lock.Unlock()
+	if open {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	usePool := mc.conf.MaxConns > 1 && mc.supportsPooling()
 
 	var obs session.AttemptObserver
 	if am, ok := mc.conf.Metrics.(AttemptMetrics); ok {
-		obs = &attemptBridge{am: am}
+		obs = &attemptBridge{am: am, mc: mc}
 	}
 
 	eng := session.NewEngine(session.Config{
@@ -473,7 +521,7 @@ func (mc *Client) Open() (err error) {
 		UsePool:  usePool,
 		MinConns: mc.conf.MinConns,
 		MaxConns: mc.conf.MaxConns,
-		Retry:    mc.conf.RetryPolicy,
+		Retry:    mc.retryPolicy(),
 		Logger:   mc.conf.Logger,
 		Attempts: obs,
 		Broken:   mc.brokenBy(),
@@ -482,18 +530,29 @@ func (mc *Client) Open() (err error) {
 		ResyncSuspect: mc.resyncSuspect(),
 	})
 
-	if err = eng.Open(context.Background()); err != nil {
-		return
+	if err := eng.Open(ctx); err != nil {
+		if cerr := ctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+			// The dial failed while ctx ended: say so, whatever the dial reported.
+			err = fmt.Errorf("%w: %w", cerr, err)
+		}
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		// ctx ended once the dials had succeeded: the client stays closed.
+		_ = eng.Close()
+		return err
 	}
 
 	mc.lock.Lock()
-	defer mc.lock.Unlock()
 	if mc.state.engine != nil {
+		// Another Open got there first.
+		mc.lock.Unlock()
 		_ = eng.Close()
-		return
+		return nil
 	}
 	mc.state.engine = eng
-	return
+	mc.lock.Unlock()
+	return nil
 }
 
 // brokenBy returns the rule that decides, for this client's transport, whether
@@ -663,13 +722,15 @@ func (e *dialError) Timeout() bool {
 
 // dialConn opens a network connection to the endpoint with Config.Dialer, or
 // with net.Dialer when there is none. ctx must already carry the dial timeout.
-func (mc *Client) dialConn(ctx context.Context, network string) (net.Conn, error) {
-	dial := mc.conf.Dialer
-	if dial == nil {
+// A connection of Config.Dialer is application code: it is called through
+// call (see dialApp).
+func (mc *Client) dialConn(ctx context.Context, network string) (conn net.Conn, err error) {
+	if dial := mc.conf.Dialer; dial != nil {
+		conn, err = mc.dialApp(ctx, dial, network)
+	} else {
 		var d net.Dialer
-		dial = d.DialContext
+		conn, err = d.DialContext(ctx, network, mc.endpoint)
 	}
-	conn, err := dial(ctx, network, mc.endpoint)
 	if err != nil {
 		if conn != nil {
 			// A misbehaving dialer returned a connection with its error: do not leak it.
@@ -700,7 +761,9 @@ func (mc *Client) dialTLS(ctx context.Context) (*tls.Conn, error) {
 		return nil, err
 	}
 	sock := tls.Client(raw, mc.tlsConfig())
-	if err = sock.HandshakeContext(ctx); err != nil {
+	// The handshake signs with the private key of TLSClientCert, which may be
+	// the application's own crypto.Signer.
+	if err = mc.call("TLS handshake", func() error { return sock.HandshakeContext(ctx) }); err != nil {
 		_ = sock.Close()
 		return nil, &dialError{op: "tls handshake", network: "tcp", addr: mc.endpoint, err: err}
 	}
@@ -826,18 +889,39 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 // with ErrClientNotOpen. After Close returns, the client can be re-opened by
 // calling Open again.
 //
-// Close acts on what Open has established. Called while an Open is still
-// dialling it closes nothing and returns nil; that Open then succeeds and the
-// client is open (see Open).
-func (mc *Client) Close() (err error) {
+// Close acts on what Open has established. Called while an Open (or an
+// OpenContext) is still dialling it closes nothing and returns nil; that Open
+// then succeeds and the client is open (see Open).
+//
+// A Close called while another one is closing the connections returns once
+// that one has.
+func (mc *Client) Close() error {
 	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	if mc.state.engine != nil {
-		err = mc.state.engine.Close()
-		mc.state.engine = nil
+	eng := mc.state.engine
+	mc.state.engine = nil
+	if eng == nil {
+		wait := mc.state.closing
+		mc.lock.Unlock()
+		if wait != nil {
+			<-wait
+		}
+		return nil
 	}
-	return
+	done := make(chan struct{})
+	mc.state.closing = done
+	mc.lock.Unlock()
+
+	// The connections are closed without the lock: closing one runs the
+	// application's code when it comes from Config.Dialer.
+	err := eng.Close()
+
+	mc.lock.Lock()
+	if mc.state.closing == done {
+		mc.state.closing = nil
+	}
+	mc.lock.Unlock()
+	close(done)
+	return err
 }
 
 // LastObservedTransactionID returns the most recently observed MBAP transaction ID
@@ -922,16 +1006,4 @@ func (mc *Client) transportKind() TransportKind {
 	default:
 		return ""
 	}
-}
-
-// attemptBridge adapts the public AttemptMetrics interface to the internal
-// session.AttemptObserver interface.
-type attemptBridge struct{ am AttemptMetrics }
-
-func (ab *attemptBridge) OnAttempt(unitID uint8, fc byte, attempt int, d time.Duration, err error) {
-	ab.am.OnAttempt(unitID, FunctionCode(fc), attempt, d, err)
-}
-
-func (ab *attemptBridge) OnRetryDial(attempt int, d time.Duration, err error) {
-	ab.am.OnRetryDial(attempt, d, err)
 }

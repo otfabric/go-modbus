@@ -197,7 +197,7 @@ The library is organized into five distinct API tiers, from lowest to highest le
 | **1. Raw Modbus** | `modbus` | Direct function-code methods (`ReadCoils`, `WriteRegisters`, …) returning native Go types. Full control over unit IDs, addresses, and quantities. | Integrators who know their device's register map |
 | **2. Typed Codec** | `modbus/codec` | Layout-aware encode/decode of multi-register values (`Uint32Codec`, `Float64Codec`, `AsciiCodec`, time codecs, …). Compile-time generics and runtime codec support for descriptor-driven workflows. | Applications that need typed register access |
 | **3. SunSpec** | `modbus/sunspec` | SunSpec marker detection, model-chain enumeration, and device fingerprinting. Transport-level only — no point/schema decoding. | Solar/energy system integrators |
-| **4. Server** | `modbus` | `RequestHandler`-based Modbus TCP/TLS server with per-connection contexts, panic recovery, optional `MaskWriteHandler`, `ReadWriteHandler`, and `DeviceIdentificationHandler` interfaces for FC22/FC23/FC43. | Simulating or embedding Modbus devices |
+| **4. Server** | `modbus` | `RequestHandler`-based Modbus TCP/TLS server with per-connection contexts, recovery of handlers that do not return normally, optional `MaskWriteHandler`, `ReadWriteHandler`, and `DeviceIdentificationHandler` interfaces for FC22/FC23/FC43. | Simulating or embedding Modbus devices |
 | **5. CLI** | `cmd/modbus-cli` | Command-line client for read/write, scanning, pinging, and codec probing. Supports `--json` for structured output. | Operators and CI/CD pipelines |
 
 Each tier builds on the one below. For example, the Codec API uses the Raw Modbus API
@@ -387,8 +387,8 @@ send the corresponding exception code back to the client. Any other non-nil erro
 to `ServerDeviceFailure`. `ErrNoResponse` sends no response at all (for example for
 Diagnostics Force Listen Only Mode). Function codes no handler serves receive an
 `Illegal Function` exception.
-Handler panics are recovered and logged (with full stack trace); the client receives a
-`ServerDeviceFailure` exception.
+A handler that does not return normally is stopped there and logged (with its stack);
+the client receives a `ServerDeviceFailure` exception.
 
 Each connected client is served in its own goroutine with a per-connection context
 that is cancelled when the client disconnects or the server stops. Handler methods
@@ -441,6 +441,11 @@ have been written to the wire and the response is lost, a retry can deliver a
 write **at least once**. Prefer no retries (or application-level idempotency) for
 non-idempotent writes.
 
+`ExponentialBackoffConfig.Jitter` spreads the retries of many clients:
+`JitterFull` draws each delay from `[0, d]`, `JitterEqual` from `[d − d/2, d]`, where `d`
+is the exponential delay capped at `MaxDelay`. The zero value, `JitterNone`, keeps
+the delays exact, as before.
+
 See [API.md § 7](API.md#7-retry-policy) for classification tables, built-in
 policies, and write-safety details.
 
@@ -469,22 +474,29 @@ A `*Client` is safe for concurrent use by multiple goroutines.
   with `ErrClientNotOpen`. There is no graceful drain.
 - `Close()` does not end an `Open()` that is still dialling: it returns nil, and that
   `Open()` then leaves the client open. Call `Close()` after `Open()` has returned.
+- `OpenContext(ctx)` is `Open()` with a context that ends its dials: when `ctx` ends
+  first it returns an error matching `ctx.Err()` and the client stays closed.
+  `Close()` during it behaves as during `Open()`.
 - A client can be re-opened after `Close()` by calling `Open()` again.
 
 All server handler goroutines are fully concurrent; handler implementations must
 synchronize access to shared state, and return a copy of it, not a view the next write
 changes: the server encodes what a handler returned after the handler has returned
-([API.md § 13](API.md#13-ownership-of-slices)). Handler panics are recovered with a
-full stack trace logged; the client receives a `ServerDeviceFailure` exception. A
-panic in a `ServerMetrics` hook is recovered and logged the same way, and the request
-is answered as if the hook had returned.
+([API.md § 13](API.md#13-ownership-of-slices)). A handler that does not return
+normally is stopped there and logged with its stack; the client receives a
+`ServerDeviceFailure` exception. A `ServerMetrics` hook that does not return normally
+is logged the same way, and the request is answered as if the hook had returned. This
+holds for every call of the application's code, on the client too: the metrics hooks,
+`PDUTap`, `RetryPolicy`, `Dialer` and its connections, a TLS private key, the `Logger`
+([OBSERVABILITY.md](OBSERVABILITY.md#callbacks-that-do-not-return-normally)).
 
-`Stop()` and `Shutdown(ctx)` may be called from any goroutine except the ones the
-server runs its callbacks on. They wait for those goroutines, so from a
-`RequestHandler` method or a `ServerMetrics` hook `Stop()` never returns and
-`Shutdown(ctx)` returns only when `ctx` ends, with its error. To stop the server from
-a handler, use `go srv.Stop()`, or `Shutdown` with the handler's own context, which
-returns `context.Canceled` once the listener and the connections are closed.
+`Stop()` and `Shutdown(ctx)` may be called from any goroutine, a `RequestHandler`
+method, a `ServerMetrics` or `ConnectionMetrics` hook and the `Logger` included.
+Called from one of those, they wait for every goroutine of the server but the ones of
+the connection they were called on, and return; that connection's request is not
+answered and nothing more is dispatched on it. `Shutdown` with the handler's own
+context returns `context.Canceled` at once. Up to v1.15.3 a `Stop()` called from a
+handler did not return. See [API.md § 3.2](API.md#32-lifecycle).
 
 **Graceful shutdown:** `Shutdown(ctx)` stops accepting connections, cancels all
 per-connection contexts, closes sockets, and waits for handlers to exit — or returns
@@ -520,7 +532,9 @@ See [API.md § 2.1](API.md#21-config).
 Implement `ClientMetrics` and/or `ServerMetrics` on the `Metrics` config field.
 Callbacks fire synchronously on every **logical API outcome** (what the calling
 method returns), not per internal retry. Optional `AttemptMetrics` adds
-per-attempt / re-dial visibility. Callbacks must be non-blocking.
+per-attempt / re-dial visibility; optional `ConnectionMetrics` on the server
+reports the connections closed to keep within `MaxClients`. Callbacks must be
+non-blocking.
 
 See [OBSERVABILITY.md](OBSERVABILITY.md) and [API.md § 6](API.md#6-metrics)
 for interfaces and examples.

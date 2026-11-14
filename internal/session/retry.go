@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net"
 	"time"
 
@@ -53,7 +54,29 @@ type ExponentialBackoffConfig struct {
 	// RetryOnTimeout controls whether ErrRequestTimedOut triggers a retry.
 	// Default false: timed-out requests are NOT retried (the deadline has already elapsed).
 	RetryOnTimeout bool
+
+	// Jitter spreads the waits, so that clients that fail at the same moment
+	// do not all retry at the same moment. Let d be BaseDelay × 2^attempt,
+	// capped at MaxDelay. JitterNone (the zero value) waits d exactly, as
+	// before Jitter existed; JitterFull waits a duration drawn uniformly from
+	// [0, d]; JitterEqual one drawn uniformly from [d − d/2, d]. Either way the
+	// wait never exceeds MaxDelay. A value other than these three waits as
+	// JitterNone.
+	Jitter Jitter
 }
+
+// Jitter selects how an exponential back-off spreads its waits (see
+// ExponentialBackoffConfig.Jitter).
+type Jitter uint8
+
+const (
+	// JitterNone waits exactly BaseDelay × 2^attempt, capped at MaxDelay.
+	JitterNone Jitter = iota
+	// JitterFull waits a duration drawn uniformly from zero to that delay.
+	JitterFull
+	// JitterEqual waits at least half of that delay and at most all of it.
+	JitterEqual
+)
 
 // ExponentialBackoff returns an exponential back-off RetryPolicy with common defaults.
 // delay grows as base × 2^attempt, capped at maxDelay; retries stop after MaxAttempts.
@@ -72,6 +95,7 @@ func ExponentialBackoff(base, maxDelay time.Duration, maxAttempts int) RetryPoli
 			MaxDelay:    maxDelay,
 			MaxAttempts: maxAttempts,
 		},
+		randN: rand.Int64N,
 	}
 }
 
@@ -85,11 +109,15 @@ func NewExponentialBackoff(cfg ExponentialBackoffConfig) RetryPolicy {
 		cfg.MaxDelay = 30 * time.Second
 	}
 
-	return &exponentialBackoff{cfg: cfg}
+	return &exponentialBackoff{cfg: cfg, randN: rand.Int64N}
 }
 
 type exponentialBackoff struct {
 	cfg ExponentialBackoffConfig
+	// randN returns a number drawn uniformly from [0, n), n > 0. It must be
+	// safe for concurrent use: ShouldRetry is called from every goroutine
+	// that makes requests. Only a policy with Jitter set uses it.
+	randN func(n int64) int64
 }
 
 // IsRetryable reports whether err represents a transient transport failure that
@@ -161,7 +189,37 @@ func (e *exponentialBackoff) ShouldRetry(attempt int, err error) (bool, time.Dur
 		return false, 0
 	}
 
-	return true, backoffDelay(e.cfg.BaseDelay, e.cfg.MaxDelay, attempt)
+	return true, jitterDelay(e.cfg.Jitter, backoffDelay(e.cfg.BaseDelay, e.cfg.MaxDelay, attempt), e.randN)
+}
+
+// jitterDelay returns the wait for the delay d under mode, drawing with randN:
+// d itself for JitterNone (and for an unknown mode), a duration in [0, d] for
+// JitterFull and one in [d − d/2, d] for JitterEqual. It never exceeds d.
+func jitterDelay(mode Jitter, d time.Duration, randN func(int64) int64) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	switch mode {
+	case JitterFull:
+		return drawUpTo(d, randN)
+	case JitterEqual:
+		half := d / 2
+		return d - half + drawUpTo(half, randN)
+	default:
+		return d
+	}
+}
+
+// drawUpTo returns a duration drawn uniformly from [0, d] with randN; d ≥ 0.
+func drawUpTo(d time.Duration, randN func(int64) int64) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	if d == math.MaxInt64 {
+		// d+1 does not fit: draw from [0, d), which leaves out one nanosecond.
+		return time.Duration(randN(int64(d)))
+	}
+	return time.Duration(randN(int64(d) + 1))
 }
 
 // backoffDelay returns base × 2^attempt, capped at maxDelay. The product is

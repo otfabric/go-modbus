@@ -8,9 +8,9 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"errors"
+	"fmt"
 	"math"
 	"net"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -39,8 +39,16 @@ func nextAcceptBackoff(prev time.Duration) time.Duration {
 
 // acceptTCPClients accepts new client connections for one Start..Stop cycle, as
 // long as the configured connection limit allows it.
+//
+// The goroutine runs the application's code: the Logger, and the
+// ConnectionMetrics of a connection it closes. It starts the goroutine of a
+// connection it admits before any of that, so that a Shutdown called there,
+// which waits for that goroutine, does not wait for a goroutine that only its
+// caller would start.
 func (ms *Server) acceptTCPClients(run *serverRun) {
-	defer run.wg.Done()
+	share := ms.join(run, nil)
+	defer share.done()
+	defer ms.leave(run)
 	var backoff time.Duration
 	for {
 		sock, err := run.listener.Accept()
@@ -62,7 +70,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		}
 		backoff = 0
 
-		accepted := false
+		accepted, refused := false, false
 		var evicted net.Conn
 		ms.lock.Lock()
 		// ms.run != run once the server has been stopped (and maybe started again).
@@ -79,23 +87,36 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				// Registered under the lock: Shutdown clears started under the same lock before
 				// it waits, so this Add can never run concurrently with its Wait.
 				run.wg.Add(1)
+			} else {
+				refused = true
 			}
 		}
 		ms.lock.Unlock()
 
-		if evicted != nil {
-			// Its handshake fails and its goroutine ends.
-			ms.logger.Warningf("max. number of concurrent connections reached, "+
-				"closing %v (TLS handshake not completed) for %v",
-				evicted.RemoteAddr(), sock.RemoteAddr())
-			_ = evicted.Close()
-		}
 		if accepted {
 			go ms.handleTCPClient(run, sock)
-		} else {
+		}
+		if evicted != nil {
+			// Its handshake fails and its goroutine ends.
+			addr := evicted.RemoteAddr().String()
+			ms.logger.Warningf("max. number of concurrent connections reached, "+
+				"closing %v (TLS handshake not completed) for %v",
+				addr, sock.RemoteAddr())
+			_ = evicted.Close()
+			ms.reportRejected(addr, RejectTLSHandshakeEvicted)
+		}
+		if !accepted {
+			addr := sock.RemoteAddr().String()
 			ms.logger.Warningf("max. number of concurrent connections "+
-				"reached, rejecting %v", sock.RemoteAddr())
+				"reached, rejecting %v", addr)
 			_ = sock.Close()
+			if refused {
+				ms.reportRejected(addr, RejectMaxClients)
+			}
+		}
+		if share.released.Load() {
+			// A Shutdown called above, on this goroutine.
+			return
 		}
 	}
 }
@@ -215,8 +236,14 @@ func (ms *Server) dropPendingLocked(sock net.Conn) bool {
 // handleTCPClient handles a single TCP client connection. A per-connection
 // context is derived from the run's stop context and cancelled when the client
 // disconnects, when the server stops, and when this function returns.
+//
+// The connection's goroutines (this one and the reader of serveConn) hold
+// one count of run.wg between them, which a Shutdown called on either gives
+// back (see runShare).
 func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
-	defer run.wg.Done()
+	share := ms.join(run, nil)
+	defer share.done()
+	defer ms.leave(run)
 
 	connCtx, connCancel := context.WithCancel(run.ctx)
 	defer connCancel()
@@ -229,7 +256,7 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 
 	switch ms.transportType {
 	case modbusTCP:
-		ms.serveConn(connCtx, connCancel,
+		ms.serveConn(run, share, connCtx, connCancel,
 			newTCPTransport(sock, ms.conf.Timeout, ms.conf.Logger),
 			sock.RemoteAddr().String(), "")
 
@@ -251,7 +278,7 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 			_ = tlsSock.Close()
 		default:
 			effectiveConn = tlsSock
-			ms.serveConn(connCtx, connCancel,
+			ms.serveConn(run, share, connCtx, connCancel,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
 		}
@@ -287,7 +314,14 @@ const serverPipelineDepth = 16
 // therefore armed only while no request is being served; a slow handler does
 // not time out its own connection. Each response is written under a deadline of
 // its own (see inttrans.TCP.WriteFrame).
-func (ms *Server) serveConn(connCtx context.Context, connCancel context.CancelFunc, t *inttrans.TCP, clientAddr, clientRole string) {
+//
+// The reader joins share, the connection's count of run.wg. Once a Shutdown
+// called on either goroutine has released share, no further request is
+// dispatched and no response is written: the shutdown does not wait for this
+// connection, so it must not run the application's code again after the
+// callback that called Shutdown, apart from the outcome of the request that
+// callback belongs to.
+func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Context, connCancel context.CancelFunc, t *inttrans.TCP, clientAddr, clientRole string) {
 	type inbound struct {
 		req   *adu.Request
 		txnID uint16
@@ -305,6 +339,8 @@ func (ms *Server) serveConn(connCtx context.Context, connCancel context.CancelFu
 	go func() {
 		defer close(readerDone)
 		defer close(queue)
+		ms.join(run, share)
+		defer ms.leave(run)
 		for {
 			req, txnID, err := t.ReadFrame()
 			if err != nil {
@@ -325,8 +361,11 @@ func (ms *Server) serveConn(connCtx context.Context, connCancel context.CancelFu
 	}()
 
 	for in := range queue {
+		if share.released.Load() {
+			break
+		}
 		res, closeLink := ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
-		if closeLink {
+		if closeLink || share.released.Load() {
 			break
 		}
 		// res is nil when the handler chose not to answer (ErrNoResponse).
@@ -424,13 +463,14 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 		if ms.metrics != nil {
 			ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
 		}
-		if errors.Is(err, ErrNoResponse) {
+		silent, code := ms.answerFor(req, clientAddr, err)
+		if silent {
 			return nil, false
 		}
 		res = &adu.Response{
 			UnitID:        req.UnitID,
 			FunctionCode:  req.FunctionCode | 0x80,
-			Payload:       []byte{byte(mapErrorToExceptionCode(err))},
+			Payload:       []byte{byte(code)},
 			TransactionID: txnID,
 		}
 	} else if ms.metrics != nil {
@@ -462,39 +502,62 @@ func (h metricsHook) String() string {
 // reportMetrics calls one ServerMetrics hook for req. It is the only place the
 // server calls them. The hooks are application code running on the connection's
 // goroutine, with the unit ID and function code as the client sent them: like
-// safeDispatch for a handler, it recovers a panic in the hook and logs it with
-// the stack, and the request is then served as if the hook had returned.
-// ms.metrics must not be nil.
+// safeDispatch for a handler, it calls the hook through call, which logs a
+// hook that does not return normally with the stack, and the request is then
+// served as if the hook had returned. ms.metrics must not be nil.
 func (ms *Server) reportMetrics(hook metricsHook, req *adu.Request, clientAddr string, d time.Duration, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			ms.logger.Errorf("panic in ServerMetrics.%s for FC 0x%02x from %s: %v\n%s",
-				hook, req.FunctionCode, clientAddr, r, debug.Stack())
-		}
-	}()
 	fc := FunctionCode(req.FunctionCode)
-	switch hook {
-	case metricsOnRequest:
-		ms.metrics.OnRequest(req.UnitID, fc)
-	case metricsOnResponse:
-		ms.metrics.OnResponse(req.UnitID, fc, d)
-	case metricsOnError:
-		ms.metrics.OnError(req.UnitID, fc, d, err)
-	}
+	_ = ms.call("ServerMetrics."+hook.String(), func() string {
+		// The message of v1.15.3, kept for log filters that match it.
+		return fmt.Sprintf("panic in ServerMetrics.%s for FC 0x%02x from %s", hook, req.FunctionCode, clientAddr)
+	}, func() error {
+		switch hook {
+		case metricsOnRequest:
+			ms.metrics.OnRequest(req.UnitID, fc)
+		case metricsOnResponse:
+			ms.metrics.OnResponse(req.UnitID, fc, d)
+		case metricsOnError:
+			ms.metrics.OnError(req.UnitID, fc, d, err)
+		}
+		return nil
+	})
 }
 
-// safeDispatch wraps dispatchRequest with panic recovery so that a handler
-// panic does not crash the client goroutine.
+// safeDispatch runs dispatchRequest, and with it the handler method, through
+// call: a handler that does not return normally is logged with the stack, and
+// the request is answered with ServerDeviceFailure.
 func (ms *Server) safeDispatch(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (res *adu.Response, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			ms.logger.Errorf("panic in handler for FC 0x%02x from %s: %v\n%s",
-				req.FunctionCode, clientAddr, r, debug.Stack())
-			res = nil
-			err = ErrServerDeviceFailure
+	if ms.call("RequestHandler", func() string {
+		// The message of v1.15.3, kept for log filters that match it.
+		return fmt.Sprintf("panic in handler for FC 0x%02x from %s", req.FunctionCode, clientAddr)
+	}, func() error {
+		res, err = ms.dispatchRequest(ctx, req, txnID, clientAddr, clientRole)
+		return nil
+	}) != nil {
+		return nil, ErrServerDeviceFailure
+	}
+	return res, err
+}
+
+// answerFor returns how the server answers a request that failed with err:
+// silent when err is ErrNoResponse (nothing is sent), else with the exception
+// code of err. err is usually the handler's, and errors.Is calls its methods
+// (Is, Unwrap), which are the application's code: they run through call, and
+// an error whose methods do not return normally is answered with
+// ServerDeviceFailure.
+func (ms *Server) answerFor(req *adu.Request, clientAddr string, err error) (silent bool, code ExceptionCode) {
+	if ms.call("handler error", func() string {
+		return fmt.Sprintf("the error of the handler for FC 0x%02x from %s did not return normally", req.FunctionCode, clientAddr)
+	}, func() error {
+		silent = errors.Is(err, ErrNoResponse)
+		if !silent {
+			code = mapErrorToExceptionCode(err)
 		}
-	}()
-	return ms.dispatchRequest(ctx, req, txnID, clientAddr, clientRole)
+		return nil
+	}) != nil {
+		return false, exServerDeviceFailure
+	}
+	return silent, code
 }
 
 // dispatchRequest routes the request to the appropriate FC handler.
@@ -559,7 +622,11 @@ func (ms *Server) startTLS(tcpSock net.Conn) (
 		MinVersion:   tls.VersionTLS12,
 	})
 
-	err = tlsSock.Handshake()
+	// The handshake signs with the private key of TLSServerCert, which may be
+	// the application's own crypto.Signer.
+	err = ms.call("TLS handshake", func() string {
+		return fmt.Sprintf("TLS handshake with %s did not return normally", tcpSock.RemoteAddr())
+	}, tlsSock.Handshake)
 	if err != nil {
 		return
 	}

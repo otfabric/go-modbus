@@ -15,9 +15,12 @@ import (
 //
 // The methods are called synchronously: on a client from the goroutine of the
 // method that logs, on a server from the server's own goroutines (the accept
-// loop and one per connection). They must not panic: a panic in a Logger method
-// is not recovered. On a client it reaches the caller of the client method; on
-// a server it ends the process, like any panic that no one recovers.
+// loop and two per connection). A method that does not return normally is
+// stopped there: the library goes on as if it had returned, and reports it
+// once, at error level with the stack, through the same Logger's Errorf (on
+// the formatted path, whatever the Logger implements); if that call does not
+// return normally either, the entry is lost. This holds for the FieldLogger
+// methods too, With included.
 type Logger interface {
 	Debugf(format string, args ...any)
 	Infof(format string, args ...any)

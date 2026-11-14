@@ -1,5 +1,58 @@
 # go-modbus Releases
 
+## v1.16.0
+
+**Date:** 2026-11-14
+**Previous release:** v1.15.3
+
+The additive items of the policy 1.6 review that v1.15.3 left for a minor: retry jitter, a metrics hook for refused connections, `OpenContext`, a typed error for `Diagnostics` data that does not fit, `Stop` and `Shutdown` from the server's callbacks, and recovery of the application's code wherever the library calls it. No exported identifier is removed or changed, and no default changes. Two behaviours change, listed under Breaking: what the client does with its callbacks that do not return normally, and what a `Diagnostics` call with too much data does besides failing.
+
+### Added
+
+- `ExponentialBackoffConfig.Jitter` with `JitterNone`, `JitterFull` and `JitterEqual` (type `Jitter`). With d the exponential delay capped at `MaxDelay`, `JitterFull` waits a delay drawn uniformly from [0, d] and `JitterEqual` one from [d − d/2, d]; neither exceeds `MaxDelay`. The zero value, `JitterNone`, waits d exactly, as before. The draws come from `math/rand/v2`, which is safe for concurrent use.
+- `ConnectionMetrics`, an optional extension of `ServerMetrics` that the server finds by type assertion, with `RejectReason` (`RejectMaxClients`, `RejectTLSHandshakeEvicted`). `OnConnectionRejected(addr, reason)` is called once for every connection the server closes to keep within `MaxClients`: one accepted when every slot was taken, and on `tcp+tls` one whose handshake had not completed, closed to make room. It runs on the accept loop after the connection is closed, with no lock held. These connections were only logged before; they still are.
+- `Client.OpenContext(ctx)`: `Open` bounded by `ctx`, with the same results. `ctx` ends the dials and the TLS handshake; a `ctx` that is already done returns `ctx.Err()` before anything is dialled; when `ctx` ends during or right after the dials, `OpenContext` returns an error that matches `ctx.Err()`, closes what it dialled and leaves the client closed. On an open client it returns nil. `Close` during `OpenContext` does what it does during `Open`: it returns nil and the open completes. `Open` is unchanged.
+- `Diagnostics` with more than 250 bytes of data returns a `*ParameterError` (`Method` `"Diagnostics"`, `Param` `"data"`) before anything is sent, on every transport. The error still matches, with `errors.Is`, what v1.15.3 returned: `ErrInvalidMBAPLength` on `tcp`, `tcp+tls` and `udp`, `ErrProtocolError` on `rtu`, `rtuovertcp`, `rtuoverudp`, `ascii` and `asciiovertcp`. A refused function code and a client that is not open are still reported first.
+
+### Changed
+
+- The bundled `modbus-cli` is built on v1.15.3 (was v1.15.2).
+- Server: `Stop` and `Shutdown` called from a `RequestHandler` method, a `ServerMetrics` or `ConnectionMetrics` method or the `Logger` return. They stop the server as before and wait for every goroutine of the server except the ones of the connection (or the accept loop) they were called on, which the server knows by goroutine identity. When they return, the listener and the client sockets are closed and every other goroutine has ended; the caller's connection completes the request in progress without answering it (its outcome is still reported to `ServerMetrics`), dispatches nothing more and ends. `Shutdown` with a context that is already done, such as the handler's own, returns `ctx.Err()` at once. Before, `Stop` called there never returned, and `Shutdown` returned only when its context ended. A `Stop` on any other goroutine waits for all of them, as before.
+- Server: the application's code that ended the process when it did not return normally is now stopped where the server calls it, logged at error level with its stack, and handled as an error of that call: the `Is` and `Unwrap` methods of a handler's error (answered with `ServerDeviceFailure`), the private key of `TLSServerCert` during a handshake (the handshake fails), and the `Logger` (the entry is lost). The handler and `ServerMetrics` were recovered already; their log messages are unchanged.
+- Client: a method of a `Config.Dialer` connection that does not return normally on the client's own goroutine, such as the `SetDeadline` that interrupts a cancelled request, is logged and fails as an error of that call. Before, it ended the process.
+- `Client.Close` and the session engine no longer hold a lock while they close or dial connections, which may run the application's code (a `Config.Dialer` connection, a TLS key). A `Close` called while another is closing still returns once that one has; `Info` no longer waits for it.
+
+### Breaking
+
+- Client: the application's code the client calls on the caller's goroutine is stopped where the client calls it when it does not return normally, logged at error level with its stack through `Config.Logger`, and handled as an error of that call. Up to v1.15.3, as documented, the value went on into the caller of the client method:
+  - a `ClientMetrics`, `AttemptMetrics` or `PDUTap` method: the call goes on as if it had returned, and its result is unchanged;
+  - `RetryPolicy.ShouldRetry`: counts as `(false, 0)`, the call returns the error of its attempt;
+  - a `Config.Dialer`, a method of a connection it returned, and the private key of `TLSClientCert`: the dial fails, or the request using the connection fails and the connection is not used again, with an error whose message says `… did not return normally: <value>`;
+  - the `Logger` (and `FieldLogger.With`): the entry is lost, and the failure is reported through the same Logger's `Errorf`.
+
+  To have such a value reach the caller again, recover it in the callback, keep it, and raise it again on the caller's goroutine after the client method returns. There is no option that restores the old behaviour.
+- Client: `Diagnostics` with more than 250 bytes of data makes no attempt, like every other call whose arguments are refused: `AttemptMetrics` is not called, the `RetryPolicy` is not consulted, and on `tcp`, `tcp+tls` and the tunnelled serial framings the connection is kept. Up to v1.15.3 the request reached the framer as one attempt, whose error closed the connection. `ClientMetrics` still sees `OnRequest` and `OnError`, and the error still matches the v1.15.3 sentinel (see Added). Nothing restores the attempt or the closed connection; the request was never sent either way. To count these calls, use `ClientMetrics.OnError` with `errors.Is(err, ErrUnexpectedParameters)`.
+
+### Documentation
+
+- What `Stop` and `Shutdown` do from a callback, what is still running when they return and what happens after ([API.md § 3.2](API.md#32-lifecycle), README, `RequestHandler`, `Stop`, `Shutdown`, ERRORS.md, LIMITATIONS.md).
+- `OpenContext` and what `Close` does during it ([API.md § 2.2](API.md#22-lifecycle), LIMITATIONS.md "Custom dialer").
+- Every call of the application's code, where it runs and what happens when it does not return normally, in one table ([OBSERVABILITY.md](OBSERVABILITY.md#callbacks-that-do-not-return-normally)); the doc comments of `Logger`, `ClientMetrics`, `AttemptMetrics`, `ServerMetrics`, `PDUTap`, `Dialer` and `RequestHandler` say the same.
+- `Jitter` ([API.md § 7](API.md#7-retry-policy), README), `ConnectionMetrics` ([API.md § 6](API.md#6-metrics), OBSERVABILITY.md), the `Diagnostics` size error ([API.md § 2.9](API.md#29-serial-line-function-codes-and-diagnostics-fc07fc08fc0bfc0cfc11), ERRORS.md).
+- TESTING.md rows L5, L10 and L12 name the new tests; FEATURE-STATUS.md is at v1.16.0.
+
+### Tests
+
+- Jitter with an injected random source: the bounds of each mode at the lowest, middle and highest draw, never above `MaxDelay`, attempt 10 000 at most `MaxDelay`, and the zero value without a draw.
+- `ConnectionMetrics`: refusals at `MaxClients` on `tcp` and `tcp+tls` with their addresses, a handshake evicted to make room, no report for a connection accepted while stopping, and a hook that does not return normally; `TestE2E_Server_MaxClients` counts the refusal.
+- L5: `OpenContext` with a gated dialer: cancelled and expired while dialling (single connection and pool), a context already done, a context that ends after the dial, a dial error together with a cancellation, `Close` during it, two at once.
+- The session engine dials without its lock: a `Close` during `Open` returns and the `Open` closes what it dialled; two `Open` calls at once leave one connection (single connection and pool). A `Config.Dialer` connection whose `Close` calls `Info` does not hold up `Close`, and `Info` returns during it.
+- `Diagnostics` over all eight transports: more than 250 bytes is a `*ParameterError` that matches the framer's sentinel and sends nothing; 250 bytes are sent; the precedence of a refused function code and of a closed client.
+- L10: `Stop` and `Shutdown` from a handler, from `OnRequest`, `OnResponse`, `OnConnectionRejected` and the `Logger` return; one from a handler waits, shown by its goroutine's stack, for another connection's handler; a `Stop` on another goroutine waits for the handler.
+- One test per place the library calls the application's code, with code that does not return normally ([TESTING.md](TESTING.md)); the two tests that pinned the old client behaviour now check the recovery.
+
+---
+
 ## v1.15.3
 
 **Date:** 2026-11-14

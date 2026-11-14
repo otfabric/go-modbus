@@ -115,29 +115,56 @@ func NewEngine(cfg Config) *Engine {
 }
 
 // Open dials transport connections (or creates a pool). ctx bounds the dials.
+// The lock is not held while dialling: a dial runs the application's code (a
+// dialer, the connections it returns, a TLS key), which must not run under it.
+// When Close, or another Open, completed meanwhile, what this Open dialled is
+// closed again.
 func (e *Engine) Open(ctx context.Context) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.closed {
+		e.mu.Unlock()
 		return protocol.ErrClientNotOpen
 	}
 	if e.isOpen {
+		e.mu.Unlock()
 		return nil
 	}
+	e.mu.Unlock()
+
+	var pool *Pool[*adu.Request, *adu.Response]
+	var tr Transport[*adu.Request, *adu.Response]
 	if e.cfg.UsePool && e.cfg.MaxConns > 1 {
 		p, err := NewPool[*adu.Request, *adu.Response](ctx, e.cfg.MinConns, e.cfg.MaxConns, e.cfg.Dial)
 		if err != nil {
 			return err
 		}
-		e.pool = p
+		pool = p
 	} else {
 		t, err := e.cfg.Dial(ctx)
 		if err != nil {
 			return err
 		}
-		e.tr = t
+		tr = t
 	}
+
+	e.mu.Lock()
+	if e.closed || e.isOpen {
+		closed := e.closed
+		e.mu.Unlock()
+		if pool != nil {
+			_ = pool.CloseAll()
+		}
+		if tr != nil {
+			_ = tr.Close()
+		}
+		if closed {
+			return protocol.ErrClientNotOpen
+		}
+		return nil
+	}
+	e.pool, e.tr = pool, tr
 	e.isOpen = true
+	e.mu.Unlock()
 	return nil
 }
 
@@ -289,13 +316,15 @@ func (e *Engine) transport(ctx context.Context, attempt int) (Transport[*adu.Req
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.closed {
+		e.mu.Unlock()
 		// Close ran while we were dialling: nobody else would close this one.
+		// (Without the lock: closing it may run the application's code.)
 		_ = t.Close()
 		return nil, protocol.ErrClientNotOpen
 	}
 	e.tr = t
+	e.mu.Unlock()
 	return t, nil
 }
 

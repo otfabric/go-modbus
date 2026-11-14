@@ -237,14 +237,20 @@ func (mc *Client) GetCommEventLog(ctx context.Context, unitID uint8) (cl *CommEv
 // diagnostic (use DiagnosticSubFunction constants). data is optional request
 // data (sub-function-specific; use nil or empty for none). The response echoes
 // the sub-function and returns sub-function-specific data.
+//
+// At most 250 bytes of data fit a request. With more, Diagnostics returns a
+// *ParameterError (Param "data") and sends nothing, on every transport. That
+// error also matches, with errors.Is, what the transport's framer returned for
+// such a request before Diagnostics checked it: ErrInvalidMBAPLength on tcp,
+// tcp+tls and udp, ErrProtocolError on rtu, rtuovertcp, rtuoverudp, ascii and
+// asciiovertcp. A function code that AllowedFunctionCodes refuses and a client
+// that is not open are reported first, as for a request that fits, and
+// ClientMetrics sees OnRequest and OnError for it.
 func (mc *Client) Diagnostics(ctx context.Context, unitID uint8, subFunction DiagnosticSubFunction, data []byte) (dr *DiagnosticResponse, err error) {
 	req := &adu.Request{
 		UnitID:       unitID,
 		FunctionCode: byte(FCDiagnostics),
 		Payload:      uint16ToBytes(BigEndian, uint16(subFunction)),
-	}
-	if len(data) > 0 {
-		req.Payload = append(req.Payload, data...)
 	}
 
 	m := mc.getMetrics()
@@ -253,6 +259,18 @@ func (mc *Client) Diagnostics(ctx context.Context, unitID uint8, subFunction Dia
 		m.OnRequest(unitID, FCDiagnostics)
 	}
 	defer func() { reportOutcome(m, unitID, FCDiagnostics, start, err) }()
+
+	// maxDiagnosticsData (250) is also the limit of a request: the 253 bytes of
+	// a PDU less the function code and the two bytes of the sub-function (MODBUS
+	// Application Protocol V1.1b3, section 4.1).
+	if len(data) > maxDiagnosticsData {
+		if _, err = mc.requestEngine(req); err == nil {
+			err = mc.requestSizeError("Diagnostics", "data",
+				fmt.Sprintf("%d bytes, at most %d fit a request", len(data), maxDiagnosticsData))
+		}
+		return
+	}
+	req.Payload = append(req.Payload, data...)
 
 	res, err := mc.executeRequest(ctx, req)
 	if err != nil {

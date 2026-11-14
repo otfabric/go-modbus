@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"runtime/debug"
 )
 
 // Logger is the logging interface used by internal packages.
@@ -185,86 +186,133 @@ type PrefixedLogger struct {
 
 // NewPrefixedLogger creates a prefixing logger. If l is nil, a no-op logger is
 // used so that an unconfigured library never produces unexpected output.
+//
+// l is the application's code. Every call of it is guarded: a call that does
+// not return normally loses its entry, and the failure is written once more,
+// with the value and the stack, through l's Errorf (see rescue). A FieldLogger
+// whose With does not return normally is used through its plain Logger methods.
 func NewPrefixedLogger(prefix string, l Logger) *PrefixedLogger {
 	if l == nil {
 		l = NopLogger()
 	}
 	pl := &PrefixedLogger{prefix: prefix, inner: l}
 	if fl, ok := l.(FieldLogger); ok {
-		pl.field = fl.With("component", prefix)
+		pl.field = pl.with(fl)
 	}
 	return pl
 }
 
+// with returns fl.With("component", prefix), or nil when that does not return
+// normally (or returns nil): the logger then writes formatted lines.
+func (l *PrefixedLogger) with(fl FieldLogger) (field FieldLogger) {
+	defer l.rescue("FieldLogger.With")
+	return fl.With("component", l.prefix)
+}
+
+// rescue, deferred by every method that calls the application's logger, ends
+// a call that did not return normally: the entry is lost, and the failure is
+// written as a formatted line at error level, with the value and the stack,
+// through the plain Errorf of the logger, which a logger that fails on one
+// entry may still take. When that does not return normally either, the
+// failure is dropped. The library holds none of its locks when it logs.
+func (l *PrefixedLogger) rescue(method string) {
+	if r := recover(); r != nil {
+		l.loggerFailed(method, r)
+	}
+}
+
+func (l *PrefixedLogger) loggerFailed(method string, r any) {
+	defer func() { _ = recover() }()
+	l.inner.Errorf("%s [error]: Logger.%s did not return normally: %v\n%s", l.prefix, method, r, debug.Stack())
+}
+
 func (l *PrefixedLogger) Debug(msg string) {
 	if l.field != nil {
+		defer l.rescue("DebugKV")
 		l.field.DebugKV(msg)
 		return
 	}
+	defer l.rescue("Debugf")
 	l.inner.Debugf("%s [debug]: %s", l.prefix, msg)
 }
 
 func (l *PrefixedLogger) Debugf(format string, args ...any) {
 	if l.field != nil {
+		defer l.rescue("DebugKV")
 		l.field.DebugKV(fmt.Sprintf(format, args...))
 		return
 	}
+	defer l.rescue("Debugf")
 	l.inner.Debugf("%s [debug]: "+format, logPrepend(l.prefix, args)...)
 }
 
 func (l *PrefixedLogger) Info(msg string) {
 	if l.field != nil {
+		defer l.rescue("InfoKV")
 		l.field.InfoKV(msg)
 		return
 	}
+	defer l.rescue("Infof")
 	l.inner.Infof("%s [info]: %s", l.prefix, msg)
 }
 
 func (l *PrefixedLogger) Infof(format string, args ...any) {
 	if l.field != nil {
+		defer l.rescue("InfoKV")
 		l.field.InfoKV(fmt.Sprintf(format, args...))
 		return
 	}
+	defer l.rescue("Infof")
 	l.inner.Infof("%s [info]: "+format, logPrepend(l.prefix, args)...)
 }
 
 func (l *PrefixedLogger) Warnf(format string, args ...any) {
 	if l.field != nil {
+		defer l.rescue("WarnKV")
 		l.field.WarnKV(fmt.Sprintf(format, args...))
 		return
 	}
+	defer l.rescue("Warnf")
 	l.inner.Warnf("%s [warn]: "+format, logPrepend(l.prefix, args)...)
 }
 
 func (l *PrefixedLogger) Warning(msg string) {
 	if l.field != nil {
+		defer l.rescue("WarnKV")
 		l.field.WarnKV(msg)
 		return
 	}
+	defer l.rescue("Warnf")
 	l.inner.Warnf("%s [warn]: %s", l.prefix, msg)
 }
 
 func (l *PrefixedLogger) Warningf(format string, args ...any) {
 	if l.field != nil {
+		defer l.rescue("WarnKV")
 		l.field.WarnKV(fmt.Sprintf(format, args...))
 		return
 	}
+	defer l.rescue("Warnf")
 	l.inner.Warnf("%s [warn]: "+format, logPrepend(l.prefix, args)...)
 }
 
 func (l *PrefixedLogger) Error(msg string) {
 	if l.field != nil {
+		defer l.rescue("ErrorKV")
 		l.field.ErrorKV(msg)
 		return
 	}
+	defer l.rescue("Errorf")
 	l.inner.Errorf("%s [error]: %s", l.prefix, msg)
 }
 
 func (l *PrefixedLogger) Errorf(format string, args ...any) {
 	if l.field != nil {
+		defer l.rescue("ErrorKV")
 		l.field.ErrorKV(fmt.Sprintf(format, args...))
 		return
 	}
+	defer l.rescue("Errorf")
 	l.inner.Errorf("%s [error]: "+format, logPrepend(l.prefix, args)...)
 }
 

@@ -22,7 +22,7 @@ import (
 // e2eNonRequestMethods are the exported Client methods that put nothing on the
 // wire.
 var e2eNonRequestMethods = map[string]bool{
-	"Open": true, "Close": true, "Info": true, "LastObservedTransactionID": true,
+	"Open": true, "OpenContext": true, "Close": true, "Info": true, "LastObservedTransactionID": true,
 }
 
 // The guard: every exported Client method that sends a request is in
