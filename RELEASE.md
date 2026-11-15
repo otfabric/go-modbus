@@ -1,5 +1,18 @@
 # go-modbus Releases
 
+## v1.16.1
+
+**Date:** 2026-11-15
+**Previous release:** v1.16.0
+
+No library code changes.
+
+### Changed
+
+- Built on go-serial v0.4.1 (was v0.4.0): on Windows a serial write that times out returns an error together with the bytes written, where it returned a short count without one; on Linux, macOS and the BSDs a port path that is not a character device is refused when it is opened; reads wait correctly on OpenBSD (go-serial RELEASE.md, v0.4.1). This reaches the serial transports (RTU, ASCII, RTU over a serial line).
+
+---
+
 ## v1.16.0
 
 **Date:** 2026-11-14
