@@ -84,6 +84,17 @@ type Config struct {
     // Default: 2 when ParityNone, 1 otherwise.
     StopBits uint
 
+    // SerialVerifySettings reads the line settings back after the port is
+    // opened and fails the open when the port did not take them (rtu and
+    // ascii only; go-serial Config.VerifySettings). Default: false.
+    // See "Serial port checks" below.
+    SerialVerifySettings bool
+
+    // SerialUncheckedAddress opens the device of URL on Windows as given,
+    // instead of accepting a device name only (rtu and ascii only; go-serial
+    // Config.UncheckedAddress). Default: false. See "Serial port checks" below.
+    SerialUncheckedAddress bool
+
     // Timeout is the per-request I/O deadline. If 0, a sensible default is applied:
     // 300 ms for RTU, 1 s for all TCP/UDP modes. A context deadline that comes
     // earlier ends the request earlier; a later one does not extend it. On tcp and tcp+tls the connection a
@@ -148,7 +159,8 @@ type Config struct {
 
 ```text
 type TransportConfig struct {
-    URL, Speed, DataBits, Parity, StopBits, DialTimeout, Dialer, TLSClientCert, TLSRootCAs
+    URL, Speed, DataBits, Parity, StopBits, DialTimeout, Dialer, TLSClientCert, TLSRootCAs,
+    SerialVerifySettings, SerialUncheckedAddress
 }
 
 type ExecutionConfig struct {
@@ -261,6 +273,24 @@ client, err := modbus.New(modbus.Config{URL: "tcp://plc.local:502", Dialer: d.Di
   call their methods on the caller's goroutine.
 - Everything that runs on a client goes through it: the probe and detection
   helpers, `batch`, `codec` and `sunspec`. `modbus-cli` does not set one.
+
+**Serial port checks** — `rtu` and `ascii` open their device with
+[go-serial](https://github.com/otfabric/go-serial). Two of its settings are
+passed through to its `serial.Config`. Both are false by default, and a
+`Config` without them opens the port as before:
+
+| Field | go-serial field | When true |
+|---|---|---|
+| `SerialVerifySettings` | `serial.Config.VerifySettings` | After the port is opened, its speed, data bits, stop bits and parity are read back from the driver. A setting the port did not take fails the open with a `*serial.ConfigError` that wraps `serial.ErrInvalidConfig` and names the setting in `Field`, and the port is closed. Linux, macOS and the BSDs only; no effect on Windows, where the open already fails when the driver refuses a setting |
+| `SerialUncheckedAddress` | `serial.Config.UncheckedAddress` | On Windows the device of `URL` is opened as given, as go-modbus v1.16.1 and earlier did. Without it, Windows takes a device name only (`COM3`, `COM3:`, `COM10`, `\\.\COM10`, a `\\?\` device interface name, `\\.\Global\NAME`, `\\.\GLOBALROOT\Device\NAME`), and any other form fails the open with a `*serial.ConfigError` before anything is opened. Set it only for a device from a trusted source. No effect on other systems |
+
+- `Open` and `OpenContext` return the error as go-serial gave it, and so does
+  the request that opens the port again after the port failed:
+  `errors.As(err, &cfgErr)` with `var cfgErr *serial.ConfigError` reaches it.
+- A pseudo-terminal on Linux takes 8 data bits without parity whatever is
+  asked. With `SerialVerifySettings`, any other data bits or a parity fail
+  there: an RTU line at 8E1 through socat, for example, or `ascii` with its
+  default of 7 data bits. A macOS pseudo-terminal keeps the settings.
 
 ### 2.2 Lifecycle
 

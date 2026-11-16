@@ -238,6 +238,7 @@ or `ServerConfig.URL`.
 | Config field | Applies to |
 |---|---|
 | `Speed`, `DataBits`, `Parity`, `StopBits` | Serial (`rtu://`, `ascii://`) only. Defaults: 19200 bps, 8 data bits (RTU) or 7 (ASCII), no parity, 2 stop bits without parity or 1 with |
+| `SerialVerifySettings`, `SerialUncheckedAddress` | Serial (`rtu://`, `ascii://`) only, both off by default. `SerialVerifySettings` fails the open when the port did not take the settings (Linux, macOS, BSD; a Linux pseudo-terminal takes 8 data bits without parity only, so 8E1 over socat fails the check). `SerialUncheckedAddress` opens a Windows device as given instead of accepting a device name only. See [API.md § 2.1](API.md#21-config) |
 | `DialTimeout` | TCP, TCP+TLS, UDP, RTU-over-TCP/UDP, ASCII-over-TCP — not serial |
 | `Dialer` | Same as `DialTimeout`: opens every network connection (TLS runs its handshake on it), for allowlists, proxies or in-memory tests. Nil uses `net.Dialer`. See [API.md § 2.1](API.md#21-config) and [SECURITY.md](SECURITY.md#restricting-destinations) |
 | `TLSClientCert`, `TLSRootCAs` | TCP+TLS only |

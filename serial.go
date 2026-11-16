@@ -27,7 +27,15 @@ type serialPortConfig struct {
 	DataBits uint
 	Parity   Parity
 	StopBits uint
+	// VerifySettings and UncheckedAddress are passed to serial.Config as
+	// they are (Config.SerialVerifySettings, Config.SerialUncheckedAddress).
+	VerifySettings   bool
+	UncheckedAddress bool
 }
+
+// openSerialPort opens the port of a serialPortWrapper. Tests replace it to
+// record the serial.Config without opening a device.
+var openSerialPort = serial.Open
 
 // ErrSerialPortNotOpen is returned by Read and Write when the serial port has not been opened or has been closed.
 // Use errors.Is(err, ErrSerialPortNotOpen) to detect.
@@ -96,7 +104,10 @@ func (spw *serialPortWrapper) Open() error {
 		return fmt.Errorf("modbus: unsupported serial parity %v", spw.conf.Parity)
 	}
 
-	port, err := serial.Open(&cfg)
+	cfg.VerifySettings = spw.conf.VerifySettings
+	cfg.UncheckedAddress = spw.conf.UncheckedAddress
+
+	port, err := openSerialPort(&cfg)
 	if err != nil {
 		return err
 	}

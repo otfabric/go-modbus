@@ -863,6 +863,30 @@ type Config struct {
 	// StopBits sets the number of serial stop bits (rtu and ascii only).
 	// Defaults to 2 without parity and 1 with parity.
 	StopBits uint
+	// SerialVerifySettings makes the serial transports (rtu and ascii only)
+	// read the line settings back from the driver after they open the port,
+	// and fail when the port did not take them (go-serial
+	// Config.VerifySettings). Compared are the speed, the data bits, the stop
+	// bits and the parity. Open, or the request that opens the port again,
+	// then fails with go-serial's *serial.ConfigError, which wraps
+	// serial.ErrInvalidConfig and names the setting, and the port is closed.
+	// False (the default) uses the port as the driver set it, as before.
+	// POSIX systems only: on Windows the open already fails when the driver
+	// refuses a setting, and the field has no effect. A pseudo-terminal on
+	// Linux takes 8 data bits without parity whatever is asked, so with this
+	// set any other data bits or a parity fail there: 8E1 over socat, for
+	// example.
+	SerialVerifySettings bool
+	// SerialUncheckedAddress makes the serial transports (rtu and ascii only)
+	// open the device of URL on Windows as given (go-serial
+	// Config.UncheckedAddress), as go-modbus v1.16.1 and earlier did. False
+	// (the default) accepts a Windows device name only (COM3, COM10,
+	// \\.\COM10, a device interface name) and refuses any other form with a
+	// *serial.ConfigError wrapping serial.ErrInvalidConfig before anything
+	// is opened. With it set, Windows opens whatever object the name refers
+	// to before the transport can tell whether it is a serial port: set it
+	// only for a device from a trusted source. No effect on other systems.
+	SerialUncheckedAddress bool
 	// Timeout sets the request timeout value. A request ends at Timeout or at
 	// its context's deadline, whichever comes first, so a context deadline can
 	// shorten a request but not extend it. On tcp, tcp+tls, rtuovertcp,
@@ -2038,6 +2062,10 @@ type TransportConfig struct {
 	Dialer        Dialer
 	TLSClientCert *tls.Certificate
 	TLSRootCAs    *x509.CertPool
+	// SerialVerifySettings and SerialUncheckedAddress: see the Config
+	// fields of the same name (rtu and ascii only, false by default).
+	SerialVerifySettings   bool
+	SerialUncheckedAddress bool
 }
 ```
 

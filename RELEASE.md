@@ -1,5 +1,29 @@
 # go-modbus Releases
 
+## v1.17.0
+
+**Date:** 2026-11-16
+**Previous release:** v1.16.2
+
+The serial transports (`rtu`, `ascii`) pass go-serial v0.5.0's `Config.VerifySettings` and `Config.UncheckedAddress` through. Both new fields are false by default, so a client that does not set them opens its port as in v1.16.2. No exported identifier is removed or changed, and no default changes.
+
+### Added
+
+- `Config.SerialVerifySettings` and `TransportConfig.SerialVerifySettings` (go-serial `Config.VerifySettings`): after the port is opened, its speed, data bits, stop bits and parity are read back from the driver, and a setting the port did not take fails the open with go-serial's `*serial.ConfigError` (wrapping `serial.ErrInvalidConfig`, `Field` naming the setting); the port is closed. Linux, macOS and the BSDs; no effect on Windows. A Linux pseudo-terminal takes 8 data bits without parity whatever is asked, so with this field any other data bits or a parity fail there, for example 8E1 over socat, or `ascii` with its default of 7 data bits.
+- `Config.SerialUncheckedAddress` and `TransportConfig.SerialUncheckedAddress` (go-serial `Config.UncheckedAddress`): on Windows the device of `URL` is opened as given, as up to v1.16.1, instead of accepting a device name only (`COM3`, `COM10`, `\\.\COM10`, a device interface name). This is the restore path for the device-name rule that v1.16.2 took over from go-serial v0.5.0. Set it only for a device from a trusted source. No effect on other systems.
+- `NewConfig` copies both fields from `TransportConfig`.
+
+### Documentation
+
+- The two fields and what a refused open returns ([API.md § 2.1](API.md#21-config) "Serial port checks", the doc comments of `Config` and `TransportConfig`, README, ERRORS.md quick reference, SECURITY.md "Restricting Destinations").
+- TESTING.md names the new test file.
+
+### Tests
+
+- `serial_options_test.go`: each field, set and unset, reaches the `serial.Config` that go-serial opens the port with, through the serial port wrapper and through `New` and `Open` for `rtu` and `ascii`, from a `Config` literal and from `NewConfig`. A `*serial.ConfigError` from the open reaches `Open` (`errors.As`, `errors.Is` with `serial.ErrInvalidConfig`), and the client stays closed. The open is replaced by a recorder, so no device is opened.
+
+---
+
 ## v1.16.2
 
 **Date:** 2026-11-16
