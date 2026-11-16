@@ -23,6 +23,8 @@ The end-to-end tier runs the real client against the real server on loopback, ov
 
 Serial transports run on a pseudo-terminal on Linux and macOS, and those tests skip elsewhere. The `coverage-packages` job of `ci.yml` sets `MODBUS_REQUIRE_PTY=1`, so there a missing pseudo-terminal is a failure.
 
+`serial_options_test.go` checks that `Config.SerialVerifySettings` and `Config.SerialUncheckedAddress`, set and unset, reach the `serial.Config` of go-serial for `rtu` and `ascii`, from a `Config` literal and from `NewConfig`, and that the `*serial.ConfigError` of a refused open reaches `Open`. It replaces the open with a recorder, so it runs on every platform and opens no device.
+
 The 32-bit tier runs the whole suite with a 32-bit `int`, without the race detector (it does not exist for 386); the sizes the framers and the codecs compute are the same there, and the boundary tables say so (`TestTextCodecs_RegisterCountBoundaries`, `TestExecuteRequest_PayloadSizeBoundary`). `GOOS=linux GOARCH=386 go vet ./...` checks from any host that the tests compile for it.
 
 Tests do not synchronise by sleeping: they wait for the event (a channel a handler or a connection closes, `waitFor` or `e2eEventually` on a condition) or run on the fake clock of `testing/synctest`, which makes a schedule exact (`TestServerAccept_BacksOffAfterErrors`). Sleeps that model a slow peer, pace a stress loop or are the polling step of such a helper remain.
