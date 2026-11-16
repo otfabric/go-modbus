@@ -1,5 +1,18 @@
 # go-modbus Releases
 
+## v1.16.2
+
+**Date:** 2026-11-16
+**Previous release:** v1.16.1
+
+No library code changes.
+
+### Changed
+
+- Built on go-serial v0.5.0 (was v0.4.1) (go-serial RELEASE.md, v0.5.0). This reaches the serial transports (RTU, ASCII, RTU over a serial line). On Windows, `Close` ends a read or write in progress, and the port address must be a device name (`COM3`, `COM10`, `\\.\COM10`, a device interface name): another form is refused when the port is opened, and every port has a `COM` name. A serial time-out also matches `os.ErrDeadlineExceeded`; go-modbus maps it as before. go-serial's new `Config.VerifySettings` and `Config.UncheckedAddress` are not passed through yet.
+
+---
+
 ## v1.16.1
 
 **Date:** 2026-11-15
