@@ -79,8 +79,12 @@ from the same host, or from many hosts a client whose handshake is slow.
   libmodbus, PyModbus, digitalpetri/modbus, NModbus and tokio-modbus
   servers answer 11 ([INTEROPERABILITY.md](INTEROPERABILITY.md)).
 - The server does not filter unit identifiers: that is the handler's job.
+- `ServerConfig.AllowClient` sees only the remote address, at accept: on
+  `tcp+tls` it runs before the handshake, so it cannot decide on the client
+  certificate (`TLSClientCAs` and the client's role do that).
 - `Server.Stop` and `Server.Shutdown` called from a handler method, a
-  `ServerMetrics` or `ConnectionMetrics` method or the `Logger` do not wait for
+  `ServerMetrics`, `ConnectionMetrics` or `ConnectionLifecycleMetrics` method,
+  `ServerConfig.AllowClient` or the `Logger` do not wait for
   the connection (or the accept loop) they were called on: when they return,
   that connection's goroutines are still finishing the request in progress (its
   outcome hook included) and end afterwards

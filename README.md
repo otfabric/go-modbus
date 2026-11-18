@@ -488,11 +488,12 @@ normally is stopped there and logged with its stack; the client receives a
 `ServerDeviceFailure` exception. A `ServerMetrics` hook that does not return normally
 is logged the same way, and the request is answered as if the hook had returned. This
 holds for every call of the application's code, on the client too: the metrics hooks,
-`PDUTap`, `RetryPolicy`, `Dialer` and its connections, a TLS private key, the `Logger`
+`PDUTap`, `RetryPolicy`, `Dialer` and its connections, a TLS private key, `AllowClient`, the `Logger`
 ([OBSERVABILITY.md](OBSERVABILITY.md#callbacks-that-do-not-return-normally)).
 
 `Stop()` and `Shutdown(ctx)` may be called from any goroutine, a `RequestHandler`
-method, a `ServerMetrics` or `ConnectionMetrics` hook and the `Logger` included.
+method, a `ServerMetrics`, `ConnectionMetrics` or `ConnectionLifecycleMetrics` hook,
+`AllowClient` and the `Logger` included.
 Called from one of those, they wait for every goroutine of the server but the ones of
 the connection they were called on, and return; that connection's request is not
 answered and nothing more is dispatched on it. `Shutdown` with the handler's own
@@ -534,8 +535,9 @@ Implement `ClientMetrics` and/or `ServerMetrics` on the `Metrics` config field.
 Callbacks fire synchronously on every **logical API outcome** (what the calling
 method returns), not per internal retry. Optional `AttemptMetrics` adds
 per-attempt / re-dial visibility; optional `ConnectionMetrics` on the server
-reports the connections closed to keep within `MaxClients`. Callbacks must be
-non-blocking.
+reports the connections closed to keep within `MaxClients` or refused by
+`ServerConfig.AllowClient`, and optional `ConnectionLifecycleMetrics` the
+connections it starts and stops serving. Callbacks must be non-blocking.
 
 See [OBSERVABILITY.md](OBSERVABILITY.md) and [API.md § 6](API.md#6-metrics)
 for interfaces and examples.
