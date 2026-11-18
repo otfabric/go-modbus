@@ -54,12 +54,12 @@ func TestServerAllowClient_RefusesBeforeReading(t *testing.T) {
 	ms, first := startCallbackServer(t, holdingOne(), func(c *ServerConfig) {
 		c.MaxClients = 1
 		c.Metrics = m
-		c.AllowClient = func(remote net.Addr) bool {
+		c.AllowClient = ClientFilterFunc(func(remote net.Addr) bool {
 			askedMu.Lock()
 			asked = append(asked, remote.String())
 			askedMu.Unlock()
 			return !refuse.Load()
-		}
+		})
 	})
 	t.Cleanup(func() { _ = ms.Stop() })
 	sendReadRequest(t, first)
@@ -95,12 +95,12 @@ func TestServerAllowClient_PanicRefuses(t *testing.T) {
 	ms, first := startCallbackServer(t, holdingOne(), func(c *ServerConfig) {
 		c.Metrics = m
 		c.Logger = NopLogger()
-		c.AllowClient = func(net.Addr) bool {
+		c.AllowClient = ClientFilterFunc(func(net.Addr) bool {
 			if calls.Add(1) == 1 {
 				panic("allow-list unavailable")
 			}
 			return true
-		}
+		})
 	})
 	t.Cleanup(func() { _ = ms.Stop() })
 	wantClosedUnanswered(t, first)
@@ -200,7 +200,7 @@ func TestServerAllowClient_TLSRefusesBeforeHandshake(t *testing.T) {
 	m := &lifecycleMetrics{}
 	p := e2eStart(t, "tcp+tls", e2eNewDevice(), e2eOpts{noOpen: true, server: func(c *ServerConfig) {
 		c.Metrics = m
-		c.AllowClient = func(net.Addr) bool { return false }
+		c.AllowClient = ClientFilterFunc(func(net.Addr) bool { return false })
 	}})
 	raw := dialRaw(t, p.server)
 	wantRejected(t, &m.rejectMetrics, rejectedConn{raw.LocalAddr().String(), RejectNotAllowed})
@@ -316,11 +316,11 @@ func TestServerAllowClient_StopFromAllowClient(t *testing.T) {
 				URL:     "tcp://127.0.0.1:0",
 				Metrics: m,
 				Logger:  logs,
-				AllowClient: func(net.Addr) bool {
+				AllowClient: ClientFilterFunc(func(net.Addr) bool {
 					stopped <- ms.Stop()
 					logs.mark()
 					return allow
-				},
+				}),
 			}, holdingOne())
 			if err != nil {
 				t.Fatal(err)
@@ -356,6 +356,60 @@ func TestServerAllowClient_StopFromAllowClient(t *testing.T) {
 				t.Errorf("%d log entries after the Shutdown", n)
 			}
 		})
+	}
+}
+
+// A Stop called from OnConnectionRejected for a connection AllowClient refused
+// returns, and the accept loop ends there: nothing is accepted or logged after
+// it.
+func TestServerAllowClient_StopFromRejected(t *testing.T) {
+	stopped := make(chan error, 1)
+	m := &lifecycleMetrics{}
+	logs := &countLogger{}
+	var ms *Server
+	m.onRejected = func(_ string, reason RejectReason) {
+		if reason != RejectNotAllowed {
+			t.Errorf("reason %v, want %v", reason, RejectNotAllowed)
+		}
+		stopped <- ms.Stop()
+		logs.mark()
+	}
+	var err error
+	ms, err = NewServer(&ServerConfig{
+		URL:         "tcp://127.0.0.1:0",
+		Metrics:     m,
+		Logger:      logs,
+		AllowClient: ClientFilterFunc(func(net.Addr) bool { return false }),
+	}, holdingOne())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ms.Start(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("tcp", ms.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop from OnConnectionRejected: %v", err)
+		}
+	case <-time.After(e2eWait):
+		t.Fatal("Stop from OnConnectionRejected did not return")
+	}
+	wantClosedUnanswered(t, conn)
+	if c, err := net.DialTimeout("tcp", ms.Addr().String(), time.Second); err == nil {
+		_ = c.Close()
+		t.Error("the server still accepts after a Stop from OnConnectionRejected")
+	}
+	if got := m.snapshot(); len(got) != 1 {
+		t.Errorf("rejections %v, want the one refused connection", got)
+	}
+	if n := logs.afterMark(); n != 0 {
+		t.Errorf("%d log entries after the Shutdown", n)
 	}
 }
 
@@ -457,4 +511,25 @@ func TestServerConnectionLifecycle_PairsUnderLoad(t *testing.T) {
 			t.Errorf("%s was reported both %v and opened", r.addr, r.reason)
 		}
 	}
+}
+
+// ServerConfig stays comparable with ==, as it was up to v1.17.0: a field of a
+// function type would make this fail to compile (gorelease: incompatible).
+var _ = ServerConfig{} == ServerConfig{}
+
+// A ClientFilter that is not a ClientFilterFunc is asked the same way.
+type denyAll struct{}
+
+func (denyAll) AllowClient(net.Addr) bool { return false }
+
+func TestServerAllowClient_Interface(t *testing.T) {
+	m := &lifecycleMetrics{}
+	ms, conn := startCallbackServer(t, holdingOne(), func(c *ServerConfig) {
+		c.Metrics = m
+		c.AllowClient = denyAll{}
+	})
+	t.Cleanup(func() { _ = ms.Stop() })
+	sendReadRequest(t, conn)
+	wantClosedUnanswered(t, conn)
+	wantRejected(t, &m.rejectMetrics, rejectedConn{conn.LocalAddr().String(), RejectNotAllowed})
 }

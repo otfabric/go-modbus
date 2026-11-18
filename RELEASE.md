@@ -9,7 +9,8 @@ The server can refuse a client by its address as soon as it is accepted, and rep
 
 ### Added
 
-- `ServerConfig.AllowClient func(remote net.Addr) bool`: asked about every `tcp` and `tcp+tls` connection as soon as it is accepted. `false` closes the connection before anything is read from it, logs it at warning level and reports it to `ConnectionMetrics.OnConnectionRejected` with the new `RejectNotAllowed` (`"not allowed"`); a refused connection takes no `MaxClients` slot. It runs on the accept loop. A panic in it is logged with its stack and refuses the connection.
+- `ServerConfig.AllowClient`, a `ClientFilter` (`AllowClient(remote net.Addr) bool`; `ClientFilterFunc` adapts a function): asked about every `tcp` and `tcp+tls` connection as soon as it is accepted. `false` closes the connection before anything is read from it, logs it at warning level and reports it to `ConnectionMetrics.OnConnectionRejected` with the new `RejectNotAllowed` (`"not allowed"`); a refused connection takes no `MaxClients` slot. It runs on the accept loop. A panic in it is logged with its stack and refuses the connection.
+- `ClientFilter` is an interface, not a function type, so `ServerConfig` stays comparable with `==` (gorelease). A `ServerConfig` holding a `ClientFilterFunc` panics when compared, as two functions would.
 - `ConnectionLifecycleMetrics` (optional, on `ServerConfig.Metrics`): `OnConnectionOpened(addr, role)` when the server starts serving a connection (on `tcp+tls`, after the handshake; `role` empty on `tcp`) and `OnConnectionClosed(addr)` once when it stops serving it. A panic in either is logged and the connection is served as usual.
 - `Server.Addr()`: the address the server listens on, with the port the system chose for port 0; nil before the first `Start`.
 
@@ -23,7 +24,7 @@ The server can refuse a client by its address as soon as it is accepted, and rep
 
 ### Tests
 
-- `server_connection_hooks_test.go`: `AllowClient` allowing and refusing on `tcp` and `tcp+tls`, a refused connection taking no slot, a panicking `AllowClient`, panicking lifecycle methods, `Stop` called from `AllowClient` (allowing and refusing: no accept, log entry or report afterwards), and opened/closed pairing under load with `MaxClients` refusals and connections still open at `Stop`. `Server.Addr` before `Start`, with port 0 and after `Stop`.
+- `server_connection_hooks_test.go`: `AllowClient` allowing and refusing on `tcp` and `tcp+tls`, a refused connection taking no slot, a panicking `AllowClient`, panicking lifecycle methods, `Stop` called from `AllowClient` (allowing and refusing) and from the `OnConnectionRejected` of a refused connection (no accept, log entry or report afterwards), a `ClientFilter` that is not a `ClientFilterFunc`, and a compile-time check that `ServerConfig` stays comparable, and opened/closed pairing under load with `MaxClients` refusals and connections still open at `Stop`. `Server.Addr` before `Start`, with port 0 and after `Stop`.
 
 ---
 

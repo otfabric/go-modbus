@@ -64,7 +64,7 @@ func (ms *Server) allowClient(sock net.Conn) bool {
 	_ = ms.call("ServerConfig.AllowClient", func() string {
 		return fmt.Sprintf("ServerConfig.AllowClient for %s did not return normally", sock.RemoteAddr())
 	}, func() error {
-		allowed = ms.conf.AllowClient(sock.RemoteAddr())
+		allowed = ms.conf.AllowClient.AllowClient(sock.RemoteAddr())
 		return nil
 	})
 	return allowed
