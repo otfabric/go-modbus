@@ -782,6 +782,54 @@ A method that does not return normally (of ClientMetrics or AttemptMetrics) is s
 
 Metrics are request-level, not attempt-level: individual retry attempts within a single request are not observable through this interface. OnRequest fires once before the first attempt; the outcome callback (OnResponse/OnError/OnTimeout) fires once after all retries are exhausted. Duration always reflects total elapsed time from first attempt through final outcome, including retry delays.
 
+### type CloseReason
+
+```go
+type CloseReason uint8
+```
+
+CloseReason says why the server stopped serving a connection, as reported to ConnectionCloseMetrics.OnConnectionCloseReason. When several causes race (a client that leaves while its response is being written), the first one the server saw is reported.
+
+```go
+const (
+	// CloseClientClosed is a connection the client closed: the read ended with
+	// io.EOF, or with io.ErrUnexpectedEOF when it closed in the middle of a
+	// request.
+	CloseClientClosed CloseReason = iota + 1
+	// CloseIdleTimeout is a connection on which no complete request arrived
+	// within ServerConfig.Timeout while the server had none to answer (err
+	// wraps os.ErrDeadlineExceeded).
+	CloseIdleTimeout
+	// CloseMalformedFrame is a connection closed because the client sent an
+	// MBAP header the server cannot frame: err is ErrInvalidMBAPLength or
+	// ErrUnknownProtocolID.
+	CloseMalformedFrame
+	// CloseProtocolError is a connection closed because a request violated the
+	// protocol (a PDU whose length does not match its function code, for
+	// example): err is ErrProtocolError. The request is reported to ServerMetrics
+	// as an OnError with ErrProtocolError.
+	CloseProtocolError
+	// CloseWriteFailed is a connection closed because a response could not be
+	// written in full within ServerConfig.Timeout: err is the write error.
+	CloseWriteFailed
+	// CloseReadFailed is a connection whose read failed for another reason, a
+	// connection reset by the client for example: err is the read error.
+	CloseReadFailed
+	// CloseServerStopped is a connection closed by Shutdown or Stop: err is the
+	// error the closed socket returned to the read or write in progress
+	// (typically wrapping net.ErrClosed).
+	CloseServerStopped
+)
+```
+
+#### func (CloseReason) String
+
+```go
+func (r CloseReason) String() string
+```
+
+String returns the name of the reason ("client closed", "idle timeout", "malformed frame", "protocol error", "write failed", "read failed", "server stopped"), or "CloseReason(n)" for a value without one.
+
 ### type CoilsRequest
 
 ```go
@@ -1012,6 +1060,16 @@ NewConfig builds a Config from grouped sub-configurations. This is a convenience
 ```go
 type ConfigurationError = protocol.ConfigurationError
 ```
+
+### type ConnectionCloseMetrics
+
+```go
+type ConnectionCloseMetrics interface {
+	OnConnectionCloseReason(addr string, reason CloseReason, err error)
+}
+```
+
+ConnectionCloseMetrics is an optional extension of ServerMetrics. A ServerConfig.Metrics that implements it is told why the server stopped serving a tcp or tcp+tls connection: OnConnectionCloseReason is called once for every connection reported to ConnectionLifecycleMetrics.OnConnectionOpened (whether or not the value implements that interface), right after OnConnectionClosed, with the same exception: a connection a Shutdown called from one of its own callbacks stopped is not reported. err is the error that ended the connection; it is never nil. It runs on the connection's goroutine and must not block; one that does not return normally is logged, and the server goes on as if it had returned.
 
 ### type ConnectionLifecycleMetrics
 
@@ -1845,7 +1903,7 @@ An error returned by a handler method is sent to the client as the matching Modb
 
 Ownership. The slices in a request (Args, WriteValues, Data, Requests, Records) are the handler's: the server made them for this call and does not use them again. A slice, or a response struct, that a handler returns is read by the server after the handler has returned, while it encodes the response, and not kept after that: return a copy of shared state, not a view of it (h.regs\[a:b]) that another call may be writing to. This holds for the optional handler interfaces as well.
 
-Stopping the server from a handler. A handler method may call Stop or Shutdown, and so may a ServerMetrics, ConnectionMetrics or ConnectionLifecycleMetrics method, ServerConfig.AllowClient and the Logger. The call stops the server as a call from any other goroutine does: it stops accepting, cancels the context of every connection and closes the listener and the client sockets. Then it waits for the server's goroutines, the handlers running for other connections included, except the ones of the connection it was called on (or the accept loop, for ServerConfig.AllowClient, a ConnectionMetrics method or a log entry of the accept loop). Stop returns once they have ended. Shutdown also returns when its context ends, and at once when that context is already done: Shutdown with the handler's own context, which the shutdown cancels, returns context.Canceled without waiting.
+Stopping the server from a handler. A handler method may call Stop or Shutdown, and so may a ServerMetrics, ConnectionMetrics, ConnectionLifecycleMetrics or ConnectionCloseMetrics method, ServerConfig.AllowClient, ServerConfig.PDUTap and the Logger. The call stops the server as a call from any other goroutine does: it stops accepting, cancels the context of every connection and closes the listener and the client sockets. Then it waits for the server's goroutines, the handlers running for other connections included, except the ones of the connection it was called on (or the accept loop, for ServerConfig.AllowClient, a ConnectionMetrics method or a log entry of the accept loop). Stop returns once they have ended. Shutdown also returns when its context ends, and at once when that context is already done: Shutdown with the handler's own context, which the shutdown cancels, returns context.Canceled without waiting.
 
 When the call returns, the listener and the client sockets are closed and every other goroutine of the server has ended. The caller's connection is still served on the caller's goroutine until the request in progress is complete: that request is not answered (its connection is closed), its handler is still called, with its context cancelled, when the call came from OnRequest, and its outcome is reported to ServerMetrics as usual. Then no further request of the connection is dispatched and its goroutines end; they may still write log entries. A Stop on any other goroutine (go srv.Stop() from a handler, say) waits for them too, and so for the handler that started it to return.
 
@@ -2020,7 +2078,7 @@ Shutdown gracefully shuts down the server. It stops accepting new connections, c
 
 Only the first Shutdown or Stop of a Start..Stop cycle waits. A call made while that one is still waiting, or after it returned because its context ended, finds the server stopped and returns nil at once, although handler goroutines of the cycle may still be running; nothing else waits for them.
 
-Shutdown may be called from the application's code that the server runs: a RequestHandler method, a ServerMetrics, ConnectionMetrics or ConnectionLifecycleMetrics method, ServerConfig.AllowClient, the Logger. It then waits for every goroutine of the server except the ones of the connection, or of the accept loop, that it was called on (see RequestHandler, "Stopping the server from a handler"). When ctx is already done once the listener and the client sockets are closed, as the context a handler received is (the shutdown cancels it), such a call returns ctx.Err() without waiting.
+Shutdown may be called from the application's code that the server runs: a RequestHandler method, a ServerMetrics, ConnectionMetrics, ConnectionLifecycleMetrics or ConnectionCloseMetrics method, ServerConfig.AllowClient, ServerConfig.PDUTap, the Logger. It then waits for every goroutine of the server except the ones of the connection, or of the accept loop, that it was called on (see RequestHandler, "Stopping the server from a handler"). When ctx is already done once the listener and the client sockets are closed, as the context a handler received is (the shutdown cancels it), such a call returns ctx.Err() without waiting.
 
 #### func (Server) Start
 
@@ -2038,7 +2096,7 @@ func (ms *Server) Stop() error
 
 Stop stops the server and blocks until all handler goroutines have exited. It is equivalent to Shutdown(context.Background()), and like Shutdown it waits only when it is the first such call of a Start..Stop cycle: a Stop after a Shutdown whose context ended, or while another Stop is waiting, returns nil at once.
 
-Called from a RequestHandler method, a ServerMetrics, ConnectionMetrics or ConnectionLifecycleMetrics method, ServerConfig.AllowClient or the Logger, Stop returns once every other goroutine of the server has ended; it does not wait for the connection, or the accept loop, it was called on (see RequestHandler).
+Called from a RequestHandler method, a ServerMetrics, ConnectionMetrics, ConnectionLifecycleMetrics or ConnectionCloseMetrics method, ServerConfig.AllowClient, ServerConfig.PDUTap or the Logger, Stop returns once every other goroutine of the server has ended; it does not wait for the connection, or the accept loop, it was called on (see RequestHandler).
 
 ### type ServerConfig
 
@@ -2072,6 +2130,10 @@ type ServerConfig struct {
 	TLSHandshakeTimeout time.Duration
 	Logger              Logger
 	Metrics             ServerMetrics
+	// PDUTap, when set, receives the raw request and response PDUs of every
+	// request the server dispatches, with the client's address and role (see
+	// ServerPDUTap). Nil (the default) disables it; nothing is copied then.
+	PDUTap ServerPDUTap
 }
 ```
 
@@ -2104,6 +2166,69 @@ Metrics are request-level: each incoming request triggers exactly one OnRequest 
 The methods run on the goroutine that serves the client's connection, with the unit ID and the function code as the client sent them: OnRequest is called before the server has checked that it serves the function code, so any value from 0 to 255 can arrive. A method that does not return normally is stopped there and logged at error level with its stack, as for a handler method; the request is then served and answered as if the method had returned, and the other methods are still called for it.
 
 A method may call Stop or Shutdown on the server that calls it; see RequestHandler.
+
+### type ServerPDUExchange
+
+```go
+type ServerPDUExchange struct {
+	// ClientAddr is the client's remote host:port, ClientRole its role (tcp+tls;
+	// empty on tcp), as the handlers receive them.
+	ClientAddr string
+	ClientRole string
+	// UnitID is the unit id the request was addressed to.
+	UnitID uint8
+	// Request is the request PDU as received.
+	Request []byte
+	// Response is the response PDU the server answers with: an exception
+	// response has the function code with bit 0x80 set, the server's own
+	// exceptions (Illegal Function for a function code no handler serves, for
+	// example) included. It is nil when the server sends no response: a handler
+	// that returned ErrNoResponse, or a request that violated the protocol, on
+	// which the server closes the connection.
+	Response []byte
+	// Received is the time the server read the request from the connection,
+	// Answered the time its answer was decided, before the response is
+	// written. Both are read with time.Now and carry a monotonic clock
+	// reading: Answered.Sub(Received) includes the time the request waited
+	// behind earlier ones of the same connection.
+	Received time.Time
+	Answered time.Time
+}
+```
+
+ServerPDUExchange is one request a server read from a client and the response it answered with, as raw PDUs: the function code byte followed by the data. The MBAP header is not included.
+
+Request and Response are copies owned by the receiver of the exchange; they may be kept and modified.
+
+### type ServerPDUTap
+
+```go
+type ServerPDUTap interface {
+	OnServerPDU(ctx context.Context, ex ServerPDUExchange)
+}
+```
+
+ServerPDUTap is an optional callback that sees the raw PDUs of every request a server dispatches (ServerConfig.PDUTap). It is meant for audit trails and recordings of what a client asked and was answered, not for metrics.
+
+OnServerPDU is called on the connection's goroutine once for every request read from a tcp or tcp+tls connection, after its answer was decided and before the response is written, in the order of the connection's requests. ctx is the connection's context, as the handlers receive it. A response that cannot then be written closes the connection (ConnectionCloseMetrics reports CloseWriteFailed). It is not called for bytes the server cannot frame as a request (CloseMalformedFrame), nor after a Shutdown called from one of the connection's own callbacks.
+
+Implementations must be non-blocking and safe for concurrent use: the connections of a server call it at the same time, and a slow tap delays the connection it reports. One that does not return normally is stopped there and logged at error level with its stack, through ServerConfig.Logger; the response is sent as if it had returned.
+
+### type ServerPDUTapFunc
+
+```go
+type ServerPDUTapFunc func(ctx context.Context, ex ServerPDUExchange)
+```
+
+ServerPDUTapFunc adapts an ordinary function to the ServerPDUTap interface. A ServerConfig holding one is not comparable with ==: comparing it panics, as comparing two functions would.
+
+#### func (ServerPDUTapFunc) OnServerPDU
+
+```go
+func (f ServerPDUTapFunc) OnServerPDU(ctx context.Context, ex ServerPDUExchange)
+```
+
+OnServerPDU calls f(ctx, ex).
 
 ### type TransportConfig
 

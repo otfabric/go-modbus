@@ -70,6 +70,10 @@ type ServerConfig struct {
 	TLSHandshakeTimeout time.Duration
 	Logger              Logger
 	Metrics             ServerMetrics
+	// PDUTap, when set, receives the raw request and response PDUs of every
+	// request the server dispatches, with the client's address and role (see
+	// ServerPDUTap). Nil (the default) disables it; nothing is copied then.
+	PDUTap ServerPDUTap
 }
 
 // CoilsRequest is passed to HandleCoils for both read (FC01) and write (FC05/FC15) requests.
@@ -166,8 +170,9 @@ var ErrNoResponse = errors.New("modbus: no response")
 // optional handler interfaces as well.
 //
 // Stopping the server from a handler. A handler method may call Stop or
-// Shutdown, and so may a ServerMetrics, ConnectionMetrics or
-// ConnectionLifecycleMetrics method, ServerConfig.AllowClient and the Logger.
+// Shutdown, and so may a ServerMetrics, ConnectionMetrics,
+// ConnectionLifecycleMetrics or ConnectionCloseMetrics method,
+// ServerConfig.AllowClient, ServerConfig.PDUTap and the Logger.
 // The call stops the server as a call from any other goroutine does: it stops
 // accepting, cancels the context of every connection and closes the
 // listener and the client sockets. Then it waits for the server's goroutines,
@@ -493,8 +498,9 @@ func (ms *Server) Start() (err error) {
 // goroutines of the cycle may still be running; nothing else waits for them.
 //
 // Shutdown may be called from the application's code that the server runs: a
-// RequestHandler method, a ServerMetrics, ConnectionMetrics or
-// ConnectionLifecycleMetrics method, ServerConfig.AllowClient, the Logger. It
+// RequestHandler method, a ServerMetrics, ConnectionMetrics,
+// ConnectionLifecycleMetrics or ConnectionCloseMetrics method,
+// ServerConfig.AllowClient, ServerConfig.PDUTap, the Logger. It
 // then waits for every goroutine of the server except the ones of the
 // connection, or of the accept loop, that it was called on (see
 // RequestHandler, "Stopping the server from a handler"). When ctx is already
@@ -560,8 +566,9 @@ func (ms *Server) Addr() net.Addr {
 // after a Shutdown whose context ended, or while another Stop is waiting,
 // returns nil at once.
 //
-// Called from a RequestHandler method, a ServerMetrics, ConnectionMetrics or
-// ConnectionLifecycleMetrics method, ServerConfig.AllowClient or the Logger,
+// Called from a RequestHandler method, a ServerMetrics, ConnectionMetrics,
+// ConnectionLifecycleMetrics or ConnectionCloseMetrics method,
+// ServerConfig.AllowClient, ServerConfig.PDUTap or the Logger,
 // Stop returns once every other goroutine of the server has ended; it does
 // not wait for the connection, or the accept loop, it was called on (see
 // RequestHandler).

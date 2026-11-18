@@ -45,6 +45,7 @@ Pluggable synchronous callbacks via `Config.Metrics` / `ServerConfig.Metrics`:
 | `ServerMetrics` | Per handled request on the server |
 | `ConnectionMetrics` | Optional, on the `ServerMetrics` value; connections the server closed to keep within `MaxClients` or refused through `AllowClient` (`OnConnectionRejected`) |
 | `ConnectionLifecycleMetrics` | Optional, on the `ServerMetrics` value; connections the server starts and stops serving (`OnConnectionOpened`, `OnConnectionClosed`) |
+| `ConnectionCloseMetrics` | Optional, on the `ServerMetrics` value; why the server stopped serving a connection (`OnConnectionCloseReason`) |
 
 `ClientMetrics` reflects what the calling method returns (including exception and
 protocol validation failures), **not** each internal retry. Implement
@@ -92,6 +93,18 @@ connection's own callbacks: no callback runs on it after that. A connection the
 server refused or closed to keep within `MaxClients` is never reported opened.
 Both run on the connection's goroutine and must not block.
 
+`ConnectionCloseMetrics.OnConnectionCloseReason(addr, reason, err)` is called
+right after `OnConnectionClosed`, once for every connection the server served,
+with why it ended and the error that ended it: the client closed it
+(`CloseClientClosed`), no request within `ServerConfig.Timeout`
+(`CloseIdleTimeout`), bytes the server cannot frame (`CloseMalformedFrame`), a
+request that violated the protocol (`CloseProtocolError`), a response that could
+not be written (`CloseWriteFailed`), another read error such as a reset
+(`CloseReadFailed`), or `Shutdown` (`CloseServerStopped`). These causes were
+only logged up to v1.18.0. A `tcp+tls` connection whose handshake failed was
+never served and is reported neither opened nor closed; the failure is logged at
+warning level.
+
 A `batch` plan executed on a client makes one ordinary request per window, so
 each window is one `OnRequest` and one outcome; windows a stopped batch did not
 attempt are never requested and not reported. `Plan.Stats` gives the requests a
@@ -100,7 +113,11 @@ plan makes, and every `WindowResult` its `Started` and `Finished` time.
 `Config.PDUTap` is not a metric: it receives the raw request and response PDUs of
 every answered request (exception responses included, before the calling method
 validates them) with the time the response was received, for recording what a
-device answered. Details: [API.md § 6](API.md#6-metrics).
+device answered. `ServerConfig.PDUTap` is its server counterpart: the raw
+request and response PDUs of every request a server dispatches, the server's
+own exception answers included, with the client's address and role, the time
+the request was read and the time its answer was decided, for an audit trail or
+a recording of a client. Details: [API.md § 6](API.md#6-metrics).
 
 Callbacks run on the request path and must not block. Absence of a metrics
 implementation is intentional for simple apps — attach one only when you have a
@@ -121,6 +138,8 @@ locks when it logs.
 | `Is` or `Unwrap` of a handler's error | `the error of the handler for FC 0x.. from <client> did not return normally` | the client gets a Server Device Failure exception |
 | `ConnectionMetrics.OnConnectionRejected` | `ConnectionMetrics.OnConnectionRejected for <addr> did not return normally` | the server goes on as if it had returned |
 | `ConnectionLifecycleMetrics` method | `ConnectionLifecycleMetrics.OnConnectionOpened for <addr> did not return normally` (or `OnConnectionClosed`) | the server goes on as if it had returned: the connection is served |
+| `ConnectionCloseMetrics.OnConnectionCloseReason` | `ConnectionCloseMetrics.OnConnectionCloseReason for <addr> did not return normally` | the server goes on as if it had returned |
+| `ServerPDUTap.OnServerPDU` | `ServerPDUTap.OnServerPDU for <addr> did not return normally` | the response is sent as if it had returned |
 | `ServerConfig.AllowClient` | `ServerConfig.AllowClient for <addr> did not return normally` | the connection is refused (`RejectNotAllowed`) |
 | private key of `TLSServerCert` (a `crypto.Signer`) | `TLS handshake with <client> did not return normally` | the handshake fails and the connection is closed |
 | `ClientMetrics`, `AttemptMetrics` method | `ClientMetrics.OnResponse did not return normally: …` | the request goes on as if it had returned; its result is unchanged |

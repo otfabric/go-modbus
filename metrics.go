@@ -134,6 +134,80 @@ type ConnectionLifecycleMetrics interface {
 	OnConnectionClosed(addr string)
 }
 
+// ConnectionCloseMetrics is an optional extension of ServerMetrics. A
+// ServerConfig.Metrics that implements it is told why the server stopped
+// serving a tcp or tcp+tls connection: OnConnectionCloseReason is called once
+// for every connection reported to ConnectionLifecycleMetrics.OnConnectionOpened
+// (whether or not the value implements that interface), right after
+// OnConnectionClosed, with the same exception: a connection a Shutdown called
+// from one of its own callbacks stopped is not reported. err is the error that
+// ended the connection; it is never nil.
+// It runs on the connection's goroutine and must not block; one that does not
+// return normally is logged, and the server goes on as if it had returned.
+type ConnectionCloseMetrics interface {
+	OnConnectionCloseReason(addr string, reason CloseReason, err error)
+}
+
+// CloseReason says why the server stopped serving a connection, as reported
+// to ConnectionCloseMetrics.OnConnectionCloseReason. When several causes race
+// (a client that leaves while its response is being written), the first one
+// the server saw is reported.
+type CloseReason uint8
+
+const (
+	// CloseClientClosed is a connection the client closed: the read ended with
+	// io.EOF, or with io.ErrUnexpectedEOF when it closed in the middle of a
+	// request.
+	CloseClientClosed CloseReason = iota + 1
+	// CloseIdleTimeout is a connection on which no complete request arrived
+	// within ServerConfig.Timeout while the server had none to answer (err
+	// wraps os.ErrDeadlineExceeded).
+	CloseIdleTimeout
+	// CloseMalformedFrame is a connection closed because the client sent an
+	// MBAP header the server cannot frame: err is ErrInvalidMBAPLength or
+	// ErrUnknownProtocolID.
+	CloseMalformedFrame
+	// CloseProtocolError is a connection closed because a request violated the
+	// protocol (a PDU whose length does not match its function code, for
+	// example): err is ErrProtocolError. The request is reported to ServerMetrics
+	// as an OnError with ErrProtocolError.
+	CloseProtocolError
+	// CloseWriteFailed is a connection closed because a response could not be
+	// written in full within ServerConfig.Timeout: err is the write error.
+	CloseWriteFailed
+	// CloseReadFailed is a connection whose read failed for another reason, a
+	// connection reset by the client for example: err is the read error.
+	CloseReadFailed
+	// CloseServerStopped is a connection closed by Shutdown or Stop: err is the
+	// error the closed socket returned to the read or write in progress
+	// (typically wrapping net.ErrClosed).
+	CloseServerStopped
+)
+
+// String returns the name of the reason ("client closed", "idle timeout",
+// "malformed frame", "protocol error", "write failed", "read failed", "server
+// stopped"), or "CloseReason(n)" for a value without one.
+func (r CloseReason) String() string {
+	switch r {
+	case CloseClientClosed:
+		return "client closed"
+	case CloseIdleTimeout:
+		return "idle timeout"
+	case CloseMalformedFrame:
+		return "malformed frame"
+	case CloseProtocolError:
+		return "protocol error"
+	case CloseWriteFailed:
+		return "write failed"
+	case CloseReadFailed:
+		return "read failed"
+	case CloseServerStopped:
+		return "server stopped"
+	default:
+		return "CloseReason(" + strconv.Itoa(int(r)) + ")"
+	}
+}
+
 // RejectReason says why the server closed a connection it reports to
 // ConnectionMetrics.OnConnectionRejected.
 type RejectReason uint8

@@ -82,9 +82,15 @@ from the same host, or from many hosts a client whose handshake is slow.
 - `ServerConfig.AllowClient` sees only the remote address, at accept: on
   `tcp+tls` it runs before the handshake, so it cannot decide on the client
   certificate (`TLSClientCAs` and the client's role do that).
+- A failed `tcp+tls` handshake is logged only: the connection was never served,
+  so `ConnectionCloseMetrics` does not report it.
+- `ServerConfig.PDUTap` reports the answer the server decided on, before it is
+  written: a response whose write then fails is reported as sent
+  (`CloseWriteFailed` says it was not).
 - `Server.Stop` and `Server.Shutdown` called from a handler method, a
-  `ServerMetrics`, `ConnectionMetrics` or `ConnectionLifecycleMetrics` method,
-  `ServerConfig.AllowClient` or the `Logger` do not wait for
+  `ServerMetrics`, `ConnectionMetrics`, `ConnectionLifecycleMetrics` or
+  `ConnectionCloseMetrics` method, `ServerConfig.AllowClient`,
+  `ServerConfig.PDUTap` or the `Logger` do not wait for
   the connection (or the accept loop) they were called on: when they return,
   that connection's goroutines are still finishing the request in progress (its
   outcome hook included) and end afterwards
