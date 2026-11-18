@@ -123,6 +123,17 @@ type ConnectionMetrics interface {
 	OnConnectionRejected(addr string, reason RejectReason)
 }
 
+// ConnectionLifecycleMetrics is an optional extension of ServerMetrics. A
+// ServerConfig.Metrics that implements it is told when the server starts
+// serving a tcp or tcp+tls connection (on tcp+tls, once its TLS handshake has
+// completed), with the client's address and role, and when it stops serving
+// it. Every opened connection is closed once, except one a Shutdown called
+// from one of its own callbacks stopped: no callback runs on it after that.
+type ConnectionLifecycleMetrics interface {
+	OnConnectionOpened(addr, role string)
+	OnConnectionClosed(addr string)
+}
+
 // RejectReason says why the server closed a connection it reports to
 // ConnectionMetrics.OnConnectionRejected.
 type RejectReason uint8
@@ -137,16 +148,21 @@ const (
 	// not completed, closed to make room for a newer connection (see
 	// ServerConfig.MaxClients).
 	RejectTLSHandshakeEvicted
+	// RejectNotAllowed is a tcp or tcp+tls connection the server closed as soon
+	// as it was accepted, because ServerConfig.AllowClient refused it.
+	RejectNotAllowed
 )
 
 // String returns the name of the reason ("max clients", "tls handshake
-// evicted"), or "RejectReason(n)" for a value without one.
+// evicted", "not allowed"), or "RejectReason(n)" for a value without one.
 func (r RejectReason) String() string {
 	switch r {
 	case RejectMaxClients:
 		return "max clients"
 	case RejectTLSHandshakeEvicted:
 		return "tls handshake evicted"
+	case RejectNotAllowed:
+		return "not allowed"
 	default:
 		return "RejectReason(" + strconv.Itoa(int(r)) + ")"
 	}

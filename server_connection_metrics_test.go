@@ -163,6 +163,7 @@ func TestRejectReason_String(t *testing.T) {
 	for r, want := range map[RejectReason]string{
 		RejectMaxClients:          "max clients",
 		RejectTLSHandshakeEvicted: "tls handshake evicted",
+		RejectNotAllowed:          "not allowed",
 		0:                         "RejectReason(0)",
 		200:                       "RejectReason(200)",
 	} {

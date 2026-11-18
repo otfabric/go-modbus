@@ -40,7 +40,14 @@ type ServerConfig struct {
 	// counts too, but when every slot is taken a new connection replaces the
 	// oldest one still handshaking (see TLSHandshakeTimeout): a connection
 	// that completed its handshake is never closed to make room.
-	MaxClients    uint
+	MaxClients uint
+	// AllowClient, when set, is asked about every tcp and tcp+tls connection
+	// as soon as it is accepted, with the client's address: false closes it
+	// before anything is read from it, and ConnectionMetrics reports it as
+	// RejectNotAllowed. A refused connection takes no MaxClients slot. It runs
+	// on the goroutine that accepts connections, so it should return quickly;
+	// one that panics refuses the connection.
+	AllowClient   func(remote net.Addr) bool
 	TLSServerCert *tls.Certificate
 	TLSClientCAs  *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
@@ -144,13 +151,14 @@ var ErrNoResponse = errors.New("modbus: no response")
 // optional handler interfaces as well.
 //
 // Stopping the server from a handler. A handler method may call Stop or
-// Shutdown, and so may a ServerMetrics or ConnectionMetrics method and the
-// Logger. The call stops the server as a call from any other goroutine does:
-// it stops accepting, cancels the context of every connection and closes the
+// Shutdown, and so may a ServerMetrics, ConnectionMetrics or
+// ConnectionLifecycleMetrics method, ServerConfig.AllowClient and the Logger.
+// The call stops the server as a call from any other goroutine does: it stops
+// accepting, cancels the context of every connection and closes the
 // listener and the client sockets. Then it waits for the server's goroutines,
 // the handlers running for other connections included, except the ones of the
-// connection it was called on (or the accept loop, for a ConnectionMetrics
-// method or a log entry of the accept loop). Stop returns once they have
+// connection it was called on (or the accept loop, for ServerConfig.AllowClient,
+// a ConnectionMetrics method or a log entry of the accept loop). Stop returns once they have
 // ended. Shutdown also returns when its context ends, and at once when that
 // context is already done: Shutdown with the handler's own context, which the
 // shutdown cancels, returns context.Canceled without waiting.
@@ -470,9 +478,10 @@ func (ms *Server) Start() (err error) {
 // goroutines of the cycle may still be running; nothing else waits for them.
 //
 // Shutdown may be called from the application's code that the server runs: a
-// RequestHandler method, a ServerMetrics or ConnectionMetrics method, the
-// Logger. It then waits for every goroutine of the server except the ones of
-// the connection, or of the accept loop, that it was called on (see
+// RequestHandler method, a ServerMetrics, ConnectionMetrics or
+// ConnectionLifecycleMetrics method, ServerConfig.AllowClient, the Logger. It
+// then waits for every goroutine of the server except the ones of the
+// connection, or of the accept loop, that it was called on (see
 // RequestHandler, "Stopping the server from a handler"). When ctx is already
 // done once the listener and the client sockets are closed, as the context a
 // handler received is (the shutdown cancels it), such a call returns ctx.Err()
@@ -518,16 +527,29 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
+// Addr returns the address the server listens on, with the port the system
+// chose when the URL names port 0. It is nil before the first Start; after a
+// stop it is the address the server last listened on.
+func (ms *Server) Addr() net.Addr {
+	ms.lock.Lock()
+	defer ms.lock.Unlock()
+	if ms.tcpListener == nil {
+		return nil
+	}
+	return ms.tcpListener.Addr()
+}
+
 // Stop stops the server and blocks until all handler goroutines have exited.
 // It is equivalent to Shutdown(context.Background()), and like Shutdown it
 // waits only when it is the first such call of a Start..Stop cycle: a Stop
 // after a Shutdown whose context ended, or while another Stop is waiting,
 // returns nil at once.
 //
-// Called from a RequestHandler method, a ServerMetrics or ConnectionMetrics
-// method or the Logger, Stop returns once every other goroutine of the server
-// has ended; it does not wait for the connection, or the accept loop, it was
-// called on (see RequestHandler).
+// Called from a RequestHandler method, a ServerMetrics, ConnectionMetrics or
+// ConnectionLifecycleMetrics method, ServerConfig.AllowClient or the Logger,
+// Stop returns once every other goroutine of the server has ended; it does
+// not wait for the connection, or the accept loop, it was called on (see
+// RequestHandler).
 func (ms *Server) Stop() error {
 	return ms.Shutdown(context.Background())
 }

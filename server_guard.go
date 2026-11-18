@@ -4,6 +4,7 @@ package modbus
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/otfabric/go-modbus/internal/callback"
 )
@@ -48,6 +49,52 @@ func (ms *Server) reportRejected(addr string, reason RejectReason) {
 		return fmt.Sprintf("ConnectionMetrics.OnConnectionRejected for %s did not return normally", addr)
 	}, func() error {
 		cm.OnConnectionRejected(addr, reason)
+		return nil
+	})
+}
+
+// allowClient asks ServerConfig.AllowClient, through call, whether to serve an
+// accepted connection: true when it is not set, false when it does not return
+// normally.
+func (ms *Server) allowClient(sock net.Conn) bool {
+	if ms.conf.AllowClient == nil {
+		return true
+	}
+	allowed := false
+	_ = ms.call("ServerConfig.AllowClient", func() string {
+		return fmt.Sprintf("ServerConfig.AllowClient for %s did not return normally", sock.RemoteAddr())
+	}, func() error {
+		allowed = ms.conf.AllowClient(sock.RemoteAddr())
+		return nil
+	})
+	return allowed
+}
+
+// reportOpened and reportClosed call ConnectionLifecycleMetrics.OnConnectionOpened
+// and OnConnectionClosed, when ServerConfig.Metrics implements it, through
+// call, as reportRejected does.
+func (ms *Server) reportOpened(addr, role string) {
+	lm, ok := ms.metrics.(ConnectionLifecycleMetrics)
+	if !ok {
+		return
+	}
+	_ = ms.call("ConnectionLifecycleMetrics.OnConnectionOpened", func() string {
+		return fmt.Sprintf("ConnectionLifecycleMetrics.OnConnectionOpened for %s did not return normally", addr)
+	}, func() error {
+		lm.OnConnectionOpened(addr, role)
+		return nil
+	})
+}
+
+func (ms *Server) reportClosed(addr string) {
+	lm, ok := ms.metrics.(ConnectionLifecycleMetrics)
+	if !ok {
+		return
+	}
+	_ = ms.call("ConnectionLifecycleMetrics.OnConnectionClosed", func() string {
+		return fmt.Sprintf("ConnectionLifecycleMetrics.OnConnectionClosed for %s did not return normally", addr)
+	}, func() error {
+		lm.OnConnectionClosed(addr)
 		return nil
 	})
 }

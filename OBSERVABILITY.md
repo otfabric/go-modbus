@@ -43,7 +43,8 @@ Pluggable synchronous callbacks via `Config.Metrics` / `ServerConfig.Metrics`:
 | `ClientMetrics` | Logical API outcome (`OnRequest`, `OnResponse`, `OnError`, `OnTimeout`) |
 | `AttemptMetrics` | Optional; per transport attempt / re-dial (`OnAttempt`, `OnRetryDial`) |
 | `ServerMetrics` | Per handled request on the server |
-| `ConnectionMetrics` | Optional, on the `ServerMetrics` value; connections the server closed to keep within `MaxClients` (`OnConnectionRejected`) |
+| `ConnectionMetrics` | Optional, on the `ServerMetrics` value; connections the server closed to keep within `MaxClients` or refused through `AllowClient` (`OnConnectionRejected`) |
+| `ConnectionLifecycleMetrics` | Optional, on the `ServerMetrics` value; connections the server starts and stops serving (`OnConnectionOpened`, `OnConnectionClosed`) |
 
 `ClientMetrics` reflects what the calling method returns (including exception and
 protocol validation failures), **not** each internal retry. Implement
@@ -73,11 +74,23 @@ called.
 connection the server closes to keep within `ServerConfig.MaxClients`: one it
 accepted when every slot was taken (`RejectMaxClients`), and on `tcp+tls` one
 whose TLS handshake had not completed, closed to make room for a newer one
-(`RejectTLSHandshakeEvicted`). `addr` is the remote `host:port`. A connection
-accepted while the server is stopping is closed without being reported. The
-method runs on the accept loop, after the connection is closed, and delays the
-next `Accept` while it runs. These connections are also logged at warning
-level, as before.
+(`RejectTLSHandshakeEvicted`). It is also called for a connection
+`ServerConfig.AllowClient` refused (`RejectNotAllowed`): that one is closed as
+soon as it is accepted, before anything is read from it, and takes no
+`MaxClients` slot. `addr` is the remote `host:port`. A connection accepted while
+the server is stopping is closed without being reported. The method runs on the
+accept loop, after the connection is closed, and delays the next `Accept` while
+it runs. These connections are also logged at warning level, as before.
+
+`ConnectionLifecycleMetrics.OnConnectionOpened(addr, role)` is called when the
+server starts serving a `tcp` or `tcp+tls` connection (on `tcp+tls`, once its
+TLS handshake has completed), with the remote `host:port` and the client's role
+(empty on `tcp`); `OnConnectionClosed(addr)` is called once when it stops
+serving it, after the socket is closed. Every connection reported opened is
+reported closed exactly once, unless a `Shutdown` was called from one of that
+connection's own callbacks: no callback runs on it after that. A connection the
+server refused or closed to keep within `MaxClients` is never reported opened.
+Both run on the connection's goroutine and must not block.
 
 A `batch` plan executed on a client makes one ordinary request per window, so
 each window is one `OnRequest` and one outcome; windows a stopped batch did not
@@ -107,6 +120,8 @@ locks when it logs.
 | `ServerMetrics` method | `panic in ServerMetrics.OnRequest for FC 0x.. from <client>` (the v1.15.3 text) | the request is answered as if the method had returned |
 | `Is` or `Unwrap` of a handler's error | `the error of the handler for FC 0x.. from <client> did not return normally` | the client gets a Server Device Failure exception |
 | `ConnectionMetrics.OnConnectionRejected` | `ConnectionMetrics.OnConnectionRejected for <addr> did not return normally` | the server goes on as if it had returned |
+| `ConnectionLifecycleMetrics` method | `ConnectionLifecycleMetrics.OnConnectionOpened for <addr> did not return normally` (or `OnConnectionClosed`) | the server goes on as if it had returned: the connection is served |
+| `ServerConfig.AllowClient` | `ServerConfig.AllowClient for <addr> did not return normally` | the connection is refused (`RejectNotAllowed`) |
 | private key of `TLSServerCert` (a `crypto.Signer`) | `TLS handshake with <client> did not return normally` | the handshake fails and the connection is closed |
 | `ClientMetrics`, `AttemptMetrics` method | `ClientMetrics.OnResponse did not return normally: …` | the request goes on as if it had returned; its result is unchanged |
 | `PDUTap.OnPDU` | `PDUTap.OnPDU did not return normally: …` | the call goes on as if it had returned; its result is unchanged |

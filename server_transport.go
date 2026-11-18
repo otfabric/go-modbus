@@ -40,8 +40,8 @@ func nextAcceptBackoff(prev time.Duration) time.Duration {
 // acceptTCPClients accepts new client connections for one Start..Stop cycle, as
 // long as the configured connection limit allows it.
 //
-// The goroutine runs the application's code: the Logger, and the
-// ConnectionMetrics of a connection it closes. It starts the goroutine of a
+// The goroutine runs the application's code: ServerConfig.AllowClient, the
+// Logger, and the ConnectionMetrics of a connection it closes. It starts the goroutine of a
 // connection it admits before any of that, so that a Shutdown called there,
 // which waits for that goroutine, does not wait for a goroutine that only its
 // caller would start.
@@ -69,6 +69,23 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			continue
 		}
 		backoff = 0
+
+		allowed := ms.allowClient(sock)
+		if share.released.Load() {
+			// A Shutdown called from AllowClient: no further callback.
+			_ = sock.Close()
+			return
+		}
+		if !allowed {
+			addr := sock.RemoteAddr().String()
+			ms.logger.Warningf("rejecting %v: not allowed", addr)
+			_ = sock.Close()
+			ms.reportRejected(addr, RejectNotAllowed)
+			if share.released.Load() {
+				return
+			}
+			continue
+		}
 
 		accepted, refused := false, false
 		var evicted net.Conn
@@ -329,6 +346,20 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	queue := make(chan inbound, serverPipelineDepth)
 	quit := make(chan struct{})
 	readerDone := make(chan struct{})
+
+	// Opened before the reader starts, closed once the socket is closed and
+	// the reader has ended. A Shutdown called from either callback, or from
+	// any callback of the connection in between, ends its callbacks.
+	ms.reportOpened(clientAddr, clientRole)
+	if share.released.Load() {
+		_ = t.Close()
+		return
+	}
+	defer func() {
+		if !share.released.Load() {
+			ms.reportClosed(clientAddr)
+		}
+	}()
 
 	// pending counts the requests read and not yet answered. It and the read
 	// deadline change together, under mu.

@@ -1,5 +1,32 @@
 # go-modbus Releases
 
+## v1.18.0
+
+**Date:** 2026-11-18
+**Previous release:** v1.17.0
+
+The server can refuse a client by its address as soon as it is accepted, and report the connections it starts and stops serving. Contributed by MatthewReed303 ([#74](https://github.com/otfabric/go-modbus/pull/74)). No exported identifier is removed or changed, and no default changes: a server without `AllowClient` and without a `ConnectionLifecycleMetrics` behaves as in v1.17.0.
+
+### Added
+
+- `ServerConfig.AllowClient func(remote net.Addr) bool`: asked about every `tcp` and `tcp+tls` connection as soon as it is accepted. `false` closes the connection before anything is read from it, logs it at warning level and reports it to `ConnectionMetrics.OnConnectionRejected` with the new `RejectNotAllowed` (`"not allowed"`); a refused connection takes no `MaxClients` slot. It runs on the accept loop. A panic in it is logged with its stack and refuses the connection.
+- `ConnectionLifecycleMetrics` (optional, on `ServerConfig.Metrics`): `OnConnectionOpened(addr, role)` when the server starts serving a connection (on `tcp+tls`, after the handshake; `role` empty on `tcp`) and `OnConnectionClosed(addr)` once when it stops serving it. A panic in either is logged and the connection is served as usual.
+- `Server.Addr()`: the address the server listens on, with the port the system chose for port 0; nil before the first `Start`.
+
+### Changed
+
+- `Stop` and `Shutdown` may also be called from `AllowClient` and from a `ConnectionLifecycleMetrics` method, with the same rules as from the other callbacks: after a `Shutdown` from one of them, no further callback runs on that connection or accept loop (no log entry, no rejection report, no `OnConnectionClosed`).
+
+### Documentation
+
+- API.md § 3 and § 6, OBSERVABILITY.md (interfaces, the lifecycle reports, the table of callbacks that do not return normally), SECURITY.md "Running a Server" (what `AllowClient` does and does not protect against), LIMITATIONS.md, README.
+
+### Tests
+
+- `server_connection_hooks_test.go`: `AllowClient` allowing and refusing on `tcp` and `tcp+tls`, a refused connection taking no slot, a panicking `AllowClient`, panicking lifecycle methods, `Stop` called from `AllowClient` (allowing and refusing: no accept, log entry or report afterwards), and opened/closed pairing under load with `MaxClients` refusals and connections still open at `Stop`. `Server.Addr` before `Start`, with port 0 and after `Stop`.
+
+---
+
 ## v1.17.0
 
 **Date:** 2026-11-16
