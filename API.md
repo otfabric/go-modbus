@@ -1209,6 +1209,7 @@ func ValidateServerConfig(conf *ServerConfig, handler RequestHandler) error
 func (ms *Server) Start() error
 func (ms *Server) Shutdown(ctx context.Context) error
 func (ms *Server) Stop() error
+func (ms *Server) Addr() net.Addr
 ```
 
 `NewServer` validates the configuration and handler (handler must be non-nil).
@@ -1218,6 +1219,9 @@ accepting, cancels per-connection contexts, closes sockets, and blocks until the
 accept loop and all handler goroutines exit or `ctx` expires (returning
 `ctx.Err()`). `Stop()` is equivalent to `Shutdown(context.Background())` — it
 blocks indefinitely. A stopped server can be started again with `Start`.
+`Addr` is the address the server listens on, with the port the system chose
+when the URL names port 0: nil before the first `Start`, and after a stop the
+address it last listened on.
 
 **Only the first `Shutdown` or `Stop` waits.** A call made while that one is still
 waiting, or after it returned because its context ended, finds the server stopped

@@ -161,3 +161,70 @@ func TestServerConnectionLifecycle_TLSOpensAfterHandshake(t *testing.T) {
 	}
 	e2eEventually(t, "the close to be reported", func() bool { return len(m.eventsSnapshot()) == 2 })
 }
+
+// Addr is nil before Start and then the address the server listens on, with
+// the port the system chose for port 0.
+func TestServerAddr(t *testing.T) {
+	ms, err := NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Logger: NopLogger()}, holdingOne())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := ms.Addr(); a != nil {
+		t.Fatalf("Addr before Start = %v, want nil", a)
+	}
+	if err := ms.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ms.Stop() })
+	a, ok := ms.Addr().(*net.TCPAddr)
+	if !ok || a.Port == 0 || !a.IP.IsLoopback() {
+		t.Fatalf("Addr = %v, want 127.0.0.1 with the chosen port", ms.Addr())
+	}
+	c, err := net.Dial("tcp", a.String())
+	if err != nil {
+		t.Fatalf("dial Addr: %v", err)
+	}
+	_ = c.Close()
+}
+
+// A Stop called from OnConnectionOpened stops the server: the connection is
+// not served and, with no callback after the Shutdown, not reported closed.
+func TestServerConnectionLifecycle_StopFromOpened(t *testing.T) {
+	stopped := make(chan error, 1)
+	var ms *Server
+	m := &stopOnOpen{stop: func() { stopped <- ms.Stop() }}
+	var err error
+	ms, err = NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Metrics: m, Logger: NopLogger()}, holdingOne())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ms.Start(); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("tcp", ms.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Stop from OnConnectionOpened: %v", err)
+		}
+	case <-time.After(e2eWait):
+		t.Fatal("Stop from OnConnectionOpened did not return")
+	}
+	wantClosedUnanswered(t, conn)
+	if n := m.closed.Load(); n != 0 {
+		t.Errorf("OnConnectionClosed ran %d times after the Shutdown", n)
+	}
+}
+
+type stopOnOpen struct {
+	hookMetrics
+	stop   func()
+	closed atomic.Int32
+}
+
+func (m *stopOnOpen) OnConnectionOpened(string, string) { m.stop() }
+func (m *stopOnOpen) OnConnectionClosed(string)         { m.closed.Add(1) }
