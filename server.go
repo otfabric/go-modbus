@@ -26,6 +26,20 @@ var modbusRoleOID asn1.ObjectIdentifier = asn1.ObjectIdentifier{
 // defaultTLSHandshakeTimeout is the default ServerConfig.TLSHandshakeTimeout.
 const defaultTLSHandshakeTimeout = 10 * time.Second
 
+// ClientFilter decides whether the server serves a client, by its remote
+// address, as soon as the connection is accepted (ServerConfig.AllowClient).
+type ClientFilter interface {
+	AllowClient(remote net.Addr) bool
+}
+
+// ClientFilterFunc is a function that serves as a ClientFilter. A ServerConfig
+// holding one is not comparable with ==: comparing it panics, as comparing
+// two functions would.
+type ClientFilterFunc func(remote net.Addr) bool
+
+// AllowClient returns f(remote).
+func (f ClientFilterFunc) AllowClient(remote net.Addr) bool { return f(remote) }
+
 // Server configuration object.
 type ServerConfig struct {
 	URL string
@@ -46,8 +60,9 @@ type ServerConfig struct {
 	// before anything is read from it, and ConnectionMetrics reports it as
 	// RejectNotAllowed. A refused connection takes no MaxClients slot. It runs
 	// on the goroutine that accepts connections, so it should return quickly;
-	// one that panics refuses the connection.
-	AllowClient   func(remote net.Addr) bool
+	// one that panics refuses the connection. A function serves as one through
+	// ClientFilterFunc.
+	AllowClient   ClientFilter
 	TLSServerCert *tls.Certificate
 	TLSClientCAs  *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,

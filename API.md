@@ -1177,8 +1177,9 @@ type ServerConfig struct {
     // as soon as it is accepted, with the client's address. false closes it
     // before anything is read from it (reported as RejectNotAllowed) and it
     // takes no MaxClients slot. It runs on the accept loop: return quickly. A
-    // panic refuses the connection.
-    AllowClient func(remote net.Addr) bool
+    // panic refuses the connection. A function serves as one through
+    // ClientFilterFunc.
+    AllowClient ClientFilter
 
     // TLSServerCert is the server certificate and private key (tcp+tls only). Required.
     TLSServerCert *tls.Certificate
@@ -1198,7 +1199,19 @@ type ServerConfig struct {
     // Nil (default) disables collection.
     Metrics ServerMetrics
 }
+
+type ClientFilter interface {
+    AllowClient(remote net.Addr) bool
+}
+
+// ClientFilterFunc adapts a function: ClientFilterFunc(func(remote net.Addr) bool { ... }).
+type ClientFilterFunc func(remote net.Addr) bool
 ```
+
+`AllowClient` is an interface rather than a function so that `ServerConfig`
+stays comparable with `==`, as it was up to v1.17.0. A `ServerConfig` holding a
+`ClientFilterFunc` compiles in a comparison but panics when compared, as two
+functions would.
 
 ### 3.2 Lifecycle
 

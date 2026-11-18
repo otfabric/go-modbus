@@ -703,6 +703,32 @@ func (mc *Client) WriteRegisters(ctx context.Context, unitID uint8, addr uint16,
 
 Writes multiple 16-bit registers (function code 16).
 
+### type ClientFilter
+
+```go
+type ClientFilter interface {
+	AllowClient(remote net.Addr) bool
+}
+```
+
+ClientFilter decides whether the server serves a client, by its remote address, as soon as the connection is accepted (ServerConfig.AllowClient).
+
+### type ClientFilterFunc
+
+```go
+type ClientFilterFunc func(remote net.Addr) bool
+```
+
+ClientFilterFunc is a function that serves as a ClientFilter. A ServerConfig holding one is not comparable with ==: comparing it panics, as comparing two functions would.
+
+#### func (ClientFilterFunc) AllowClient
+
+```go
+func (f ClientFilterFunc) AllowClient(remote net.Addr) bool
+```
+
+AllowClient returns f(remote).
+
 ### type ClientInfo
 
 ```go
@@ -2036,8 +2062,9 @@ type ServerConfig struct {
 	// before anything is read from it, and ConnectionMetrics reports it as
 	// RejectNotAllowed. A refused connection takes no MaxClients slot. It runs
 	// on the goroutine that accepts connections, so it should return quickly;
-	// one that panics refuses the connection.
-	AllowClient   func(remote net.Addr) bool
+	// one that panics refuses the connection. A function serves as one through
+	// ClientFilterFunc.
+	AllowClient   ClientFilter
 	TLSServerCert *tls.Certificate
 	TLSClientCAs  *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
