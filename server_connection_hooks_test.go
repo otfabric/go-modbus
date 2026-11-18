@@ -515,7 +515,9 @@ func TestServerConnectionLifecycle_PairsUnderLoad(t *testing.T) {
 
 // ServerConfig stays comparable with ==, as it was up to v1.17.0: a field of a
 // function type would make this fail to compile (gorelease: incompatible).
-var _ = ServerConfig{} == ServerConfig{}
+var _ = isComparable[ServerConfig]
+
+func isComparable[T comparable]() {}
 
 // A ClientFilter that is not a ClientFilterFunc is asked the same way.
 type denyAll struct{}
