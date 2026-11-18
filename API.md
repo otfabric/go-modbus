@@ -1198,6 +1198,11 @@ type ServerConfig struct {
     // Metrics receives callbacks for every request handled by the server.
     // Nil (default) disables collection.
     Metrics ServerMetrics
+
+    // PDUTap receives the raw request and response PDUs of every request the
+    // server dispatches, with the client's address and role. Nil (default)
+    // disables it; nothing is copied then. See § 6 "ServerPDUTap".
+    PDUTap ServerPDUTap
 }
 
 type ClientFilter interface {
@@ -2107,6 +2112,90 @@ a `Shutdown` called from one of its own callbacks stopped is not reported
 closed: no callback runs on it after that. Both run on the connection's
 goroutine; a panic is logged and the connection is served as usual.
 
+### `ConnectionCloseMetrics` (optional, server)
+
+```go
+type ConnectionCloseMetrics interface {
+    OnConnectionCloseReason(addr string, reason CloseReason, err error)
+}
+
+type CloseReason uint8
+
+const (
+    CloseClientClosed   CloseReason = iota + 1 // read ended with io.EOF, or io.ErrUnexpectedEOF mid-request
+    CloseIdleTimeout                           // no complete request within Timeout (err wraps os.ErrDeadlineExceeded)
+    CloseMalformedFrame                        // MBAP header not framable: ErrInvalidMBAPLength, ErrUnknownProtocolID
+    CloseProtocolError                         // a request violated the protocol: ErrProtocolError
+    CloseWriteFailed                           // a response could not be written within Timeout
+    CloseReadFailed                            // any other read error, a connection reset for example
+    CloseServerStopped                         // Shutdown or Stop (err: the closed socket's, typically net.ErrClosed)
+)
+```
+
+If the value assigned to `ServerConfig.Metrics` also implements
+`ConnectionCloseMetrics`, the server calls `OnConnectionCloseReason` once for
+every `tcp` or `tcp+tls` connection it served, right after `OnConnectionClosed`
+(whether or not the value implements `ConnectionLifecycleMetrics`), with the
+same exception: a connection a `Shutdown` called from one of its own callbacks
+stopped is not reported. A `tcp+tls` connection whose handshake failed was never
+served and is not reported. `err` is the error that ended the connection, never
+nil. When causes race (a client that leaves while its response is being
+written), the first one the server saw is reported. It runs on the connection's
+goroutine; a panic is logged and the server goes on. `CloseReason` has a
+`String` method (`"client closed"`, `"idle timeout"`, `"malformed frame"`,
+`"protocol error"`, `"write failed"`, `"read failed"`, `"server stopped"`).
+
+### `ServerPDUTap` (server)
+
+`ServerConfig.PDUTap` sees the raw PDUs (function code + data, no MBAP header)
+of every request a server dispatches and of the answer it decided on, with the
+client's address and role. It is for audit trails and recordings of what a
+client asked and was answered; `ServerMetrics` stays the place for counting.
+
+```go
+type ServerPDUExchange struct {
+    ClientAddr string    // remote host:port, as the handlers receive it
+    ClientRole string    // tcp+tls role; empty on tcp
+    UnitID     uint8
+    Request    []byte    // request PDU as received (copy, owned by the tap)
+    Response   []byte    // response PDU (copy); exception: FC | 0x80; nil when none is sent
+    Received   time.Time // when the request was read (monotonic)
+    Answered   time.Time // when its answer was decided, before the write (monotonic)
+}
+
+type ServerPDUTap interface {
+    OnServerPDU(ctx context.Context, ex ServerPDUExchange)
+}
+
+// ServerPDUTapFunc adapts a plain function.
+type ServerPDUTapFunc func(ctx context.Context, ex ServerPDUExchange)
+```
+
+- Called once per request read from a `tcp` or `tcp+tls` connection, on the
+  connection's goroutine with its context, in the connection's order, after the
+  answer was decided and before the response is written. Connections call it
+  concurrently: it must be safe for concurrent use and must not block. One that
+  does not return normally is logged at error level with its stack, and the
+  response is sent as if it had returned.
+- The server's own answers are reported too: Illegal Function for a function
+  code no handler serves, Server Device Failure for a handler that failed.
+- `Response` is nil when nothing is sent: a handler that returned
+  `ErrNoResponse`, or a request that violated the protocol (the connection is
+  then closed, reported as `CloseProtocolError`).
+- Not reported: bytes the server cannot frame as a request
+  (`CloseMalformedFrame`), and anything after a `Shutdown` called from one of
+  the connection's own callbacks (the request whose handler called it included).
+- A response that cannot be written after the tap was called closes the
+  connection (`CloseWriteFailed`): the tap reports what the server answered,
+  not what reached the client.
+- With no tap set, nothing is copied and no time is read.
+
+```go
+conf.PDUTap = modbus.ServerPDUTapFunc(func(ctx context.Context, ex modbus.ServerPDUExchange) {
+    log.Printf("%s unit %d: % X -> % X", ex.ClientAddr, ex.UnitID, ex.Request, ex.Response)
+})
+```
+
 ### `PDUTap` (client)
 
 `Config.PDUTap` sees the raw PDUs (function code + data, no MBAP/CRC/LRC
@@ -2964,6 +3053,7 @@ may read it until the stated point and must copy what it keeps.
 |---|---|---|
 | Slices in a handler request: `CoilsRequest.Args`, `HoldingRegistersRequest.Args`, `ReadWriteRegistersRequest.WriteValues`, `DiagnosticsRequest.Data`, `ReadFileRecordsRequest.Requests`, `WriteFileRecordsRequest.Records` and each record's `Data` | owned by the handler | Made for that call; the server does not read or reuse them afterwards, so a handler may keep them |
 | Slices and response structs returned by a handler: `[]bool`, `[]uint16`, `[]byte`, `[][]uint16`, `*CommEventLogResponse`, `*CommEventCounterResponse`, `*DeviceIdentificationResponse` | borrowed by the server until the response is encoded | Read after the handler has returned, on the goroutine of that connection, before the next request of that connection is dispatched; never written to and not kept. Other connections run their handlers meanwhile: return a copy of state they can change |
+| `ServerPDUExchange.Request`, `ServerPDUExchange.Response` given to a `ServerPDUTap` | owned by the tap | Copies, made only when a tap is set: changing them does not change what the server sends |
 
 A handler that serves a table shared between connections therefore copies under
 its lock:

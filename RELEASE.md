@@ -1,5 +1,29 @@
 # go-modbus Releases
 
+## v1.19.0
+
+**Date:** 2026-11-18
+**Previous release:** v1.18.0
+
+The server says why it closed a connection and can tap the raw PDUs of every request it serves, for gateways and SCADA front ends that need an audit trail or need to tell a client that left from one that timed out. No exported identifier is removed or changed, and no default changes: a server without `ServerConfig.PDUTap` and without a `ConnectionCloseMetrics` behaves as in v1.18.0.
+
+### Added
+
+- `ConnectionCloseMetrics` (optional, on `ServerConfig.Metrics`): `OnConnectionCloseReason(addr, reason, err)` once for every `tcp` or `tcp+tls` connection the server served, right after `OnConnectionClosed`, with a `CloseReason` and the error that ended the connection: `CloseClientClosed` (`io.EOF`, or `io.ErrUnexpectedEOF` mid-request), `CloseIdleTimeout` (`os.ErrDeadlineExceeded`), `CloseMalformedFrame` (`ErrInvalidMBAPLength`, `ErrUnknownProtocolID`), `CloseProtocolError` (`ErrProtocolError`), `CloseWriteFailed`, `CloseReadFailed` (a reset, for example) and `CloseServerStopped`. When causes race, the first one the server saw is reported. Up to v1.18.0 these causes were only logged. `CloseReason` has a `String` method.
+- `ServerConfig.PDUTap`, a `ServerPDUTap` (`OnServerPDU(ctx, ServerPDUExchange)`; `ServerPDUTapFunc` adapts a function): the request PDU and the response PDU the server answers with, for every request read from a connection, with the client's address and role, the unit id, the time the request was read and the time its answer was decided. The server's own exceptions are reported; `Response` is nil when nothing is sent (`ErrNoResponse`, a protocol error). The slices are copies owned by the tap, made only when a tap is set.
+- A panic in either is logged with its stack: the connection is closed as it would have been, and the response is sent as if the tap had returned. `Stop` and `Shutdown` may be called from either, with the same rules as from the other callbacks.
+
+### Documentation
+
+- API.md § 3.1 and § 6 (`ConnectionCloseMetrics`, `ServerPDUTap`) and § 13 (ownership of the tapped slices), OBSERVABILITY.md, SECURITY.md (what a tap records), LIMITATIONS.md (handshake failures are not reported as closes; the tap reports the answer before it is written), README.
+
+### Tests
+
+- `server_close_reason_test.go`: each reason from a real connection (client close, close in the middle of a request, idle timeout, both malformed MBAP headers, a protocol error, a reset, `Stop`, a `tcp+tls` client close), a failed TLS handshake not reported, the reason right after the close, `Stop` from `OnConnectionClosed` ending the reports, a panicking `OnConnectionCloseReason`, `CloseReason.String`, the error classification table and the first cause winning.
+- `server_tap_test.go`: the exchange of a read (bytes, address, role, times, context), order on a pipelined connection, the server's Illegal Function answer, `ErrNoResponse` and a protocol error with no response, copies the tap may change without changing the response, a panicking tap, `Stop` from the tap and from a handler (nothing tapped or written after it), the role and address on `tcp+tls`.
+
+---
+
 ## v1.18.0
 
 **Date:** 2026-11-18

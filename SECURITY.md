@@ -61,6 +61,7 @@ Modbus TCP, UDP, RTU and ASCII carry no authentication and no encryption: anyone
 ### Logging and Metrics
 
 - Logging is off by default. Debug-level logging prints every frame sent and received, including register values; treat such logs as sensitive operational data (see [OBSERVABILITY.md](OBSERVABILITY.md))
+- A `PDUTap`, on the client or the server (`ServerConfig.PDUTap`), receives every request and response PDU, register values and write payloads included: treat what it records the same way. On the server the request PDUs are what clients sent, at most 253 bytes each, and the tap sees requests the handlers will reject: bound and validate them before using them as an index or a label
 
 ### Dependencies
 

@@ -9,8 +9,10 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -340,8 +342,9 @@ const serverPipelineDepth = 16
 // callback belongs to.
 func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Context, connCancel context.CancelFunc, t *inttrans.TCP, clientAddr, clientRole string) {
 	type inbound struct {
-		req   *adu.Request
-		txnID uint16
+		req      *adu.Request
+		txnID    uint16
+		received time.Time
 	}
 	queue := make(chan inbound, serverPipelineDepth)
 	quit := make(chan struct{})
@@ -355,10 +358,19 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		_ = t.Close()
 		return
 	}
+	// cause is the first reason the connection ended for, set by the reader or
+	// by the loop below.
+	var cause closeCause
 	defer func() {
-		if !share.released.Load() {
-			ms.reportClosed(clientAddr)
+		if share.released.Load() {
+			return
 		}
+		ms.reportClosed(clientAddr)
+		if share.released.Load() {
+			return
+		}
+		reason, err := cause.get()
+		ms.reportCloseReason(clientAddr, reason, err)
 	}()
 
 	// pending counts the requests read and not yet answered. It and the read
@@ -375,16 +387,22 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		for {
 			req, txnID, err := t.ReadFrame()
 			if err != nil {
-				// Disconnected, idle for too long, or not speaking Modbus/TCP.
+				// Disconnected, idle for too long, not speaking Modbus/TCP, or
+				// closed by the server.
+				cause.set(readCloseReason(run.ctx, err))
 				connCancel()
 				return
+			}
+			var received time.Time
+			if ms.conf.PDUTap != nil {
+				received = time.Now()
 			}
 			mu.Lock()
 			pending++
 			_ = t.SetReadDeadline(time.Time{})
 			mu.Unlock()
 			select {
-			case queue <- inbound{req: req, txnID: txnID}:
+			case queue <- inbound{req: req, txnID: txnID, received: received}:
 			case <-quit:
 				return
 			}
@@ -396,6 +414,12 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 			break
 		}
 		res, closeLink := ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
+		if !share.released.Load() {
+			ms.tapServerExchange(connCtx, in.req, res, clientAddr, clientRole, in.received)
+		}
+		if closeLink {
+			cause.set(CloseProtocolError, ErrProtocolError)
+		}
 		if closeLink || share.released.Load() {
 			break
 		}
@@ -406,6 +430,7 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		if res != nil {
 			if writeErr := t.WriteFrame(in.txnID, res); writeErr != nil {
 				ms.logger.Warningf("failed to write response, closing link (client address: '%s'): %v", clientAddr, writeErr)
+				cause.set(writeCloseReason(run.ctx, writeErr))
 				connCancel()
 				break
 			}
@@ -425,6 +450,56 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	<-readerDone
 }
 
+// closeCause records the first reason a connection ended for. It is set by the
+// reader and by the serving loop of serveConn, read once both have ended.
+type closeCause struct {
+	mu     sync.Mutex
+	reason CloseReason
+	err    error
+}
+
+func (c *closeCause) set(reason CloseReason, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.reason == 0 {
+		c.reason, c.err = reason, err
+	}
+}
+
+func (c *closeCause) get() (CloseReason, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reason, c.err
+}
+
+// readCloseReason classifies err, the error that ended the reader of a
+// connection of the run whose context is runCtx.
+func readCloseReason(runCtx context.Context, err error) (CloseReason, error) {
+	switch {
+	case runCtx.Err() != nil:
+		// Shutdown cancels the run before it closes the sockets.
+		return CloseServerStopped, err
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return CloseClientClosed, err
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return CloseIdleTimeout, err
+	case errors.Is(err, ErrInvalidMBAPLength), errors.Is(err, ErrUnknownProtocolID):
+		return CloseMalformedFrame, err
+	default:
+		return CloseReadFailed, err
+	}
+}
+
+// writeCloseReason classifies err, a response write that failed on a
+// connection of the run whose context is runCtx.
+func writeCloseReason(runCtx context.Context, err error) (CloseReason, error) {
+	if runCtx.Err() != nil {
+		// Shutdown closed the socket under the write.
+		return CloseServerStopped, err
+	}
+	return CloseWriteFailed, err
+}
+
 // serverTransport is what handleTransport needs from a transport.
 type serverTransport interface {
 	ReadRequest() (*adu.Request, uint16, error)
@@ -436,7 +511,8 @@ type serverTransport interface {
 // appropriate handler, and writes responses, strictly one after the other. It
 // is the serving loop for a transport that cannot be read while a response is
 // pending. TCP and TLS connections, the only ones the server accepts today, are
-// served by serveConn; the unit tests drive the dispatch logic through this loop.
+// served by serveConn; the unit tests drive the dispatch logic through this loop,
+// which neither taps requests (ServerConfig.PDUTap) nor reports close reasons.
 func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, clientAddr string, clientRole string) {
 	for {
 		req, txnID, err := t.ReadRequest()

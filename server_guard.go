@@ -14,8 +14,12 @@ import (
 //
 //   - the RequestHandler methods (safeDispatch), and the methods of the error a
 //     handler returns, which choose the answer (answerFor);
-//   - the methods of ServerConfig.Metrics: ServerMetrics (reportMetrics) and
-//     ConnectionMetrics (reportRejected);
+//   - the methods of ServerConfig.Metrics: ServerMetrics (reportMetrics),
+//     ConnectionMetrics (reportRejected), ConnectionLifecycleMetrics
+//     (reportOpened, reportClosed) and ConnectionCloseMetrics
+//     (reportCloseReason);
+//   - ServerConfig.AllowClient (allowClient) and ServerConfig.PDUTap
+//     (tapServerExchange);
 //   - the TLS handshake of tcp+tls (startTLS), which runs the private key of
 //     ServerConfig.TLSServerCert, a crypto.Signer that may be the
 //     application's.
@@ -82,6 +86,21 @@ func (ms *Server) reportOpened(addr, role string) {
 		return fmt.Sprintf("ConnectionLifecycleMetrics.OnConnectionOpened for %s did not return normally", addr)
 	}, func() error {
 		lm.OnConnectionOpened(addr, role)
+		return nil
+	})
+}
+
+// reportCloseReason calls ConnectionCloseMetrics.OnConnectionCloseReason, when
+// ServerConfig.Metrics implements it, through call, as reportRejected does.
+func (ms *Server) reportCloseReason(addr string, reason CloseReason, err error) {
+	cm, ok := ms.metrics.(ConnectionCloseMetrics)
+	if !ok {
+		return
+	}
+	_ = ms.call("ConnectionCloseMetrics.OnConnectionCloseReason", func() string {
+		return fmt.Sprintf("ConnectionCloseMetrics.OnConnectionCloseReason for %s did not return normally", addr)
+	}, func() error {
+		cm.OnConnectionCloseReason(addr, reason, err)
 		return nil
 	})
 }
