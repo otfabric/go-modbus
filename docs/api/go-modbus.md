@@ -987,6 +987,17 @@ NewConfig builds a Config from grouped sub-configurations. This is a convenience
 type ConfigurationError = protocol.ConfigurationError
 ```
 
+### type ConnectionLifecycleMetrics
+
+```go
+type ConnectionLifecycleMetrics interface {
+	OnConnectionOpened(addr, role string)
+	OnConnectionClosed(addr string)
+}
+```
+
+ConnectionLifecycleMetrics is an optional extension of ServerMetrics. A ServerConfig.Metrics that implements it is told when the server starts serving a tcp or tcp+tls connection (on tcp+tls, once its TLS handshake has completed), with the client's address and role, and when it stops serving it. Every opened connection is closed once, except one a Shutdown called from one of its own callbacks stopped: no callback runs on it after that.
+
 ### type ConnectionMetrics
 
 ```go
@@ -1739,6 +1750,9 @@ const (
 	// not completed, closed to make room for a newer connection (see
 	// ServerConfig.MaxClients).
 	RejectTLSHandshakeEvicted
+	// RejectNotAllowed is a tcp or tcp+tls connection the server closed as soon
+	// as it was accepted, because ServerConfig.AllowClient refused it.
+	RejectNotAllowed
 )
 ```
 
@@ -1748,7 +1762,7 @@ const (
 func (r RejectReason) String() string
 ```
 
-String returns the name of the reason ("max clients", "tls handshake evicted"), or "RejectReason(n)" for a value without one.
+String returns the name of the reason ("max clients", "tls handshake evicted", "not allowed"), or "RejectReason(n)" for a value without one.
 
 ### type ReportServerIDHandler
 
@@ -2008,7 +2022,14 @@ type ServerConfig struct {
 	// counts too, but when every slot is taken a new connection replaces the
 	// oldest one still handshaking (see TLSHandshakeTimeout): a connection
 	// that completed its handshake is never closed to make room.
-	MaxClients    uint
+	MaxClients uint
+	// AllowClient, when set, is asked about every tcp and tcp+tls connection
+	// as soon as it is accepted, with the client's address: false closes it
+	// before anything is read from it, and ConnectionMetrics reports it as
+	// RejectNotAllowed. A refused connection takes no MaxClients slot. It runs
+	// on the goroutine that accepts connections, so it should return quickly;
+	// one that panics refuses the connection.
+	AllowClient   func(remote net.Addr) bool
 	TLSServerCert *tls.Certificate
 	TLSClientCAs  *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,

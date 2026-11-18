@@ -40,7 +40,14 @@ type ServerConfig struct {
 	// counts too, but when every slot is taken a new connection replaces the
 	// oldest one still handshaking (see TLSHandshakeTimeout): a connection
 	// that completed its handshake is never closed to make room.
-	MaxClients    uint
+	MaxClients uint
+	// AllowClient, when set, is asked about every tcp and tcp+tls connection
+	// as soon as it is accepted, with the client's address: false closes it
+	// before anything is read from it, and ConnectionMetrics reports it as
+	// RejectNotAllowed. A refused connection takes no MaxClients slot. It runs
+	// on the goroutine that accepts connections, so it should return quickly;
+	// one that panics refuses the connection.
+	AllowClient   func(remote net.Addr) bool
 	TLSServerCert *tls.Certificate
 	TLSClientCAs  *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,

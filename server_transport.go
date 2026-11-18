@@ -70,6 +70,17 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		}
 		backoff = 0
 
+		if !ms.allowClient(sock) {
+			addr := sock.RemoteAddr().String()
+			ms.logger.Warningf("rejecting %v: not allowed", addr)
+			_ = sock.Close()
+			ms.reportRejected(addr, RejectNotAllowed)
+			if share.released.Load() {
+				return
+			}
+			continue
+		}
+
 		accepted, refused := false, false
 		var evicted net.Conn
 		ms.lock.Lock()
@@ -329,6 +340,13 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	queue := make(chan inbound, serverPipelineDepth)
 	quit := make(chan struct{})
 	readerDone := make(chan struct{})
+
+	ms.reportOpened(clientAddr, clientRole)
+	defer func() {
+		if !share.released.Load() {
+			ms.reportClosed(clientAddr)
+		}
+	}()
 
 	// pending counts the requests read and not yet answered. It and the read
 	// deadline change together, under mu.

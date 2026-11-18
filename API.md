@@ -1173,6 +1173,13 @@ type ServerConfig struct {
     // that completed its handshake is never closed to make room.
     MaxClients uint
 
+    // AllowClient, when set, is asked about every tcp and tcp+tls connection
+    // as soon as it is accepted, with the client's address. false closes it
+    // before anything is read from it (reported as RejectNotAllowed) and it
+    // takes no MaxClients slot. It runs on the accept loop: return quickly. A
+    // panic refuses the connection.
+    AllowClient func(remote net.Addr) bool
+
     // TLSServerCert is the server certificate and private key (tcp+tls only). Required.
     TLSServerCert *tls.Certificate
 
@@ -2048,6 +2055,7 @@ type RejectReason uint8
 const (
     RejectMaxClients          RejectReason = iota + 1 // closed as soon as accepted: every MaxClients slot taken
     RejectTLSHandshakeEvicted                         // tcp+tls: handshake not completed, closed to make room
+    RejectNotAllowed                                  // closed as soon as accepted: ServerConfig.AllowClient refused it
 )
 ```
 
@@ -2055,13 +2063,32 @@ If the value assigned to `ServerConfig.Metrics` also implements
 `ConnectionMetrics`, the server calls `OnConnectionRejected` once for every
 connection it closes to keep within `MaxClients`: a connection it accepted when
 every slot was taken (on `tcp+tls`, by connections that completed their
-handshake), and a `tcp+tls` connection whose handshake had not completed, closed
-to make room for a newer one. `addr` is its remote `host:port`. Connections
+handshake), a `tcp+tls` connection whose handshake had not completed, closed
+to make room for a newer one, and a connection `ServerConfig.AllowClient`
+refused. `addr` is its remote `host:port`. Connections
 accepted while the server is stopping, and connections closed for any other
 reason, are not reported. The method runs on the accept loop after the
 connection was closed, with no lock held, and delays the next `Accept`: it must
 not block. `RejectReason` has a `String` method (`"max clients"`, `"tls
-handshake evicted"`).
+handshake evicted"`, `"not allowed"`).
+
+### `ConnectionLifecycleMetrics` (optional, server)
+
+```go
+type ConnectionLifecycleMetrics interface {
+    OnConnectionOpened(addr, role string)
+    OnConnectionClosed(addr string)
+}
+```
+
+If the value assigned to `ServerConfig.Metrics` also implements
+`ConnectionLifecycleMetrics`, the server calls `OnConnectionOpened` when it
+starts serving a `tcp` or `tcp+tls` connection (on `tcp+tls`, once its TLS
+handshake has completed), with the client's remote `host:port` and role (empty
+on `tcp`), and `OnConnectionClosed` once when it stops serving it. A connection
+a `Shutdown` called from one of its own callbacks stopped is not reported
+closed: no callback runs on it after that. Both run on the connection's
+goroutine; a panic is logged and the connection is served as usual.
 
 ### `PDUTap` (client)
 
