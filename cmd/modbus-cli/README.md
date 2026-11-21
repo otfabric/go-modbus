@@ -27,6 +27,7 @@ wc:<addr>:<true|false>          Write coil
 wr:<type>:<addr>:<value>        Write register
 scan:<target>                   Scan address space
 ping:<count>[:<interval>]       Ping device
+devid[:<category|object>]       Read device identification (FC43/14)
 sleep:<duration>                Pause execution
 suid:<id> / sid:<id>            Set unit ID for subsequent operations
 repeat                          Restart all operations from the beginning
@@ -103,6 +104,9 @@ modbus-cli --target tcp://somehost:502 scan:hr scan:ir scan:di scan:coils
 modbus-cli --target tcp+tls://securehost:802 \
   --cert client.cert.pem --key client.key.pem --ca ca.cert.pem \
   rh:uint32:0x3000
+
+# Read the basic, then the extended device identification, then object 0x02
+modbus-cli --target tcp://somehost:502 devid devid:extended devid:0x02
 
 # Ping a device 10 times with 500ms interval
 modbus-cli --target tcp://somehost:502 ping:10:500ms

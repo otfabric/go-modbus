@@ -137,7 +137,14 @@ func (ms *Server) buildIndividualDeviceIDResponse(req *adu.Request, txnID uint16
 // filtering by category, ordering by object ID, and paginating with
 // MoreFollows/NextObjectID.
 func (ms *Server) buildStreamDeviceIDResponse(req *adu.Request, txnID uint16, category DeviceIDCategory, conformity uint8, startObject DeviceIDObjectID, objects []DeviceIdentificationObject) (*adu.Response, error) {
-	filtered := filterDeviceIDObjectsByCategory(objects, category)
+	// A request for a higher category than the device's conformity level is
+	// answered according to that level (Modbus Application Protocol V1.1b3,
+	// 6.21), although the response still carries the requested code.
+	visible := category
+	if level := DeviceIDCategory(conformity & 0x7f); level >= DeviceIDBasic && level < visible {
+		visible = level
+	}
+	filtered := filterDeviceIDObjectsByCategory(objects, visible)
 
 	sort.Slice(filtered, func(i, j int) bool {
 		return filtered[i].ID < filtered[j].ID

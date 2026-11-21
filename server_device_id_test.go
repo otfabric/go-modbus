@@ -5,6 +5,7 @@ package modbus
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -258,5 +259,42 @@ func assertExceptionResponse(t *testing.T, res *adu.Response, want ExceptionCode
 	}
 	if ExceptionCode(res.Payload[0]) != want {
 		t.Errorf("exception code = 0x%02x, want 0x%02x", res.Payload[0], uint8(want))
+	}
+}
+
+// A request for a higher category than the device's conformity level is
+// answered according to the level (spec 6.21): objects above it are not sent,
+// and the response still carries the requested read device ID code.
+func TestServerFC43_ConformityLevelCapsCategory(t *testing.T) {
+	objs := append(regularDeviceIDObjects(),
+		DeviceIdentificationObject{ID: 0x80, Name: "Private", Value: "secret"})
+	for i, tc := range []struct {
+		name        string
+		conformity  uint8
+		category    DeviceIDCategory
+		wantObjects int
+	}{
+		{"basic level, extended request", 0x81, DeviceIDExtended, 3},
+		{"basic level, regular request", 0x01, DeviceIDRegular, 3},
+		{"regular level, extended request", 0x82, DeviceIDExtended, 6},
+		{"regular level, basic request", 0x82, DeviceIDBasic, 3},
+		{"extended level, extended request", 0x83, DeviceIDExtended, 7},
+		{"derived level (extended)", 0, DeviceIDExtended, 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &deviceIDTestHandler{objects: objs, conformity: tc.conformity}
+			client, cleanup := startDeviceIDServer(t, "tcp://localhost:"+strconv.Itoa(5580+i), h)
+			defer cleanup()
+			di, err := client.ReadDeviceIdentification(context.Background(), 1, tc.category, 0x00)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(di.Objects) != tc.wantObjects {
+				t.Errorf("%d objects, want %d: %+v", len(di.Objects), tc.wantObjects, di.Objects)
+			}
+			if di.Category != tc.category {
+				t.Errorf("response code 0x%02x, want the requested 0x%02x", uint8(di.Category), uint8(tc.category))
+			}
+		})
 	}
 }

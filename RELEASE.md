@@ -1,5 +1,31 @@
 # go-modbus Releases
 
+## v1.20.0
+
+**Date:** 2026-11-21
+**Previous release:** v1.19.0
+
+Read Device Identification (FC43/14) gets a command-line operation, and the server answers it at the device's conformity level, as the specification requires. No exported identifier is removed or changed.
+
+### Changed
+
+- **Behaviour change, `Server` FC43/14.** A request for a higher category than the conformity level the handler declares (`DeviceIdentificationResponse.ConformityLevel`) is now answered according to that level: a handler that declares a basic level no longer sends its regular or private objects to a client that asks for the extended category. The response still carries the requested Read Device ID code. A handler that leaves `ConformityLevel` at 0 is not affected: the level is derived from its objects. Specification: Modbus Application Protocol V1.1b3, 6.21 ("it must respond in accordance with its actual conformity level").
+
+### Added
+
+- `modbus-cli devid[:basic|regular|extended|<object>]` reads the device identification of the unit (default: basic): the conformity level and one line per object, or JSON with `--json` (`deviceId`, `deviceIdObject`). A number reads that one object by individual access.
+
+### Documentation
+
+- API.md § 3.5 (conformity level), INTEROPERABILITY.md (FC43/14), `modbus-cli` README, help and shell completion.
+
+### Tests
+
+- `TestServerFC43_ConformityLevelCapsCategory`: basic, regular and extended levels against each category, and a derived level.
+- `TestCLI_DeviceID`, `TestParseDeviceID`: the three categories, individual access, JSON, an unknown object and a failing device.
+
+---
+
 ## v1.19.0
 
 **Date:** 2026-11-18

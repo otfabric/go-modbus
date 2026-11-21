@@ -103,7 +103,12 @@ Two consequences for an application that models a device:
   below answer 11 in that case.
 
 FC43/14: stream access from an object identifier the device does not have
-starts at object 0; individual access to such an object is exception 2. The
+starts at object 0; individual access to such an object is exception 2. A
+request for a category above the conformity level is answered according to the
+level (specification 6.21): the objects above it are not sent, and the
+response still carries the requested read device ID code. This is the library's
+own behaviour and is covered by its tests; the reference servers were not
+compared on it. The
 conformity level, when the handler does not give one, is that of the highest
 category the device has objects for, with the bit for individual access
 (`0x81`, `0x82`, `0x83`).

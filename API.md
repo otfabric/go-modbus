@@ -1691,7 +1691,11 @@ together with a conformity level. The server owns all MEI framing: it filters ob
 requested category (basic = 0x00-0x02, regular = 0x00-0x7F, extended = 0x00-0xFF), serves
 individual-access requests, and paginates large object sets across multiple responses using
 MoreFollows/NextObjectID — all transparently to the handler. When `ConformityLevel` is 0, the
-server derives a sensible level from the objects provided. Only MEI type 14 (0x0E) is
+server derives a sensible level from the objects provided. A request for a higher category
+than the conformity level (a basic device asked for the extended category) is answered
+according to the level, as the specification requires: the objects above it are not sent,
+and the response still carries the requested Read Device ID code. Up to v1.19.0 the server
+filtered by the requested category only. Only MEI type 14 (0x0E) is
 supported; other MEI types return `Illegal Function`, an
 out-of-range Read Device ID code returns `Illegal Data Value`, and individual access to an
 unknown object returns `Illegal Data Address`.

@@ -839,3 +839,79 @@ func TestCLI_JSONNonFiniteFloats(t *testing.T) {
 		}
 	}
 }
+
+func (h *testHandler) HandleDeviceIdentification(_ context.Context, req *modbus.DeviceIdentificationRequest) (*modbus.DeviceIdentificationResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failing[req.UnitID] {
+		return nil, modbus.ErrServerDeviceFailure
+	}
+	return &modbus.DeviceIdentificationResponse{
+		ConformityLevel: 0x83,
+		Objects: []modbus.DeviceIdentificationObject{
+			{ID: 0x00, Value: "ACME"},
+			{ID: 0x01, Value: "X-1"},
+			{ID: 0x02, Value: "V1.2"},
+			{ID: 0x04, Value: "Widget"},
+			{ID: 0x80, Value: "private"},
+		},
+	}, nil
+}
+
+func TestCLI_DeviceID(t *testing.T) {
+	h := newTestHandler()
+	h.failing[2] = true
+	target := startServer(t, h)
+
+	stdout, _ := expectRun(t, 0, "--target", target, "devid")
+	for _, want := range []string{"conformity level 0x83", `"ACME"`, `"X-1"`, `"V1.2"`} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("basic: missing %q in:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "Widget") || strings.Contains(stdout, "private") {
+		t.Errorf("basic output has objects above the basic category:\n%s", stdout)
+	}
+
+	stdout, _ = expectRun(t, 0, "--target", target, "devid:extended")
+	if !strings.Contains(stdout, `"Widget"`) || !strings.Contains(stdout, `"private"`) {
+		t.Errorf("extended output:\n%s", stdout)
+	}
+
+	stdout, _ = expectRun(t, 0, "--target", target, "devid:0x04")
+	if !strings.Contains(stdout, `"Widget"`) || strings.Contains(stdout, "ACME") {
+		t.Errorf("individual output:\n%s", stdout)
+	}
+
+	stdout, _ = expectRun(t, 0, "--target", target, "--json", "devid:regular")
+	recs := decodeJSONLines(t, stdout)
+	if len(recs) < 2 || recs[0]["op"] != "deviceId" || recs[1]["op"] != "deviceIdObject" {
+		t.Errorf("json output:\n%s", stdout)
+	}
+
+	// individual access to an unknown object is exception 2; a failing
+	// device makes the run fail with the protocol exit code
+	expectRun(t, ExitProtocol, "--target", target, "devid:0x30")
+	expectRun(t, ExitProtocol, "--target", target, "--unit-id", "2", "devid")
+}
+
+func TestParseDeviceID(t *testing.T) {
+	ops, err := parseOperations([]string{"devid", "devid:regular", "devid:0x10", "deviceId:7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		c modbus.DeviceIDCategory
+		o modbus.DeviceIDObjectID
+	}{{modbus.DeviceIDBasic, 0}, {modbus.DeviceIDRegular, 0}, {modbus.DeviceIDIndividual, 0x10}, {modbus.DeviceIDIndividual, 7}}
+	for i, w := range want {
+		if ops[i].op != deviceID || ops[i].devCategory != w.c || ops[i].devObject != w.o {
+			t.Errorf("op %d = %+v", i, ops[i])
+		}
+	}
+	for _, bad := range []string{"devid:", "devid:nope", "devid:256", "devid:1:2"} {
+		if _, err := parseOperations([]string{bad}); err == nil {
+			t.Errorf("%q: no error", bad)
+		}
+	}
+}
