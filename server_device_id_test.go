@@ -5,7 +5,6 @@ package modbus
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -268,7 +267,7 @@ func assertExceptionResponse(t *testing.T, res *adu.Response, want ExceptionCode
 func TestServerFC43_ConformityLevelCapsCategory(t *testing.T) {
 	objs := append(regularDeviceIDObjects(),
 		DeviceIdentificationObject{ID: 0x80, Name: "Private", Value: "secret"})
-	for i, tc := range []struct {
+	for _, tc := range []struct {
 		name        string
 		conformity  uint8
 		category    DeviceIDCategory
@@ -283,7 +282,7 @@ func TestServerFC43_ConformityLevelCapsCategory(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &deviceIDTestHandler{objects: objs, conformity: tc.conformity}
-			client, cleanup := startDeviceIDServer(t, "tcp://localhost:"+strconv.Itoa(5580+i), h)
+			client, cleanup := startDeviceIDServer(t, "tcp://"+e2eFreeAddr(t), h)
 			defer cleanup()
 			di, err := client.ReadDeviceIdentification(context.Background(), 1, tc.category, 0x00)
 			if err != nil {

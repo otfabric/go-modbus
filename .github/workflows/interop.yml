@@ -88,7 +88,6 @@ env:
   MODBUS_INTEROP_J2MOD_IMAGE: ${{ inputs.j2mod_image || 'ghcr.io/otfabric/modbus-interop-j2mod@sha256:a2618932713d711ac1b0ede20623289b98372116d81228b744c14af5089ad1c4' }}
   MODBUS_INTEROP_JSMODBUS_IMAGE: ${{ inputs.jsmodbus_image || 'ghcr.io/otfabric/modbus-interop-jsmodbus@sha256:0482025a89e68e37708bf10bf6abb1289f10bfebbc58db2dd59c3fd42d72c70d' }}
   MODBUS_INTEROP_MODBUSESP_IMAGE: ${{ inputs.modbusesp_image || 'ghcr.io/otfabric/modbus-interop-modbusesp@sha256:0eaabcafa6605a37c1977552b32979ae1b865ab61f2a44ed27543b5b99ed43cc' }}
-  GOPRIVATE: github.com/otfabric/*
 
 jobs:
   interop:
@@ -108,11 +107,6 @@ jobs:
             go.sum
             **/go.sum
 
-      - name: Configure private module access
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Pull reference images
         run: |

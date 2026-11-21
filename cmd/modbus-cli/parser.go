@@ -131,7 +131,7 @@ func parseOperations(args []string) ([]operation, error) {
 
 		verbAndRest := strings.SplitN(arg, ":", 2)
 		verb := verbAndRest[0]
-		if len(verbAndRest) < 2 && verb != "repeat" && verb != "date" && verb != "devid" {
+		if len(verbAndRest) < 2 && verb != "repeat" && verb != "date" && verb != "devid" && verb != "deviceId" {
 			return nil, fmt.Errorf("illegal command format %q (should be command:arg1:arg2..., e.g. rh:uint32:0x1000+5)", arg)
 		}
 

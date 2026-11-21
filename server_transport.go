@@ -100,16 +100,27 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 
 		accepted, refused := false, false
 		var evicted net.Conn
+		var evictedID uint64
 		ms.lock.Lock()
 		// ms.run != run once the server has been stopped (and maybe started again).
 		if ms.started && ms.run == run {
 			if uint(len(ms.tcpClients)) >= ms.conf.MaxClients && ms.transportType == modbusTCPOverTLS {
 				evicted = ms.evictPendingTLSLocked(remoteHost(sock))
+				if evicted != nil {
+					evictedID = ms.pendingIDs[evicted]
+					delete(ms.pendingIDs, evicted)
+				}
 			}
 			if uint(len(ms.tcpClients)) < ms.conf.MaxClients {
 				ms.tcpClients = append(ms.tcpClients, sock)
 				if ms.transportType == modbusTCPOverTLS {
 					ms.tlsPending = append(ms.tlsPending, sock)
+					if cid != 0 {
+						if ms.pendingIDs == nil {
+							ms.pendingIDs = make(map[net.Conn]uint64)
+						}
+						ms.pendingIDs[sock] = cid
+					}
 				}
 				accepted = true
 				// Registered under the lock: Shutdown clears started under the same lock before
@@ -131,7 +142,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				"closing %v (TLS handshake not completed) for %v",
 				addr, sock.RemoteAddr())
 			_ = evicted.Close()
-			ms.emitRefused(run, 0, evicted, RejectTLSHandshakeEvicted)
+			ms.emitRefused(run, evictedID, evicted, RejectTLSHandshakeEvicted)
 			ms.reportRejected(addr, RejectTLSHandshakeEvicted)
 		}
 		if !accepted {
@@ -142,6 +153,9 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			if refused {
 				ms.emitRefused(run, cid, sock, RejectMaxClients)
 				ms.reportRejected(addr, RejectMaxClients)
+			} else {
+				// Accepted while the server was stopping.
+				ms.emitUnserved(run, cid, sock, "closed unserved: the server is stopping", nil)
 			}
 		}
 		if share.released.Load() {
@@ -257,6 +271,7 @@ func (ms *Server) dropPendingLocked(sock net.Conn) bool {
 	for i, c := range ms.tlsPending {
 		if c == sock {
 			ms.tlsPending = append(ms.tlsPending[:i], ms.tlsPending[i+1:]...)
+			delete(ms.pendingIDs, sock)
 			return true
 		}
 	}
@@ -303,6 +318,17 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, cid uint64) {
 		case err != nil:
 			ms.logger.Warningf("TLS handshake with %s failed: %v",
 				sock.RemoteAddr().String(), err)
+			// An evicted connection was reported when it was evicted.
+			ms.lock.Lock()
+			pending := ms.dropPendingLocked(sock)
+			ms.lock.Unlock()
+			if pending {
+				detail := "the TLS handshake failed"
+				if run.ctx.Err() != nil {
+					detail = "the TLS handshake ended: the server is stopping"
+				}
+				ms.emitUnserved(run, cid, sock, detail, err)
+			}
 		case !admitted:
 			// Closed to make room for a newer connection while the
 			// handshake was completing.

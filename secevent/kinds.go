@@ -54,17 +54,23 @@ type KindInfo struct {
 	Technique string
 	// AlwaysDeliver kinds are never merged with their repeats.
 	AlwaysDeliver bool
+	// MergeByPeer kinds are merged per peer address (the host, not the
+	// port) rather than per connection: the connection events, which a
+	// connection flood would otherwise turn into one event per connection.
+	// The first event of a host in a window keeps its connection id; the
+	// merged one carries the last.
+	MergeByPeer bool
 }
 
 var catalogue = map[Kind]KindInfo{
-	KindConnAccepted:        {Category: CategoryConnection, Severity: SeverityInfo},
-	KindConnUnexpected:      {Category: CategoryConnection, Severity: SeverityWarning, Technique: "T0846"},
-	KindConnRejectedLimit:   {Category: CategoryConnection, Severity: SeverityWarning, Technique: "T0814"},
-	KindConnNoRequest:       {Category: CategoryConnection, Severity: SeverityNotice, Technique: "T0846"},
+	KindConnAccepted:        {Category: CategoryConnection, Severity: SeverityInfo, MergeByPeer: true},
+	KindConnUnexpected:      {Category: CategoryConnection, Severity: SeverityWarning, Technique: "T0846", MergeByPeer: true},
+	KindConnRejectedLimit:   {Category: CategoryConnection, Severity: SeverityWarning, Technique: "T0814", MergeByPeer: true},
+	KindConnNoRequest:       {Category: CategoryConnection, Severity: SeverityNotice, Technique: "T0846", MergeByPeer: true},
 	KindConnIdleTimeout:     {Category: CategoryConnection, Severity: SeverityInfo},
-	KindConnClosed:          {Category: CategoryConnection, Severity: SeverityInfo},
+	KindConnClosed:          {Category: CategoryConnection, Severity: SeverityInfo, MergeByPeer: true},
 	KindConnAcceptError:     {Category: CategoryResource, Severity: SeverityCritical, Technique: "T0814"},
-	KindTLSHandshakeEvicted: {Category: CategoryTLS, Severity: SeverityNotice, Technique: "T0814"},
+	KindTLSHandshakeEvicted: {Category: CategoryTLS, Severity: SeverityNotice, Technique: "T0814", MergeByPeer: true},
 	KindProtoBadMBAP:        {Category: CategoryProtocol, Severity: SeverityWarning, Technique: "T0866"},
 	KindProtoBadPDU:         {Category: CategoryProtocol, Severity: SeverityWarning, Technique: "T0866"},
 	KindDoSWriteStall:       {Category: CategoryResource, Severity: SeverityWarning, Technique: "T0814"},

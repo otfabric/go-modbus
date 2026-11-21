@@ -26,7 +26,6 @@ permissions:
   contents: read
 
 env:
-  GOPRIVATE: github.com/otfabric/*
 
 jobs:
   fuzz:
@@ -43,11 +42,6 @@ jobs:
           cache-dependency-path: |
             go.sum
             **/go.sum
-      - name: Configure private module access
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: make fuzz FUZZTIME=${{ inputs.fuzz-time || '5m' }}
       - if: failure()
         uses: actions/upload-artifact@v7
@@ -68,11 +62,6 @@ jobs:
           cache-dependency-path: |
             go.sum
             **/go.sum
-      - name: Configure private module access
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: make soak SOAKTIME=${{ inputs.soak-time || '30m' }}
 
   # Rare races need a goroutine to stall at the wrong moment: load makes them show.
@@ -90,11 +79,6 @@ jobs:
           cache-dependency-path: |
             go.sum
             **/go.sum
-      - name: Configure private module access
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: make stress-load
 
   # A 32-bit int: the sizes the framers and the codecs compute must come out
@@ -114,11 +98,6 @@ jobs:
           cache-dependency-path: |
             go.sum
             **/go.sum
-      - name: Configure private module access
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - name: go test on linux/386
         env:
           GOARCH: "386"

@@ -48,11 +48,14 @@ that keep opening connections without handshaking can still delay clients
 from the same host, or from many hosts a client whose handshake is slow.
 
 The security events of `ServerConfig.Security` ([API.md § 14](API.md#14-security-events-package-secevent))
-cover connections: accepted, refused, ended. They do not yet cover TLS handshake
-failures (logged only, as before), requests (exceptions, function codes,
-sweeps), floods or the MAC address of a peer, and nothing is refused on the
-strength of an event. Delivery is best effort: a full queue drops events and the
-sink is told how many. Kernel-level attacks (SYN floods, half-open connections)
+cover connections: accepted, refused, ended. A failed TLS handshake is reported
+only as the end of its connection, with the error: why it failed (no
+certificate, an untrusted one, an old version) is not classified. They do not
+yet cover requests (exceptions, function codes, sweeps) or the MAC address of a
+peer; a connection flood is visible as merged per-host connection events, not
+as an event of its own, and nothing is refused on the strength of an event.
+Delivery is best effort: a full queue drops events and the sink is told how
+many, and `Stop` waits for the sink at most 5 s. Kernel-level attacks (SYN floods, half-open connections)
 are not visible to the process.
 
 ## Custom dialer

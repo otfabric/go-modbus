@@ -90,7 +90,7 @@ Reduce a failing chaos scenario to a deterministic test, usually a scripted faul
 
 | Event | Workflow | What runs |
 |---|---|---|
-| Pull request | `pr.yml` | `docs.yml` (docsync, otfabric-policy) always; `ci.yml`, `interop.yml` unless every changed file is documentation; then `OT Fabric Required Checks` |
+| Pull request | `pr.yml` | `docs.yml` (docsync; otfabric-policy is off, it needs `OTFABRIC_READ_TOKEN`) always; `ci.yml`, `interop.yml` unless every changed file is documentation; then `OT Fabric Required Checks` |
 | Push to a branch | none | nothing; dispatch `ci.yml`, `interop.yml` to test a branch without a pull request |
 | Push to `main` | `docs.yml` | the light checks; the merged commit was tested as the pull request's merge commit |
 | Schedule | `nightly.yml` | the scheduled runs, on `main`: long fuzzing, soak, the chaos regressions under load, the suite on linux/386 |

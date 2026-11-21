@@ -136,6 +136,14 @@ other tools; scan and ping operations produce structured JSON too:
 modbus-cli --target tcp://10.0.0.1:502 --json rh:uint16:0x100+3
 ```
 
+`devid` writes one `deviceId` record with the conformity level, then one
+`deviceIdObject` record per object, with the object id under `object`:
+
+```json
+{"op":"deviceId","type":"conformity","value":"0x83"}
+{"op":"deviceIdObject","object":0,"type":"VendorName","value":"ACME"}
+```
+
 Without `--fail-fast` the CLI runs all operations and exits non-zero if any
 failed; with it, it stops at the first error. The exit code tells usage errors
 (2), connection failures (4), timeouts (5), Modbus exceptions (6), partial

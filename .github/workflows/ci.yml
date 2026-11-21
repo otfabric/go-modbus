@@ -25,7 +25,8 @@ jobs:
   ci:
     uses: otfabric/.github/.github/workflows/go-ci.yml@v3.8.0
     with:
-      # otfabric-policy runs in docs.yml, on every pull request and push to main.
+      # otfabric-policy needs OTFABRIC_READ_TOKEN, which this repository does
+      # not have.
       run-policy: false
       run-govulncheck: true
       coverage-min: "95"
@@ -39,7 +40,8 @@ jobs:
   cli:
     uses: otfabric/.github/.github/workflows/go-ci.yml@v3.8.0
     with:
-      # otfabric-policy runs in docs.yml, on every pull request and push to main.
+      # otfabric-policy needs OTFABRIC_READ_TOKEN, which this repository does
+      # not have.
       run-policy: false
       module-dir: cmd/modbus-cli
       test-exclude-regex: "/example(s)?($|/)"
@@ -55,7 +57,6 @@ jobs:
     name: Per-package coverage
     runs-on: ubuntu-latest
     env:
-      GOPRIVATE: github.com/otfabric/*
       MODBUS_REQUIRE_PTY: "1"
     steps:
       - uses: actions/checkout@v7
@@ -66,11 +67,6 @@ jobs:
           cache-dependency-path: |
             go.sum
             **/go.sum
-      - name: Configure private module access
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: make coverage-pkg-check
 
   # Extended fuzz run of the back-to-back conformance suite. Opt-in: only runs
@@ -79,8 +75,6 @@ jobs:
   fuzz:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_fuzz }}
     runs-on: ubuntu-latest
-    env:
-      GOPRIVATE: github.com/otfabric/*
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -90,9 +84,4 @@ jobs:
           cache-dependency-path: |
             go.sum
             **/go.sum
-      - name: Configure private module access
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.OTFABRIC_READ_TOKEN }}
-        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: make fuzz FUZZTIME=5m

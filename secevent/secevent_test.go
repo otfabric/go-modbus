@@ -173,6 +173,47 @@ func TestDispatcherMergesRepeats(t *testing.T) {
 	})
 }
 
+func TestDispatcherMergesConnectionKindsByHost(t *testing.T) {
+	d, c := newTestDispatcher(t, Config{AggregateWindow: 60 * time.Millisecond})
+	peer := func(ip string, port uint16) PeerInfo {
+		return PeerInfo{RemoteAddr: netip.AddrPortFrom(netip.MustParseAddr(ip), port)}
+	}
+	for i := range 5 { // a connection flood from one host, a new port each time
+		d.Emit(Event{Kind: KindConnAccepted, ConnID: uint64(10 + i), Peer: peer("192.0.2.1", uint16(40000+i))})
+	}
+	d.Emit(Event{Kind: KindConnAccepted, ConnID: 20, Peer: peer("192.0.2.2", 40000)}) // another host
+	d.Emit(Event{Kind: KindProtoBadMBAP, ConnID: 30, Peer: peer("192.0.2.1", 1)})     // keyed per connection
+	d.Emit(Event{Kind: KindProtoBadMBAP, ConnID: 31, Peer: peer("192.0.2.1", 2)})
+	waitFor(t, "the merged event", func() bool { return len(c.all()) == 5 })
+	var merged Event
+	for _, e := range c.all() {
+		if e.Count > 0 {
+			merged = e
+		}
+	}
+	if merged.Count != 4 || merged.ConnID != 14 || merged.Peer.RemoteAddr.Addr().String() != "192.0.2.1" {
+		t.Errorf("merged event: %+v", merged)
+	}
+	if d.Stats().Merged != 4 {
+		t.Errorf("Merged = %d, want 4", d.Stats().Merged)
+	}
+}
+
+func TestDispatcherTimerRunsOnlyWhileMerging(t *testing.T) {
+	d, c := newTestDispatcher(t, Config{AggregateWindow: 20 * time.Millisecond})
+	for round := range 3 { // the timer is armed, runs out, and is armed again
+		d.Emit(Event{Kind: "app.k", ConnID: 1})
+		d.Emit(Event{Kind: "app.k", ConnID: 1})
+		want := 2 * (round + 1)
+		waitFor(t, "the merged event", func() bool { return len(c.all()) == want })
+		waitFor(t, "the window to end", func() bool {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			return len(d.agg) == 0
+		})
+	}
+}
+
 func TestDispatcherDoesNotMergeAlwaysDeliverOrWhenOff(t *testing.T) {
 	d, c := newTestDispatcher(t, Config{AggregateWindow: time.Hour})
 	for range 3 {
@@ -268,8 +309,8 @@ func TestDispatcherSinkPanicIsReportedOnce(t *testing.T) {
 	}
 	waitFor(t, "delivery", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) >= 5 })
 	st := d.Stats()
-	if st.SinkFailures != 1 { // the second panic is the one on the meta.sink_panic event itself, not counted
-		t.Errorf("SinkFailures = %d, want 1", st.SinkFailures)
+	if st.SinkFailures != 2 { // the event, then the meta.sink_panic event itself
+		t.Errorf("SinkFailures = %d, want 2", st.SinkFailures)
 	}
 	mu.Lock()
 	defer mu.Unlock()

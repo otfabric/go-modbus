@@ -887,6 +887,9 @@ func TestCLI_DeviceID(t *testing.T) {
 	recs := decodeJSONLines(t, stdout)
 	if len(recs) < 2 || recs[0]["op"] != "deviceId" || recs[1]["op"] != "deviceIdObject" {
 		t.Errorf("json output:\n%s", stdout)
+	} else if obj, ok := recs[1]["object"].(float64); !ok || obj != 0 || recs[1]["addr"] != nil {
+		// object 0x00 (the vendor name) is kept, under "object", not "addr"
+		t.Errorf("json object record: %v", recs[1])
 	}
 
 	// individual access to an unknown object is exception 2; a failing
@@ -896,14 +899,14 @@ func TestCLI_DeviceID(t *testing.T) {
 }
 
 func TestParseDeviceID(t *testing.T) {
-	ops, err := parseOperations([]string{"devid", "devid:regular", "devid:0x10", "deviceId:7"})
+	ops, err := parseOperations([]string{"devid", "devid:regular", "devid:0x10", "deviceId:7", "deviceId"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []struct {
 		c modbus.DeviceIDCategory
 		o modbus.DeviceIDObjectID
-	}{{modbus.DeviceIDBasic, 0}, {modbus.DeviceIDRegular, 0}, {modbus.DeviceIDIndividual, 0x10}, {modbus.DeviceIDIndividual, 7}}
+	}{{modbus.DeviceIDBasic, 0}, {modbus.DeviceIDRegular, 0}, {modbus.DeviceIDIndividual, 0x10}, {modbus.DeviceIDIndividual, 7}, {modbus.DeviceIDBasic, 0}}
 	for i, w := range want {
 		if ops[i].op != deviceID || ops[i].devCategory != w.c || ops[i].devObject != w.o {
 			t.Errorf("op %d = %+v", i, ops[i])

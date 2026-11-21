@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,6 +52,7 @@ type Config struct {
 
 type aggKey struct {
 	conn   uint64
+	peer   netip.Addr
 	kind   Kind
 	fields FieldMask
 	unit   uint8
@@ -77,6 +79,7 @@ type Dispatcher struct {
 	now    func() time.Time
 
 	queue chan Event
+	wake  chan struct{}
 	stop  chan struct{}
 	done  chan struct{}
 	gid   atomic.Uint64
@@ -108,6 +111,7 @@ func NewDispatcher(cfg Config) (*Dispatcher, error) {
 		maxRaw: cfg.MaxRaw,
 		logf:   cfg.Logf,
 		now:    time.Now,
+		wake:   make(chan struct{}, 1),
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
 		agg:    make(map[aggKey]*aggEntry),
@@ -158,9 +162,12 @@ func (d *Dispatcher) Emit(e Event) {
 		return
 	}
 	d.countLocked(&e)
-	if d.window > 0 && !catalogue[e.Kind].AlwaysDeliver {
+	if info := catalogue[e.Kind]; d.window > 0 && !info.AlwaysDeliver {
 		key := aggKey{conn: e.ConnID, kind: e.Kind, fields: e.Fields,
 			unit: e.UnitID, fc: e.FunctionCode, sub: e.SubFunction, addr: e.Address}
+		if info.MergeByPeer && e.Peer.RemoteAddr.IsValid() {
+			key.conn, key.peer = 0, e.Peer.RemoteAddr.Addr()
+		}
 		if ent, ok := d.agg[key]; ok {
 			if now.Sub(ent.first) < d.window {
 				if ent.suppressed == 0 {
@@ -182,6 +189,12 @@ func (d *Dispatcher) Emit(e Event) {
 			}
 		}
 		d.agg[key] = &aggEntry{first: now}
+		if len(d.agg) == 1 {
+			select {
+			case d.wake <- struct{}{}:
+			default:
+			}
+		}
 	}
 	d.enqueueLocked(e)
 }
@@ -214,19 +227,35 @@ func (d *Dispatcher) enqueueLocked(e Event) {
 func (d *Dispatcher) run() {
 	defer close(d.done)
 	d.gid.Store(goid.ID())
+	// The timer runs only while windows are open: an idle dispatcher does
+	// not wake up. Emit signals d.wake when the first window opens.
+	iv := min(max(d.window/2, 5*time.Millisecond), time.Second)
+	var timer *time.Timer
 	var tick <-chan time.Time
-	if d.window > 0 {
-		iv := min(max(d.window/2, 5*time.Millisecond), time.Second)
-		t := time.NewTicker(iv)
-		defer t.Stop()
-		tick = t.C
-	}
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 	for {
 		select {
 		case e := <-d.queue:
 			d.deliver(e)
+		case <-d.wake:
+			if tick == nil {
+				if timer == nil {
+					timer = time.NewTimer(iv)
+				} else {
+					timer.Reset(iv)
+				}
+				tick = timer.C
+			}
 		case <-tick:
-			d.sweep(d.now(), false)
+			tick = nil
+			if d.sweep(d.now(), false) > 0 {
+				timer.Reset(iv)
+				tick = timer.C
+			}
 		case <-d.stop:
 			// closed is set before stop is closed, and Emit checks it under
 			// the lock that queues, so nothing is queued after this drain.
@@ -249,9 +278,9 @@ func (d *Dispatcher) drain() {
 	}
 }
 
-// sweep ends the windows that are over (all of them when all is set) and
-// delivers the merged events.
-func (d *Dispatcher) sweep(now time.Time, all bool) {
+// sweep ends the windows that are over (all of them when all is set),
+// delivers the merged events, and returns the number of windows still open.
+func (d *Dispatcher) sweep(now time.Time, all bool) int {
 	var out []Event
 	d.mu.Lock()
 	for k, ent := range d.agg {
@@ -266,10 +295,12 @@ func (d *Dispatcher) sweep(now time.Time, all bool) {
 		}
 		delete(d.agg, k)
 	}
+	open := len(d.agg)
 	d.mu.Unlock()
 	for _, e := range out {
 		d.deliver(e)
 	}
+	return open
 }
 
 // deliver passes e to the sink, after the notice of the events that were
@@ -303,15 +334,23 @@ func (d *Dispatcher) deliverOne(e Event) {
 	if d.sinkFailures.Add(1) > 1 {
 		return
 	}
+	d.reportSinkFailure(fail)
+}
+
+// reportSinkFailure logs the first sink call that did not return normally and
+// delivers meta.sink_panic once. A sink that fails on that event too is
+// counted and not asked again.
+func (d *Dispatcher) reportSinkFailure(fail *callback.Failure) {
 	if d.logf != nil {
 		d.logf("secevent: the sink did not return normally: %v\n%s", fail.Value, fail.Stack)
 	}
-	// Reported once; a sink that fails on this one too is not asked again.
 	n := d.synthetic(KindMetaSinkPanic, 0, fmt.Sprintf("the sink did not return normally: %v", fail.Value))
-	_, _ = callback.Run("secevent.Sink", func() error {
+	if again, _ := callback.Run("secevent.Sink", func() error {
 		d.sink.OnEvent(n)
 		return nil
-	})
+	}); again != nil {
+		d.sinkFailures.Add(1)
+	}
 }
 
 // Stats returns a snapshot of the counters.

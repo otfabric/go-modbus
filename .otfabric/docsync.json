@@ -1,0 +1,15 @@
+{
+  "exclude_docs": [
+    "RELEASE.md",
+    "CHANGELOG.md",
+    "PLAN.md",
+    "PLAN-*.md",
+    "ROADMAP.md",
+    "PROGRESS.md",
+    "**/adr/**",
+    "**/DECISIONS.md",
+    "**/RESEARCH.md",
+    "**/*_DESIGN.md",
+    "**/HANDOFF-*.md"
+  ]
+}

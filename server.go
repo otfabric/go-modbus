@@ -24,6 +24,10 @@ var modbusRoleOID asn1.ObjectIdentifier = asn1.ObjectIdentifier{
 	1, 3, 6, 1, 4, 1, 50316, 802, 1,
 }
 
+// eventsFlushTimeout bounds how long Shutdown waits for the sink of the
+// security events to take the events still queued.
+var eventsFlushTimeout = 5 * time.Second
+
 // defaultTLSHandshakeTimeout is the default ServerConfig.TLSHandshakeTimeout.
 const defaultTLSHandshakeTimeout = 10 * time.Second
 
@@ -306,7 +310,11 @@ type Server struct {
 	tcpClients []net.Conn
 	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
 	// handshake has not completed (tcp+tls only).
-	tlsPending    []net.Conn
+	tlsPending []net.Conn
+	// pendingIDs maps a socket of tlsPending to its connection id, when the
+	// run reports security events, so that the event of its eviction belongs
+	// to the connection its conn.accepted announced.
+	pendingIDs    map[net.Conn]uint64
 	transportType transportType
 
 	// run is what the last Start created. The fields below it are copies of its
@@ -556,8 +564,9 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 	ms.lock.Unlock()
 
 	// The security events the cycle's goroutines still queue are delivered
-	// before Shutdown returns, unless it was called from the sink, which
-	// cannot wait for itself: the dispatcher then ends after the sink returns.
+	// before Shutdown returns, for at most eventsFlushTimeout, unless it was
+	// called from the sink, which cannot wait for itself: the dispatcher then
+	// ends after the sink returns.
 	inSink := run.events.OnGoroutine()
 	done := make(chan struct{})
 	go func() {
@@ -566,7 +575,12 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 			if inSink {
 				run.events.CloseNoWait()
 			} else {
-				_ = run.events.Close(context.Background())
+				// A sink that does not return must not hold Stop for ever.
+				fctx, cancel := context.WithTimeout(context.Background(), eventsFlushTimeout)
+				if run.events.Close(fctx) != nil {
+					ms.logger.Warningf("security events: the sink did not take the queued events within %v; Stop goes on without them", eventsFlushTimeout)
+				}
+				cancel()
 			}
 		}
 		close(done)

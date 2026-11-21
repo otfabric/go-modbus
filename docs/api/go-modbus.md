@@ -2055,6 +2055,10 @@ type Server struct {
 	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
 	// handshake has not completed (tcp+tls only).
 
+	// pendingIDs maps a socket of tlsPending to its connection id, when the
+	// run reports security events, so that the event of its eviction belongs
+	// to the connection its conn.accepted announced.
+
 	// run is what the last Start created. The fields below it are copies of its
 	// members, written by Start under lock and kept after the server has stopped.
 

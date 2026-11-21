@@ -17,7 +17,9 @@ jobs:
     uses: otfabric/.github/.github/workflows/docs-check.yml@v3.8.0
     with:
       docsync-version: v0.4.0
-      policy-version: v1.6.1
+      # otfabric-policy needs OTFABRIC_READ_TOKEN, which this repository does
+      # not have.
+      run-policy: false
     secrets: inherit
 
   docs-cli:
@@ -26,5 +28,7 @@ jobs:
     with:
       module-dir: cmd/modbus-cli
       docsync-version: v0.4.0
-      policy-version: v1.6.1
+      # otfabric-policy needs OTFABRIC_READ_TOKEN, which this repository does
+      # not have.
+      run-policy: false
     secrets: inherit

@@ -3133,13 +3133,22 @@ counters of the current or last run.
   whose `Count` is the number lost.
 - The first occurrence of an event is delivered at once; repeats of the same
   kind, connection and protocol fields inside `AggregateWindow` are counted and
-  delivered together when the window ends. `meta.*` events are never merged.
+  delivered together when the window ends. The connection kinds
+  (`conn.accepted`, `conn.unexpected`, `conn.rejected_limit`,
+  `conn.no_request`, `conn.closed`, `tls.handshake_evicted`;
+  `KindInfo.MergeByPeer`) are merged per peer host instead of per connection,
+  so that a connection flood from one host is one event plus one merged event
+  per window; the merged event carries the last connection's id and port.
+  `meta.*` events are never merged. The dispatcher runs a timer only while a
+  window is open.
 - A sink that does not return normally is stopped there and logged with its
-  stack; a `meta.sink_panic` event is delivered once.
-- `Stop` and `Shutdown` wait until the events queued so far have been delivered
-  (a sink that never returns holds `Stop` as a handler that never returns
-  does). They may be called from the sink: they do not wait for it, and the
-  queued events are delivered after it returns.
+  stack; a `meta.sink_panic` event is delivered once. `Stats.SinkFailures`
+  counts every call that failed, that one included.
+- `Stop` and `Shutdown` wait until the events queued so far have been
+  delivered, for at most 5 s: a sink that does not return is then left behind
+  with a warning in the log, and the events still queued are lost. They may be
+  called from the sink: they do not wait for it, and the queued events are
+  delivered after it returns.
 - With no `Sink` and no `Dispatcher` nothing is created or queued.
 
 An event holds the time, the kind, its category, severity and action, the
@@ -3160,22 +3169,25 @@ catalogue). Severity is the default; `Action` says what the server did.
 | `conn.unexpected` | warning | `AllowClient` refused the peer (rejected) |
 | `conn.rejected_limit` | warning | every `MaxClients` slot was taken (rejected) |
 | `tls.handshake_evicted` | notice | a connection that had not completed its TLS handshake was closed to make room (rejected) |
-| `conn.no_request` | notice | a connection ended, or idled out, without one request read from it: a connect scan, a probe |
+| `conn.no_request` | notice | a connection ended (closed or reset by the peer: observed) or idled out (disconnected) without one request read from it: a connect scan, a probe |
 | `conn.idle_timeout` | info | a connection that had sent requests idled for `Timeout` (disconnected) |
 | `proto.bad_mbap` | warning | an MBAP header the server cannot frame (disconnected) |
 | `proto.bad_pdu` | warning | a request that violated the protocol: a PDU whose length does not match its function code (disconnected) |
 | `dos.write_stall` | warning | a response could not be written within `Timeout`: a peer that does not read (disconnected) |
-| `conn.closed` | info | the end of every served connection: reason, duration, requests |
+| `conn.closed` | info | the end of every connection not refused: reason, duration, requests; for one whose TLS handshake failed, or that the server closed because it was stopping, `Detail` says so (disconnected) |
 | `conn.accept_error` | critical | the listener's `Accept` failed; the server retries |
 | `meta.events_dropped` | warning | `Count` events were lost to a full queue |
 | `meta.sink_panic` | warning | the sink did not return normally |
 
 A connection id (`Event.ConnID`, from `secevent.NextConnID`) ties the events of
-one connection together; events that belong to none have id 0.
+one connection together; events that belong to none have id 0. Every
+`conn.accepted` is followed by exactly one `conn.closed`, `conn.unexpected`,
+`conn.rejected_limit` or `tls.handshake_evicted` with its id (merging aside).
 
 An event says what the server observed, not what an attacker did: a refused
 connection may be a scanner or a misconfigured master. A TLS handshake that
-fails is not yet reported as an event (it is logged, as before).
+fails is reported only as the `conn.closed` of its connection, with the error;
+why it failed is not classified.
 
 ### From a handler
 

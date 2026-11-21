@@ -190,6 +190,9 @@ func TestServerEvents_IdleTimeout(t *testing.T) {
 
 	talker := dialRaw(t, ms)
 	sendReadRequest(t, talker)
+	if e.Action != secevent.ActionDisconnected {
+		t.Errorf("no_request after idling: action %v, want disconnected", e.Action)
+	}
 	idle := c.wait(t, secevent.KindConnIdleTimeout)
 	if idle.Action != secevent.ActionDisconnected || idle.Severity != secevent.SeverityInfo {
 		t.Errorf("idle_timeout: %+v", idle)
@@ -506,6 +509,7 @@ func TestServerEvents_CloseMapping(t *testing.T) {
 		{"protocol error", CloseProtocolError, 2, []secevent.Kind{secevent.KindProtoBadPDU, secevent.KindConnClosed}},
 		{"write failed", CloseWriteFailed, 2, []secevent.Kind{secevent.KindDoSWriteStall, secevent.KindConnClosed}},
 		{"read failed", CloseReadFailed, 2, []secevent.Kind{secevent.KindConnClosed}},
+		{"reset without a request", CloseReadFailed, 0, []secevent.Kind{secevent.KindConnNoRequest, secevent.KindConnClosed}},
 		{"server stopped", CloseServerStopped, 0, []secevent.Kind{secevent.KindConnClosed}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -597,3 +601,135 @@ type fakeAddr string
 
 func (a fakeAddr) Network() string { return "fake" }
 func (a fakeAddr) String() string  { return string(a) }
+
+// A scan that resets the connection without a request is reported as one that
+// sent no request, like one that closes it.
+func TestServerEvents_ResetIsNoRequest(t *testing.T) {
+	c := &evCollector{}
+	ms, conn := startCallbackServer(t, holdingOne(), eventsOn(c))
+	t.Cleanup(func() { _ = ms.Stop() })
+	c.wait(t, secevent.KindConnAccepted)
+	if err := conn.(*net.TCPConn).SetLinger(0); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	e := c.wait(t, secevent.KindConnNoRequest)
+	c.wait(t, secevent.KindConnClosed)
+	if e.Action != secevent.ActionObserved {
+		t.Errorf("no_request after a reset: %+v", e)
+	}
+}
+
+// The eviction of a pending TLS handshake is reported with the connection id
+// its conn.accepted announced, and a connection whose handshake fails is
+// reported closed.
+func TestServerEvents_TLSEvictionAndHandshakeFailure(t *testing.T) {
+	c := &evCollector{}
+	dev := e2eNewDevice()
+	dev.setHolding(1, 0x0101)
+	p := e2eStart(t, "tcp+tls", dev, e2eOpts{noOpen: true, server: chain(eventsOn(c), func(conf *ServerConfig) {
+		conf.MaxClients = 1
+	})})
+	pending := dialRaw(t, p.server)
+	acc := c.wait(t, secevent.KindConnAccepted)
+	if err := p.client.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := p.client.ReadHoldingRegister(context.Background(), e2eUnit, 1); err != nil {
+		t.Fatal(err)
+	}
+	wantClosedUnanswered(t, pending)
+	ev := c.wait(t, secevent.KindTLSHandshakeEvicted)
+	if ev.ConnID == 0 || ev.ConnID != acc.ConnID || ev.Peer.RemoteAddr != addrPortOf(pending.LocalAddr()) {
+		t.Errorf("eviction %+v, accepted %+v", ev, acc)
+	}
+	for _, e := range c.snapshot() {
+		if e.Kind == secevent.KindConnClosed && e.ConnID == acc.ConnID {
+			t.Errorf("the evicted connection was also reported closed: %+v", e)
+		}
+	}
+	if err := p.client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e2eEventually(t, "the slot to be freed", func() bool { return p.conns() == 0 })
+
+	// not TLS: the handshake fails
+	bad := dialRaw(t, p.server)
+	if _, err := bad.Write([]byte("GET / HTTP/1.0\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	wantClosedUnanswered(t, bad)
+	local := addrPortOf(bad.LocalAddr())
+	var closed secevent.Event
+	e2eEventually(t, "conn.closed of the failed handshake", func() bool {
+		for _, e := range c.snapshot() {
+			if e.Kind == secevent.KindConnClosed && e.Peer.RemoteAddr == local {
+				closed = e
+				return true
+			}
+		}
+		return false
+	})
+	if closed.Action != secevent.ActionDisconnected || closed.Detail != "the TLS handshake failed" || closed.Err == nil || closed.ConnID == 0 {
+		t.Errorf("failed handshake: %+v", closed)
+	}
+}
+
+// A connection accepted while the server is stopping is reported closed after
+// its conn.accepted, and not refused.
+func TestServerEvents_ConnectionDuringStop(t *testing.T) {
+	c := &evCollector{}
+	ms, err := NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Logger: NopLogger(),
+		Security: &SecurityPolicy{Policy: secevent.Policy{Sink: c, AggregateWindow: -1}}}, &fnHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := &scriptedListener{script: []error{nil}}
+	run := &serverRun{listener: ln, wg: &sync.WaitGroup{}}
+	run.ctx, run.cancel = context.WithCancel(context.Background())
+	defer run.cancel()
+	if err := ms.startEvents(run); err != nil {
+		t.Fatal(err)
+	}
+	run.wg.Add(1)
+	ms.acceptTCPClients(run)
+	run.wg.Wait()
+	if err := run.events.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ev := c.snapshot()
+	if len(ev) != 2 || ev[0].Kind != secevent.KindConnAccepted || ev[1].Kind != secevent.KindConnClosed ||
+		ev[0].ConnID != ev[1].ConnID || ev[1].Action != secevent.ActionDisconnected {
+		t.Fatalf("events %+v", ev)
+	}
+}
+
+// A sink that does not return does not hold Stop for ever: Stop gives up on
+// the queued events after eventsFlushTimeout and logs it.
+func TestServerEvents_StuckSinkDoesNotHoldStop(t *testing.T) {
+	old := eventsFlushTimeout
+	eventsFlushTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { eventsFlushTimeout = old })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	sink := secevent.SinkFunc(func(secevent.Event) { <-release })
+	log := &e2eLogger{}
+	ms, conn := startCallbackServer(t, holdingOne(), func(conf *ServerConfig) {
+		conf.Logger = log
+		conf.Security = &SecurityPolicy{Policy: secevent.Policy{Sink: sink, AggregateWindow: -1}}
+	})
+	_ = conn.Close()
+	stopped := make(chan error, 1)
+	go func() { stopped <- ms.Stop() }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop did not return with a sink that does not return")
+	}
+	if !log.has("did not take the queued events") {
+		t.Error("the flush timeout was not logged")
+	}
+}

@@ -518,6 +518,12 @@ type KindInfo struct {
 	Technique string
 	// AlwaysDeliver kinds are never merged with their repeats.
 	AlwaysDeliver bool
+	// MergeByPeer kinds are merged per peer address (the host, not the
+	// port) rather than per connection: the connection events, which a
+	// connection flood would otherwise turn into one event per connection.
+	// The first event of a host in a window keeps its connection id; the
+	// merged one carries the last.
+	MergeByPeer bool
 }
 ```
 

@@ -5,13 +5,15 @@
 **Date:** 2026-11-21
 **Previous release:** v1.20.0
 
-A server can report what it observes about its connections as structured security events for a SIEM or an audit log: who connected, which connections it refused and why, how each one ended. It is the first part of the security-events work; requests, TLS failures and peer MAC addresses follow. No exported identifier is removed or changed, and no default changes: a server without `ServerConfig.Security` behaves as in v1.20.0, and with it the server only observes.
+A server can report what it observes about its connections as structured security events for a SIEM or an audit log: who connected, which connections it refused and why, how each one ended. It is the first part of the security-events work; requests, the classification of TLS failures and peer MAC addresses follow. No exported identifier is removed or changed, and no default changes: a server without `ServerConfig.Security` behaves as in v1.20.0, and with it the server only observes.
 
 ### Added
 
-- Package `secevent`: `Event` (kind, category, severity, action, peer, connection id, protocol fields, detail, error, raw bytes, MITRE ATT&CK for ICS hint; `String` and a stable JSON form), the kind catalogue (`Kinds`, `Describe`), `Dispatcher` (non-blocking queue, merging of repeats inside a window, counted drops announced by `meta.events_dropped`, a sink that panics reported once, `Close` that may be called from the sink), `Stats`, `Policy`, and the sinks `SinkFunc`, `NewChannelSink`, `NewJSONLinesSink`, `MultiSink`, `FilterSink` and `LoggerSink`. `secevent.Report` and `secevent.PeerFromContext` give a handler the peer of its connection and a way to report events of its own.
+- Package `secevent`: `Event` (kind, category, severity, action, peer, connection id, protocol fields, detail, error, raw bytes, MITRE ATT&CK for ICS hint; `String` and a stable JSON form), the kind catalogue (`Kinds`, `Describe`), `Dispatcher` (non-blocking queue, merging of repeats inside a window — per peer host for the connection kinds, `KindInfo.MergeByPeer` — with a timer only while a window is open, counted drops announced by `meta.events_dropped`, a sink that panics reported once, `Close` that may be called from the sink), `Stats`, `Policy`, and the sinks `SinkFunc`, `NewChannelSink`, `NewJSONLinesSink`, `MultiSink`, `FilterSink` and `LoggerSink`. `secevent.Report` and `secevent.PeerFromContext` give a handler the peer of its connection and a way to report events of its own.
 - `ServerConfig.Security` (a `*SecurityPolicy`, which embeds `secevent.Policy`) and `Server.SecurityStats`. Events: `conn.accepted`, `conn.unexpected` (`AllowClient`), `conn.rejected_limit` (`MaxClients`), `tls.handshake_evicted`, `conn.no_request`, `conn.idle_timeout`, `proto.bad_mbap`, `proto.bad_pdu`, `dos.write_stall`, `conn.closed` and `conn.accept_error`. On `tcp+tls` the peer carries the client certificate (subject, issuer, serial, expiry, SHA-256 fingerprint) and the Modbus role.
-- `Stop` and `Shutdown` deliver the events queued so far before they return, and may be called from the sink.
+- Every `conn.accepted` is followed by exactly one `conn.closed` or refusal event with its connection id, including a connection whose TLS handshake failed and one accepted while the server was stopping. `conn.no_request` covers a peer that resets the connection without a request (observed) and one that idles out without a request (disconnected).
+- `Stop` and `Shutdown` deliver the events queued so far before they return, waiting at most 5 s for a sink that does not return (then logged), and may be called from the sink.
+- `modbus-cli devid`: the `deviceId` alias without arguments, and the object id of a `deviceIdObject` JSON record under `object` instead of `addr`.
 
 ### Documentation
 
@@ -20,7 +22,7 @@ A server can report what it observes about its connections as structured securit
 ### Tests
 
 - `secevent`: ordering and defaults, a slow sink never blocking `Emit` and the drops announced, merging and its bounds, flush on close, a panicking sink, `Close` from the sink and with a context, the catalogue, the JSON form (golden), the sinks, the context reporter, the policy.
-- `server_events_test.go`: each event from a real connection (served, no request, refused, over the limit, idle, malformed MBAP, protocol error), a handler's context and reports, no reporter without a policy, the TLS peer, `Stop` from the sink and its flush, a shared dispatcher, invalid policies, the policy copied, `ServerConfig` still comparable, an accept error, the mapping of every close reason.
+- `server_events_test.go`: each event from a real connection (served, no request, refused, over the limit, idle, malformed MBAP, protocol error), a handler's context and reports, no reporter without a policy, the TLS peer, `Stop` from the sink and its flush, a shared dispatcher, invalid policies, the policy copied, `ServerConfig` still comparable, an accept error, the mapping of every close reason, a reset without a request, a TLS eviction keeping its connection id, a failed TLS handshake, a connection accepted while stopping, a sink that does not return during `Stop`; per-host merging and the lazy timer in `secevent`; `TestServerFC43_ConformityLevelCapsCategory` on free ports.
 
 ---
 

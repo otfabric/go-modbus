@@ -157,7 +157,10 @@ func (ms *Server) emitClosed(run *serverRun, ce *connEvents, reason CloseReason,
 		run.emit(e)
 	}
 	switch {
-	case n == 0 && (reason == CloseClientClosed || reason == CloseIdleTimeout):
+	case n == 0 && reason == CloseIdleTimeout:
+		emit(secevent.KindConnNoRequest, secevent.ActionDisconnected, "no request within the idle timeout")
+	case n == 0 && (reason == CloseClientClosed || reason == CloseReadFailed):
+		// A read that fails is usually a reset: how connect scanners close.
 		emit(secevent.KindConnNoRequest, secevent.ActionObserved, "the connection ended without a request: "+reason.String())
 	case reason == CloseIdleTimeout:
 		emit(secevent.KindConnIdleTimeout, secevent.ActionDisconnected, fmt.Sprintf("no request for %v", ms.conf.Timeout))
@@ -174,6 +177,22 @@ func (ms *Server) emitClosed(run *serverRun, ce *connEvents, reason CloseReason,
 	}
 	emit(secevent.KindConnClosed, action, fmt.Sprintf("%s after %v, %d requests",
 		reason, time.Since(ce.started).Round(time.Millisecond), n))
+}
+
+// emitUnserved reports the end of an accepted connection that was never
+// served: one whose TLS handshake failed, or one accepted while the server was
+// stopping. With it, every conn.accepted is followed by one conn.closed or one
+// refusal event.
+func (ms *Server) emitUnserved(run *serverRun, id uint64, sock net.Conn, detail string, err error) {
+	if run.events == nil {
+		return
+	}
+	e := ms.eventBase(id, sock)
+	e.Kind = secevent.KindConnClosed
+	e.Action = secevent.ActionDisconnected
+	e.Detail = detail
+	e.Err = err
+	run.emit(e)
 }
 
 // peerOf describes the remote end of sock.
