@@ -10,6 +10,7 @@ github.com/otfabric/go-modbus          # public API — client, server, protocol
 ├── batch/                           # public batch reads (planning, sequential execution, results)
 ├── codec/                           # public codec package (numeric, text, time, …)
 ├── sunspec/                         # public SunSpec detection and discovery
+├── secevent/                        # public security events: Event, Dispatcher, sinks, Report
 ├── internal/
 │   ├── adu/                         # ADU framing: MBAP, RTU CRC, ASCII LRC, wire encoding
 │   ├── transport/                   # concrete transports: TCP, RTU, ASCII
@@ -32,6 +33,8 @@ internal/session
     ↑
 modbus (root)
 
+internal/protocol, internal/callback, internal/goid ← secevent ← modbus (root)
+
 modbus (root), codec ← batch
 modbus (root)       ← internal/benchserver (benchmarks only)
 
@@ -42,6 +45,7 @@ internal/logging  ← modbus, internal/session
 
 **Forbidden imports:**
 
+- `secevent` must not import the root package, `internal/transport` or `internal/session`
 - `internal/transport` must not import `codec`
 - `sunspec` must not import `internal/transport`
 - `codec` must not import `internal/transport` or `internal/session`
@@ -59,6 +63,7 @@ Each subsystem has a **single owner** package.
 | Codecs (numeric, text, time, …) | `codec/` | Public subpackage. The root package imports it for `RuntimeDecodePlan` and has no aliases of its types |
 | SunSpec discovery | `sunspec/` | Public subpackage. The root package does not import it; it only re-exports the two SunSpec error sentinels from `internal/protocol` |
 | Batch-read planning | `batch/` | Public subpackage; plans, executes sequentially and decodes; no scheduling, caching or goroutines |
+| Security events | `secevent/` | Public subpackage; the event model, the dispatcher and the sinks. The root package decides what to report and calls it; `secevent` knows nothing of the transport |
 | Protocol constants & errors | `internal/protocol` | Root re-exports via type aliases |
 | Logging | `internal/logging` | |
 | Client/server protocol API | `modbus` (root) | Uses `adu.Request`/`adu.Response` internally |
@@ -86,6 +91,7 @@ The server is split the same way:
 | `server_bits.go`, `server_registers.go` | FC01–06, FC15/16, FC22/23 |
 | `server_device_id.go` | Device identification (FC43) |
 | `server_functions.go` | FC08, FC17, FC20/21 and FC24 |
+| `server_events.go`, `security.go` | Security events: the dispatcher of a run, the events of the accept loop and of each connection |
 
 Every function code the client implements has a server handler; the e2e suite
 enforces it (`TestE2E_EveryClientFunctionIsServed`).

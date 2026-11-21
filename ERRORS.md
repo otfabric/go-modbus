@@ -122,6 +122,12 @@ built-in retry policies. `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` and
 | `ErrSunSpecModelChainInvalid` | The chain cannot exist: a model runs past register 0xFFFF, leaves no room for the next header, or has length 0 without being the end model. Models read before the fault are returned with it |
 | `ErrSunSpecModelChainLimitExceeded` | The chain passed `MaxAddressSpan`. Models read so far are returned with it |
 
+### Package `secevent`
+
+| Sentinel | Meaning |
+|---|---|
+| `secevent.ErrNoSink` | `secevent.NewDispatcher` got a `Config` without a `Sink`. A `ServerConfig.Security` with both `Sink` and `Dispatcher`, or a negative `QueueSize`, `MaxAggregateKeys` or `MaxRaw`, is a `*ConfigurationError` on field `Security` instead |
+
 ### Package `codec`
 
 | Sentinel | Meaning |

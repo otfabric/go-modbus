@@ -493,7 +493,7 @@ holds for every call of the application's code, on the client too: the metrics h
 
 `Stop()` and `Shutdown(ctx)` may be called from any goroutine, a `RequestHandler`
 method, a `ServerMetrics`, `ConnectionMetrics`, `ConnectionLifecycleMetrics` or
-`ConnectionCloseMetrics` hook, `AllowClient`, the server's `PDUTap` and the `Logger` included.
+`ConnectionCloseMetrics` hook, `AllowClient`, the server's `PDUTap`, the `Logger` and the sink of the security events ([API.md § 14](API.md#14-security-events-package-secevent)) included.
 Called from one of those, they wait for every goroutine of the server but the ones of
 the connection they were called on, and return; that connection's request is not
 answered and nothing more is dispatched on it. `Shutdown` with the handler's own

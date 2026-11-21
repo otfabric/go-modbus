@@ -1,5 +1,29 @@
 # go-modbus Releases
 
+## v1.21.0
+
+**Date:** 2026-11-21
+**Previous release:** v1.20.0
+
+A server can report what it observes about its connections as structured security events for a SIEM or an audit log: who connected, which connections it refused and why, how each one ended. It is the first part of the security-events work; requests, TLS failures and peer MAC addresses follow. No exported identifier is removed or changed, and no default changes: a server without `ServerConfig.Security` behaves as in v1.20.0, and with it the server only observes.
+
+### Added
+
+- Package `secevent`: `Event` (kind, category, severity, action, peer, connection id, protocol fields, detail, error, raw bytes, MITRE ATT&CK for ICS hint; `String` and a stable JSON form), the kind catalogue (`Kinds`, `Describe`), `Dispatcher` (non-blocking queue, merging of repeats inside a window, counted drops announced by `meta.events_dropped`, a sink that panics reported once, `Close` that may be called from the sink), `Stats`, `Policy`, and the sinks `SinkFunc`, `NewChannelSink`, `NewJSONLinesSink`, `MultiSink`, `FilterSink` and `LoggerSink`. `secevent.Report` and `secevent.PeerFromContext` give a handler the peer of its connection and a way to report events of its own.
+- `ServerConfig.Security` (a `*SecurityPolicy`, which embeds `secevent.Policy`) and `Server.SecurityStats`. Events: `conn.accepted`, `conn.unexpected` (`AllowClient`), `conn.rejected_limit` (`MaxClients`), `tls.handshake_evicted`, `conn.no_request`, `conn.idle_timeout`, `proto.bad_mbap`, `proto.bad_pdu`, `dos.write_stall`, `conn.closed` and `conn.accept_error`. On `tcp+tls` the peer carries the client certificate (subject, issuer, serial, expiry, SHA-256 fingerprint) and the Modbus role.
+- `Stop` and `Shutdown` deliver the events queued so far before they return, and may be called from the sink.
+
+### Documentation
+
+- API.md § 14, OBSERVABILITY.md, SECURITY.md, LIMITATIONS.md (what the events do not cover), ARCHITECTURE.md (the new package and its import rules).
+
+### Tests
+
+- `secevent`: ordering and defaults, a slow sink never blocking `Emit` and the drops announced, merging and its bounds, flush on close, a panicking sink, `Close` from the sink and with a context, the catalogue, the JSON form (golden), the sinks, the context reporter, the policy.
+- `server_events_test.go`: each event from a real connection (served, no request, refused, over the limit, idle, malformed MBAP, protocol error), a handler's context and reports, no reporter without a policy, the TLS peer, `Stop` from the sink and its flush, a shared dispatcher, invalid policies, the policy copied, `ServerConfig` still comparable, an accept error, the mapping of every close reason.
+
+---
+
 ## v1.20.0
 
 **Date:** 2026-11-21

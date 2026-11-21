@@ -18,6 +18,7 @@ import (
 
 	"github.com/otfabric/go-modbus/internal/adu"
 	inttrans "github.com/otfabric/go-modbus/internal/transport"
+	"github.com/otfabric/go-modbus/secevent"
 )
 
 // The accept loop waits after an Accept that failed before it tries again: 5 ms
@@ -60,6 +61,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			}
 			backoff = nextAcceptBackoff(backoff)
 			ms.logger.Warningf("failed to accept client connection (next attempt in %v): %v", backoff, err)
+			ms.emitAcceptError(run, err, backoff)
 			// The wait ends early when the server stops.
 			timer := time.NewTimer(backoff)
 			select {
@@ -72,6 +74,12 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		}
 		backoff = 0
 
+		var cid uint64
+		if run.events != nil {
+			cid = secevent.NextConnID()
+			ms.emitAccepted(run, cid, sock)
+		}
+
 		allowed := ms.allowClient(sock)
 		if share.released.Load() {
 			// A Shutdown called from AllowClient: no further callback.
@@ -82,6 +90,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			addr := sock.RemoteAddr().String()
 			ms.logger.Warningf("rejecting %v: not allowed", addr)
 			_ = sock.Close()
+			ms.emitRefused(run, cid, sock, RejectNotAllowed)
 			ms.reportRejected(addr, RejectNotAllowed)
 			if share.released.Load() {
 				return
@@ -113,7 +122,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		ms.lock.Unlock()
 
 		if accepted {
-			go ms.handleTCPClient(run, sock)
+			go ms.handleTCPClient(run, sock, cid)
 		}
 		if evicted != nil {
 			// Its handshake fails and its goroutine ends.
@@ -122,6 +131,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				"closing %v (TLS handshake not completed) for %v",
 				addr, sock.RemoteAddr())
 			_ = evicted.Close()
+			ms.emitRefused(run, 0, evicted, RejectTLSHandshakeEvicted)
 			ms.reportRejected(addr, RejectTLSHandshakeEvicted)
 		}
 		if !accepted {
@@ -130,6 +140,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				"reached, rejecting %v", addr)
 			_ = sock.Close()
 			if refused {
+				ms.emitRefused(run, cid, sock, RejectMaxClients)
 				ms.reportRejected(addr, RejectMaxClients)
 			}
 		}
@@ -259,7 +270,7 @@ func (ms *Server) dropPendingLocked(sock net.Conn) bool {
 // The connection's goroutines (this one and the reader of serveConn) hold
 // one count of run.wg between them, which a Shutdown called on either gives
 // back (see runShare).
-func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
+func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, cid uint64) {
 	share := ms.join(run, nil)
 	defer share.done()
 	defer ms.leave(run)
@@ -275,7 +286,8 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 
 	switch ms.transportType {
 	case modbusTCP:
-		ms.serveConn(run, share, connCtx, connCancel,
+		ce, ctx := ms.newConnEvents(run, connCtx, cid, sock, "", nil)
+		ms.serveConn(run, share, ctx, connCancel, ce,
 			newTCPTransport(sock, ms.conf.Timeout, ms.conf.Logger),
 			sock.RemoteAddr().String(), "")
 
@@ -297,7 +309,9 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 			_ = tlsSock.Close()
 		default:
 			effectiveConn = tlsSock
-			ms.serveConn(run, share, connCtx, connCancel,
+			state := tlsSock.ConnectionState()
+			ce, ctx := ms.newConnEvents(run, connCtx, cid, sock, clientRole, &state)
+			ms.serveConn(run, share, ctx, connCancel, ce,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
 		}
@@ -340,7 +354,7 @@ const serverPipelineDepth = 16
 // connection, so it must not run the application's code again after the
 // callback that called Shutdown, apart from the outcome of the request that
 // callback belongs to.
-func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Context, connCancel context.CancelFunc, t *inttrans.TCP, clientAddr, clientRole string) {
+func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Context, connCancel context.CancelFunc, ce *connEvents, t *inttrans.TCP, clientAddr, clientRole string) {
 	type inbound struct {
 		req      *adu.Request
 		txnID    uint16
@@ -371,6 +385,7 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		}
 		reason, err := cause.get()
 		ms.reportCloseReason(clientAddr, reason, err)
+		ms.emitClosed(run, ce, reason, err)
 	}()
 
 	// pending counts the requests read and not yet answered. It and the read
@@ -392,6 +407,9 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 				cause.set(readCloseReason(run.ctx, err))
 				connCancel()
 				return
+			}
+			if ce != nil {
+				ce.requests.Add(1)
 			}
 			var received time.Time
 			if ms.conf.PDUTap != nil {

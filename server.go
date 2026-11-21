@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/goid"
+	"github.com/otfabric/go-modbus/secevent"
 )
 
 // Modbus Role PEM OID (see R-21 of the MBAPS spec).
@@ -74,6 +75,13 @@ type ServerConfig struct {
 	// request the server dispatches, with the client's address and role (see
 	// ServerPDUTap). Nil (the default) disables it; nothing is copied then.
 	PDUTap ServerPDUTap
+	// Security, when set with a Sink or a Dispatcher, makes the server report
+	// what it observes about connections as events (see package secevent):
+	// accepted connections, the ones it refused and why, how each connection
+	// ended. Nil (the default) reports nothing and changes nothing. The policy
+	// is copied by NewServer. It is a pointer so that a ServerConfig stays
+	// comparable.
+	Security *SecurityPolicy
 }
 
 // CoilsRequest is passed to HandleCoils for both read (FC01) and write (FC05/FC15) requests.
@@ -172,7 +180,8 @@ var ErrNoResponse = errors.New("modbus: no response")
 // Stopping the server from a handler. A handler method may call Stop or
 // Shutdown, and so may a ServerMetrics, ConnectionMetrics,
 // ConnectionLifecycleMetrics or ConnectionCloseMetrics method,
-// ServerConfig.AllowClient, ServerConfig.PDUTap and the Logger.
+// ServerConfig.AllowClient, ServerConfig.PDUTap, the Logger and the sink of
+// the security events (ServerConfig.Security).
 // The call stops the server as a call from any other goroutine does: it stops
 // accepting, cancels the context of every connection and closes the
 // listener and the client sockets. Then it waits for the server's goroutines,
@@ -303,6 +312,7 @@ type Server struct {
 	// run is what the last Start created. The fields below it are copies of its
 	// members, written by Start under lock and kept after the server has stopped.
 	run         *serverRun
+	sec         *SecurityPolicy
 	wg          *sync.WaitGroup
 	tcpListener net.Listener
 	stopCancel  context.CancelFunc
@@ -320,6 +330,12 @@ type serverRun struct {
 	listener net.Listener
 	// wg counts the accept loop and the client goroutines of this cycle.
 	wg *sync.WaitGroup
+	// events is the dispatcher of the cycle's security events, nil when
+	// ServerConfig.Security delivers none. ownsEvents says whether the server
+	// created it (and closes it) or the application shared it. Set before the
+	// cycle's goroutines start, never changed.
+	events     *secevent.Dispatcher
+	ownsEvents bool
 	// goroutines maps the id of every goroutine of this cycle that runs the
 	// application's code (the accept loop, each connection's goroutine and
 	// its reader) to the share of wg it belongs to. Shutdown looks its caller
@@ -389,6 +405,15 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 		handler: reqHandler,
 		metrics: conf.Metrics,
 		wg:      &sync.WaitGroup{},
+	}
+
+	if conf.Security != nil {
+		if err = conf.Security.valid(); err != nil {
+			return nil, err
+		}
+		sec := *conf.Security
+		ms.sec = &sec
+		ms.conf.Security = ms.sec
 	}
 
 	splitURL = strings.SplitN(ms.conf.URL, "://", 2)
@@ -468,6 +493,11 @@ func (ms *Server) Start() (err error) {
 			run.cancel()
 			return
 		}
+		if err = ms.startEvents(run); err != nil {
+			_ = run.listener.Close()
+			run.cancel()
+			return
+		}
 		ms.tcpListener = run.listener
 		// The accept loop is part of what Stop and Shutdown wait for.
 		run.wg.Add(1)
@@ -525,6 +555,23 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 	own := run.goroutines[caller]
 	ms.lock.Unlock()
 
+	// The security events the cycle's goroutines still queue are delivered
+	// before Shutdown returns, unless it was called from the sink, which
+	// cannot wait for itself: the dispatcher then ends after the sink returns.
+	inSink := run.events.OnGoroutine()
+	done := make(chan struct{})
+	go func() {
+		run.wg.Wait()
+		if run.ownsEvents {
+			if inSink {
+				run.events.CloseNoWait()
+			} else {
+				_ = run.events.Close(context.Background())
+			}
+		}
+		close(done)
+	}()
+
 	if own != nil {
 		// Called from the application's code on one of the cycle's goroutines:
 		// do not wait for it.
@@ -533,12 +580,6 @@ func (ms *Server) Shutdown(ctx context.Context) error {
 			return err
 		}
 	}
-
-	done := make(chan struct{})
-	go func() {
-		run.wg.Wait()
-		close(done)
-	}()
 
 	select {
 	case <-done:

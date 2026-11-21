@@ -1903,7 +1903,7 @@ An error returned by a handler method is sent to the client as the matching Modb
 
 Ownership. The slices in a request (Args, WriteValues, Data, Requests, Records) are the handler's: the server made them for this call and does not use them again. A slice, or a response struct, that a handler returns is read by the server after the handler has returned, while it encodes the response, and not kept after that: return a copy of shared state, not a view of it (h.regs\[a:b]) that another call may be writing to. This holds for the optional handler interfaces as well.
 
-Stopping the server from a handler. A handler method may call Stop or Shutdown, and so may a ServerMetrics, ConnectionMetrics, ConnectionLifecycleMetrics or ConnectionCloseMetrics method, ServerConfig.AllowClient, ServerConfig.PDUTap and the Logger. The call stops the server as a call from any other goroutine does: it stops accepting, cancels the context of every connection and closes the listener and the client sockets. Then it waits for the server's goroutines, the handlers running for other connections included, except the ones of the connection it was called on (or the accept loop, for ServerConfig.AllowClient, a ConnectionMetrics method or a log entry of the accept loop). Stop returns once they have ended. Shutdown also returns when its context ends, and at once when that context is already done: Shutdown with the handler's own context, which the shutdown cancels, returns context.Canceled without waiting.
+Stopping the server from a handler. A handler method may call Stop or Shutdown, and so may a ServerMetrics, ConnectionMetrics, ConnectionLifecycleMetrics or ConnectionCloseMetrics method, ServerConfig.AllowClient, ServerConfig.PDUTap, the Logger and the sink of the security events (ServerConfig.Security). The call stops the server as a call from any other goroutine does: it stops accepting, cancels the context of every connection and closes the listener and the client sockets. Then it waits for the server's goroutines, the handlers running for other connections included, except the ones of the connection it was called on (or the accept loop, for ServerConfig.AllowClient, a ConnectionMetrics method or a log entry of the accept loop). Stop returns once they have ended. Shutdown also returns when its context ends, and at once when that context is already done: Shutdown with the handler's own context, which the shutdown cancels, returns context.Canceled without waiting.
 
 When the call returns, the listener and the client sockets are closed and every other goroutine of the server has ended. The caller's connection is still served on the caller's goroutine until the request in progress is complete: that request is not answered (its connection is closed), its handler is still called, with its context cancelled, when the call came from OnRequest, and its outcome is reported to ServerMetrics as usual. Then no further request of the connection is dispatched and its goroutines end; they may still write log entries. A Stop on any other goroutine (go srv.Stop() from a handler, say) waits for them too, and so for the handler that started it to return.
 
@@ -2033,6 +2033,18 @@ RuntimePlanValidationError is returned when a plan fails validation.
 func (e *RuntimePlanValidationError) Error() string
 ```
 
+### type SecurityPolicy
+
+```go
+type SecurityPolicy struct {
+	secevent.Policy
+}
+```
+
+SecurityPolicy configures what an endpoint reports about the connections and requests it sees, and, in later releases, what it refuses. The zero value reports nothing and changes nothing: an endpoint behaves as if it had no policy until a Sink or a Dispatcher is set.
+
+See package secevent for the events and how they are delivered, and ServerConfig.Security for what a server reports.
+
 ### type Server
 
 ```go
@@ -2067,6 +2079,14 @@ func (ms *Server) Addr() net.Addr
 ```
 
 Addr returns the address the server listens on, with the port the system chose when the URL names port 0. It is nil before the first Start; after a stop it is the address the server last listened on.
+
+#### func (Server) SecurityStats
+
+```go
+func (ms *Server) SecurityStats() secevent.Stats
+```
+
+SecurityStats returns the counters of the event dispatcher of the current run of the server, or of the last one after it stopped: how many events of each kind and category it saw, delivered, merged and dropped. It is the zero Stats when ServerConfig.Security delivers no events or the server has not been started.
 
 #### func (Server) Shutdown
 
@@ -2134,6 +2154,13 @@ type ServerConfig struct {
 	// request the server dispatches, with the client's address and role (see
 	// ServerPDUTap). Nil (the default) disables it; nothing is copied then.
 	PDUTap ServerPDUTap
+	// Security, when set with a Sink or a Dispatcher, makes the server report
+	// what it observes about connections as events (see package secevent):
+	// accepted connections, the ones it refused and why, how each connection
+	// ended. Nil (the default) reports nothing and changes nothing. The policy
+	// is copied by NewServer. It is a pointer so that a ServerConfig stays
+	// comparable.
+	Security *SecurityPolicy
 }
 ```
 

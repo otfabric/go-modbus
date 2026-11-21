@@ -37,6 +37,7 @@ defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
 11. [Codec API](#11-codec-api)
 12. [Batch reads (package batch)](#12-batch-reads-package-batch)
 13. [Ownership of slices](#13-ownership-of-slices)
+14. [Security events (package secevent)](#14-security-events-package-secevent) — also [SECURITY.md](SECURITY.md)
 
 ---
 
@@ -1203,6 +1204,10 @@ type ServerConfig struct {
     // server dispatches, with the client's address and role. Nil (default)
     // disables it; nothing is copied then. See § 6 "ServerPDUTap".
     PDUTap ServerPDUTap
+
+    // Security, when set with a Sink or a Dispatcher, makes the server report
+    // security events (§ 14). Nil (default) reports nothing.
+    Security *SecurityPolicy
 }
 
 type ClientFilter interface {
@@ -3085,3 +3090,120 @@ func (h *handler) HandleHoldingRegisters(ctx context.Context, req *modbus.Holdin
 
 The tests are in `ownership_test.go`; `TestPDUTap_ContextAndOwnership` and
 `TestAllowedFunctionCodes_CopiedAndGrouped` cover the tap and the allow-list.
+
+---
+
+## 14. Security events (package secevent)
+
+A server can report what it observes about connections as structured events:
+who connected, which connections it refused and why, how each one ended. It is
+off until `ServerConfig.Security` has a sink, and then it only observes: no
+connection or request is treated differently.
+
+```go
+sink := secevent.NewJSONLinesSink(os.Stdout) // or secevent.SinkFunc(func(e secevent.Event) { ... })
+srv, err := modbus.NewServer(&modbus.ServerConfig{
+    URL:      "tcp://0.0.0.0:502",
+    Security: &modbus.SecurityPolicy{Policy: secevent.Policy{Sink: sink}},
+}, handler)
+```
+
+`SecurityPolicy` embeds `secevent.Policy`:
+
+| Field | Meaning |
+|---|---|
+| `Sink` | receives the events; the server creates a `Dispatcher` for it when it starts and closes it when it stops |
+| `Dispatcher` | a dispatcher shared with other endpoints (`secevent.NewDispatcher`), used instead of `Sink`; the server does not close it |
+| `QueueSize` | events that may wait for the sink; default 1024 |
+| `AggregateWindow` | repeats of an event inside this window are delivered as one event with `Count` and `FirstSeen`; default 1 s, negative turns merging off |
+| `MaxAggregateKeys` | bound on the memory of the merging; default 4096 |
+| `MaxRaw` | bytes of `Event.Raw` kept; default 64 |
+
+`ServerConfig.Security` is a pointer, so a `ServerConfig` stays comparable;
+`NewServer` copies the policy and reports an invalid one as a
+`*ConfigurationError` on field `Security`. `Server.SecurityStats()` returns the
+counters of the current or last run.
+
+### Delivery
+
+- The server never waits for the sink. A `Dispatcher` queues the event and
+  calls `Sink.OnEvent` from a goroutine of its own, one event at a time. When
+  the queue is full the event is dropped and counted (`Stats.Dropped`), and the
+  next event the sink receives is preceded by a `meta.events_dropped` event
+  whose `Count` is the number lost.
+- The first occurrence of an event is delivered at once; repeats of the same
+  kind, connection and protocol fields inside `AggregateWindow` are counted and
+  delivered together when the window ends. `meta.*` events are never merged.
+- A sink that does not return normally is stopped there and logged with its
+  stack; a `meta.sink_panic` event is delivered once.
+- `Stop` and `Shutdown` wait until the events queued so far have been delivered
+  (a sink that never returns holds `Stop` as a handler that never returns
+  does). They may be called from the sink: they do not wait for it, and the
+  queued events are delivered after it returns.
+- With no `Sink` and no `Dispatcher` nothing is created or queued.
+
+An event holds the time, the kind, its category, severity and action, the
+connection id, the peer (address, and for `tcp+tls` the certificate subject,
+issuer, serial, expiry and SHA-256 fingerprint, and the Modbus role), a one-line
+`Detail` without register values, the underlying error, and a MITRE ATT&CK for
+ICS hint where one applies. `Event.String` gives one line and `json.Marshal` a
+stable JSON object (golden-tested; field names are fixed).
+
+### Events a server reports
+
+The kinds are part of the API and are never renamed (`secevent.Kinds` lists the
+catalogue). Severity is the default; `Action` says what the server did.
+
+| Kind | Severity | When |
+|---|---|---|
+| `conn.accepted` | info | every accepted connection, before any check on it (on `tcp+tls`, before the handshake) |
+| `conn.unexpected` | warning | `AllowClient` refused the peer (rejected) |
+| `conn.rejected_limit` | warning | every `MaxClients` slot was taken (rejected) |
+| `tls.handshake_evicted` | notice | a connection that had not completed its TLS handshake was closed to make room (rejected) |
+| `conn.no_request` | notice | a connection ended, or idled out, without one request read from it: a connect scan, a probe |
+| `conn.idle_timeout` | info | a connection that had sent requests idled for `Timeout` (disconnected) |
+| `proto.bad_mbap` | warning | an MBAP header the server cannot frame (disconnected) |
+| `proto.bad_pdu` | warning | a request that violated the protocol: a PDU whose length does not match its function code (disconnected) |
+| `dos.write_stall` | warning | a response could not be written within `Timeout`: a peer that does not read (disconnected) |
+| `conn.closed` | info | the end of every served connection: reason, duration, requests |
+| `conn.accept_error` | critical | the listener's `Accept` failed; the server retries |
+| `meta.events_dropped` | warning | `Count` events were lost to a full queue |
+| `meta.sink_panic` | warning | the sink did not return normally |
+
+A connection id (`Event.ConnID`, from `secevent.NextConnID`) ties the events of
+one connection together; events that belong to none have id 0.
+
+An event says what the server observed, not what an attacker did: a refused
+connection may be a scanner or a misconfigured master. A TLS handshake that
+fails is not yet reported as an event (it is logged, as before).
+
+### From a handler
+
+A handler receives the connection's context. With a sink configured it carries
+the peer and a reporter:
+
+```go
+func (h *Handler) HandleHoldingRegisters(ctx context.Context, req *modbus.HoldingRegistersRequest) ([]uint16, error) {
+    if peer, ok := secevent.PeerFromContext(ctx); ok { /* peer.RemoteAddr, peer.TLS, peer.Role */ }
+    if req.IsWrite && readOnly(req.Addr) {
+        secevent.Report(ctx, secevent.Event{
+            Kind: "app.write_denied", Severity: secevent.SeverityWarning,
+            Fields: secevent.FieldUnitID | secevent.FieldAddress, UnitID: req.UnitID, Address: req.Addr,
+            Detail: "write to a read-only register",
+        })
+        return nil, modbus.ErrIllegalDataAddress
+    }
+    ...
+}
+```
+
+`secevent.Report` fills time, transport, connection id and peer from the
+connection and returns false, doing nothing, when the server has no sink. Keep
+register values and payloads out of `Detail`.
+
+### Sinks
+
+`secevent.SinkFunc`, `NewChannelSink` (non-blocking, counts drops),
+`NewJSONLinesSink` (one JSON object per line to any `io.Writer`), `MultiSink`,
+`FilterSink` (minimum severity, optional categories) and `LoggerSink`
+(maps severity onto a `Logger`, prefix `[CYBER]`).

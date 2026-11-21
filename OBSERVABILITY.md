@@ -170,7 +170,20 @@ A server whose `Accept` fails (other than because it is stopping) logs a warning
 with the error and the wait before the next attempt, `failed to accept client
 connection (next attempt in 5ms): …`: 5 ms after the first failure, doubling to
 at most 1 s, so a listener that keeps failing produces about one line a second.
-There is no metrics hook for accept errors.
+There is no metrics hook for accept errors. With `ServerConfig.Security` the failure is also a `conn.accept_error` event ([API.md § 14](API.md#14-security-events-package-secevent)).
+
+## Security events
+
+`ServerConfig.Security` makes the server report connection-level observations as
+structured events (`secevent.Event`) to a sink: accepted, refused (with the
+reason), ended (with the reason), a connection that never sent a request, a
+malformed frame, accept errors. They are separate from the logger, which stays
+as it is, and from the metrics hooks, which count requests: an event carries the
+peer, the certificate and role on `tcp+tls`, a connection id and a severity,
+and is meant for a SIEM or an audit log. Delivery never blocks the server; a
+full queue drops events and says how many. Events do not carry register values.
+`secevent.LoggerSink` forwards them to a `Logger`. See
+[API.md § 14](API.md#14-security-events-package-secevent).
 
 ## Related
 

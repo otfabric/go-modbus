@@ -9,4 +9,5 @@ Generated from the source of `github.com/otfabric/go-modbus` with `docsync api`;
 | [github.com/otfabric/go-modbus](go-modbus.md) |  |
 | [github.com/otfabric/go-modbus/batch](batch.md) | Package batch plans, executes and decodes sets of Modbus reads. |
 | [github.com/otfabric/go-modbus/codec](codec.md) |  |
+| [github.com/otfabric/go-modbus/secevent](secevent.md) | Package secevent carries security-relevant observations of a Modbus endpoint to the application: who connected, which connections the server refused and why, how each one ended. |
 | [github.com/otfabric/go-modbus/sunspec](sunspec.md) | Package sunspec provides SunSpec marker detection and model chain discovery for Modbus devices. |

@@ -47,6 +47,14 @@ completed its handshake. The server has no per-source connection limit: peers
 that keep opening connections without handshaking can still delay clients
 from the same host, or from many hosts a client whose handshake is slow.
 
+The security events of `ServerConfig.Security` ([API.md § 14](API.md#14-security-events-package-secevent))
+cover connections: accepted, refused, ended. They do not yet cover TLS handshake
+failures (logged only, as before), requests (exceptions, function codes,
+sweeps), floods or the MAC address of a peer, and nothing is refused on the
+strength of an event. Delivery is best effort: a full queue drops events and the
+sink is told how many. Kernel-level attacks (SYN floods, half-open connections)
+are not visible to the process.
+
 ## Custom dialer
 
 - `Config.Dialer` covers the network transports only; `rtu` and `ascii` open
