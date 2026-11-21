@@ -1,5 +1,30 @@
 # go-modbus Releases
 
+## v1.21.1
+
+**Date:** 2026-11-21
+**Previous release:** v1.21.0
+
+Fixes to the security events of v1.21.0. No exported identifier is added, removed or changed.
+
+### Fixed
+
+- A `Stop` or `Shutdown` called from `AllowClient`, a handler, the `Logger` or another callback of a connection skipped the `conn.closed` of that connection, which the server had reported accepted. The callback's goroutine now reports it before the shutdown stops waiting for that goroutine.
+- `secevent.ConnReporter` shared the `TLSPeer` of the connection with the events, `Base`, `Peer` and `PeerFromContext`: a handler or a sink that changed it changed the certificate details of later events, and could race with them. Each now gets a copy.
+- `dos.write_stall` was reported for every response write that failed; it is now reported only for a write that ran out of `Timeout`. A reset or a broken pipe is reported by `conn.closed` alone.
+- `secevent.Stats.Delivered` did not count the `meta.sink_panic` event delivered to the sink.
+
+### Documentation
+
+- API.md § 14: the pairing of `conn.accepted` with its end when a callback stops the server, the copied `TLSPeer`, `dos.write_stall`, `Stats.Delivered`.
+
+### Tests
+
+- `server_events_test.go`: `Stop` from `AllowClient` (allowing and refusing), from a handler and from the `Logger` during a failed TLS handshake; write failures with and without a timeout.
+- `secevent`: the reporter's own `TLSPeer`; `Delivered` with a panicking sink.
+
+---
+
 ## v1.21.0
 
 **Date:** 2026-11-21

@@ -72,15 +72,28 @@ type ConnReporter struct {
 // base supplies what they share: Protocol, Transport, Role, ConnID, Local and
 // Peer.
 func NewConnReporter(d *Dispatcher, base Event) *ConnReporter {
+	base.Peer.TLS = copyTLS(base.Peer.TLS)
 	return &ConnReporter{d: d, base: base}
 }
 
 // Base returns a copy of the event that carries what every event of the
-// connection shares.
+// connection shares. The copy has a TLSPeer of its own: changing it changes
+// nothing in the reporter.
 func (c *ConnReporter) Base() Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.base
+	b := c.base
+	b.Peer.TLS = copyTLS(b.Peer.TLS)
+	return b
+}
+
+// copyTLS returns a copy of t, nil for nil.
+func copyTLS(t *TLSPeer) *TLSPeer {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	return &c
 }
 
 // Peer returns the peer of the connection.

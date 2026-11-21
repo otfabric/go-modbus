@@ -345,10 +345,12 @@ func (d *Dispatcher) reportSinkFailure(fail *callback.Failure) {
 		d.logf("secevent: the sink did not return normally: %v\n%s", fail.Value, fail.Stack)
 	}
 	n := d.synthetic(KindMetaSinkPanic, 0, fmt.Sprintf("the sink did not return normally: %v", fail.Value))
-	if again, _ := callback.Run("secevent.Sink", func() error {
+	again, _ := callback.Run("secevent.Sink", func() error {
 		d.sink.OnEvent(n)
 		return nil
-	}); again != nil {
+	})
+	d.delivered.Add(1)
+	if again != nil {
 		d.sinkFailures.Add(1)
 	}
 }

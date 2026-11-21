@@ -222,7 +222,7 @@ NewConnReporter returns the Reporter of a connection whose events go to d. base 
 func (c *ConnReporter) Base() Event
 ```
 
-Base returns a copy of the event that carries what every event of the connection shares.
+Base returns a copy of the event that carries what every event of the connection shares. The copy has a TLSPeer of its own: changing it changes nothing in the reporter.
 
 #### func (ConnReporter) Peer
 

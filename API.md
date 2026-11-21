@@ -3143,7 +3143,8 @@ counters of the current or last run.
   window is open.
 - A sink that does not return normally is stopped there and logged with its
   stack; a `meta.sink_panic` event is delivered once. `Stats.SinkFailures`
-  counts every call that failed, that one included.
+  counts every call that failed, that one included, and `Stats.Delivered`
+  every call made.
 - `Stop` and `Shutdown` wait until the events queued so far have been
   delivered, for at most 5 s: a sink that does not return is then left behind
   with a warning in the log, and the events still queued are lost. They may be
@@ -3173,7 +3174,7 @@ catalogue). Severity is the default; `Action` says what the server did.
 | `conn.idle_timeout` | info | a connection that had sent requests idled for `Timeout` (disconnected) |
 | `proto.bad_mbap` | warning | an MBAP header the server cannot frame (disconnected) |
 | `proto.bad_pdu` | warning | a request that violated the protocol: a PDU whose length does not match its function code (disconnected) |
-| `dos.write_stall` | warning | a response could not be written within `Timeout`: a peer that does not read (disconnected) |
+| `dos.write_stall` | warning | a response write ran out of `Timeout`: a peer that does not read (disconnected). A write that fails otherwise (a reset, a broken pipe) is reported by `conn.closed` alone |
 | `conn.closed` | info | the end of every connection not refused: reason, duration, requests; for one whose TLS handshake failed, or that the server closed because it was stopping, `Detail` says so (disconnected) |
 | `conn.accept_error` | critical | the listener's `Accept` failed; the server retries |
 | `meta.events_dropped` | warning | `Count` events were lost to a full queue |
@@ -3182,7 +3183,12 @@ catalogue). Severity is the default; `Action` says what the server did.
 A connection id (`Event.ConnID`, from `secevent.NextConnID`) ties the events of
 one connection together; events that belong to none have id 0. Every
 `conn.accepted` is followed by exactly one `conn.closed`, `conn.unexpected`,
-`conn.rejected_limit` or `tls.handshake_evicted` with its id (merging aside).
+`conn.rejected_limit` or `tls.handshake_evicted` with its id (merging aside),
+also when `Stop` is called from `AllowClient`, a handler or another callback
+of that connection.
+
+The `TLSPeer` of an event, of `PeerFromContext` and of a reporter's `Peer` is
+a copy: changing it changes no other event.
 
 An event says what the server observed, not what an attacker did: a refused
 connection may be a scanner or a misconfigured master. A TLS handshake that

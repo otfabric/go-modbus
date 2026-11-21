@@ -312,6 +312,9 @@ func TestDispatcherSinkPanicIsReportedOnce(t *testing.T) {
 	if st.SinkFailures != 2 { // the event, then the meta.sink_panic event itself
 		t.Errorf("SinkFailures = %d, want 2", st.SinkFailures)
 	}
+	if st.Delivered != 5 { // every sink call, meta.sink_panic included
+		t.Errorf("Delivered = %d, want 5", st.Delivered)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	panics := 0
@@ -604,6 +607,35 @@ func TestContextReporter(t *testing.T) {
 	}
 	if rep.Base().ConnID != 5 {
 		t.Error("Base")
+	}
+}
+
+// The TLS peer of a reporter is its own: neither the base it was made from nor
+// a copy it handed out changes what later events carry.
+func TestConnReporterOwnsTheTLSPeer(t *testing.T) {
+	d, c := newTestDispatcher(t, Config{AggregateWindow: -1})
+	tp := &TLSPeer{Subject: "CN=original"}
+	rep := NewConnReporter(d, Event{ConnID: 1, Peer: PeerInfo{TLS: tp}})
+	tp.Subject = "CN=base changed"
+	p := rep.Peer()
+	p.TLS.Subject = "CN=peer changed"
+	b := rep.Base()
+	b.Peer.TLS.Subject = "CN=base copy changed"
+	rep.ReportEvent(Event{Kind: "app.k"})
+	waitFor(t, "the event", func() bool { return len(c.all()) == 1 })
+	e := c.all()[0]
+	if got := rep.Peer().TLS.Subject; got != "CN=original" {
+		t.Errorf("reporter subject %q", got)
+	}
+	if e.Peer.TLS.Subject != "CN=original" {
+		t.Errorf("event subject %q", e.Peer.TLS.Subject)
+	}
+	e.Peer.TLS.Subject = "CN=sink changed"
+	if got := rep.Peer().TLS.Subject; got != "CN=original" {
+		t.Errorf("a sink changed the reporter: %q", got)
+	}
+	if NewConnReporter(d, Event{}).Peer().TLS != nil {
+		t.Error("a plain connection got a TLS peer")
 	}
 }
 

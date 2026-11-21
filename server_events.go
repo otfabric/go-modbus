@@ -7,9 +7,12 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -58,6 +61,9 @@ type connEvents struct {
 	rep      *secevent.ConnReporter
 	started  time.Time
 	requests atomic.Int64
+	// ended makes the closing events of the connection reported once: by the
+	// connection's goroutine, or by a Shutdown called on it (runShare.final).
+	ended sync.Once
 }
 
 // eventBase returns the event that carries what every event of a connection
@@ -148,6 +154,10 @@ func (ms *Server) emitClosed(run *serverRun, ce *connEvents, reason CloseReason,
 	if ce == nil {
 		return
 	}
+	ce.ended.Do(func() { ms.emitClosedOnce(run, ce, reason, err) })
+}
+
+func (ms *Server) emitClosedOnce(run *serverRun, ce *connEvents, reason CloseReason, err error) {
 	n := ce.requests.Load()
 	spec := ce.rep.Base()
 	spec.Err = err
@@ -168,7 +178,9 @@ func (ms *Server) emitClosed(run *serverRun, ce *connEvents, reason CloseReason,
 		emit(secevent.KindProtoBadMBAP, secevent.ActionDisconnected, "the MBAP header cannot be framed")
 	case reason == CloseProtocolError:
 		emit(secevent.KindProtoBadPDU, secevent.ActionDisconnected, "a request violated the protocol")
-	case reason == CloseWriteFailed:
+	case reason == CloseWriteFailed && errors.Is(err, os.ErrDeadlineExceeded):
+		// Only a write that ran out of time is a stall; a reset or a broken
+		// pipe is reported as the close alone.
 		emit(secevent.KindDoSWriteStall, secevent.ActionDisconnected, "a response could not be written in time")
 	}
 	action := secevent.ActionDisconnected

@@ -5,11 +5,15 @@ package modbus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
 	"os"
+	"slices"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -731,5 +735,162 @@ func TestServerEvents_StuckSinkDoesNotHoldStop(t *testing.T) {
 	}
 	if !log.has("did not take the queued events") {
 		t.Error("the flush timeout was not logged")
+	}
+}
+
+// Only a response write that ran out of time is a write stall; a reset or a
+// broken pipe is reported as the close alone.
+func TestServerEvents_WriteFailureIsAStallOnlyOnTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want []secevent.Kind
+	}{
+		{os.ErrDeadlineExceeded, []secevent.Kind{secevent.KindDoSWriteStall, secevent.KindConnClosed}},
+		{&net.OpError{Op: "write", Err: os.NewSyscallError("write", syscall.ECONNRESET)}, []secevent.Kind{secevent.KindConnClosed}},
+		{io.ErrClosedPipe, []secevent.Kind{secevent.KindConnClosed}},
+	} {
+		c := &evCollector{}
+		ms, err := NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Logger: NopLogger(),
+			Security: &SecurityPolicy{Policy: secevent.Policy{Sink: c, AggregateWindow: -1}}}, holdingOne())
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := &serverRun{}
+		if err := ms.startEvents(run); err != nil {
+			t.Fatal(err)
+		}
+		a, b := net.Pipe()
+		ce, _ := ms.newConnEvents(run, context.Background(), 5, a, "", nil)
+		ce.requests.Store(2)
+		ms.emitClosed(run, ce, CloseWriteFailed, tc.err)
+		ms.emitClosed(run, ce, CloseWriteFailed, tc.err) // reported once
+		_ = run.events.Close(context.Background())
+		_, _ = a.Close(), b.Close()
+		if got := c.kinds(); !slices.Equal(got, tc.want) {
+			t.Errorf("%v: events %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+// wantAcceptedThenClosed checks that the connection from local was reported
+// accepted, then closed once, with the same id.
+func wantAcceptedThenClosed(t *testing.T, c *evCollector, local net.Addr) secevent.Event {
+	t.Helper()
+	peer := addrPortOf(local)
+	var acc, closed []secevent.Event
+	for _, e := range c.snapshot() {
+		if e.Peer.RemoteAddr != peer {
+			continue
+		}
+		switch e.Kind {
+		case secevent.KindConnAccepted:
+			acc = append(acc, e)
+		case secevent.KindConnClosed, secevent.KindConnUnexpected:
+			closed = append(closed, e)
+		default: // the other kinds say nothing about the pairing
+		}
+	}
+	if len(acc) != 1 || len(closed) != 1 || acc[0].ConnID != closed[0].ConnID || acc[0].ConnID == 0 {
+		t.Fatalf("accepted %+v, ended %+v; want one of each with the same id\nall: %v", acc, closed, c.kinds())
+	}
+	return closed[0]
+}
+
+// A Stop called from AllowClient still reports the end of the connection it
+// was deciding on, whatever AllowClient answers.
+func TestServerEvents_StopFromAllowClient(t *testing.T) {
+	for _, allow := range []bool{true, false} {
+		c := &evCollector{}
+		stopped := make(chan error, 1)
+		var ms *Server
+		var err error
+		ms, err = NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Logger: NopLogger(),
+			Security: &SecurityPolicy{Policy: secevent.Policy{Sink: c, AggregateWindow: -1}},
+			AllowClient: ClientFilterFunc(func(net.Addr) bool {
+				stopped <- ms.Stop()
+				return allow
+			}),
+		}, holdingOne())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ms.Start(); err != nil {
+			t.Fatal(err)
+		}
+		conn, err := net.Dial("tcp", ms.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := <-stopped; err != nil {
+			t.Fatal(err)
+		}
+		closed := wantAcceptedThenClosed(t, c, conn.LocalAddr())
+		if closed.Kind != secevent.KindConnClosed || closed.Detail != "closed unserved: the server is stopping" {
+			t.Errorf("allow=%v: %+v", allow, closed)
+		}
+		_ = conn.Close()
+	}
+}
+
+// A Stop called from a handler still reports the end of the handler's
+// connection.
+func TestServerEvents_StopFromHandler(t *testing.T) {
+	c := &evCollector{}
+	returned := make(chan error, 1)
+	h := &blockingHandler{}
+	ms, conn := startCallbackServer(t, h, eventsOn(c))
+	h.fn = func(context.Context) { returned <- ms.Stop() }
+	sendReadRequest(t, conn)
+	if err := <-returned; err != nil {
+		t.Fatal(err)
+	}
+	closed := wantAcceptedThenClosed(t, c, conn.LocalAddr())
+	if closed.Kind != secevent.KindConnClosed || closed.Action != secevent.ActionObserved {
+		t.Errorf("closed: %+v", closed)
+	}
+}
+
+// stopLogger calls stop on its first warning that contains match.
+type stopLogger struct {
+	match string
+	once  sync.Once
+	stop  func()
+}
+
+func (l *stopLogger) Debugf(string, ...any) {}
+func (l *stopLogger) Infof(string, ...any)  {}
+func (l *stopLogger) Errorf(string, ...any) {}
+func (l *stopLogger) Warnf(format string, args ...any) {
+	if strings.Contains(fmt.Sprintf(format, args...), l.match) {
+		l.once.Do(l.stop)
+	}
+}
+
+// A Stop called from the Logger while the TLS handshake failure is logged
+// still reports the end of that connection, once.
+func TestServerEvents_StopWhileLoggingHandshakeFailure(t *testing.T) {
+	c := &evCollector{}
+	stopped := make(chan error, 1)
+	log := &stopLogger{match: "TLS handshake with"}
+	dev := e2eNewDevice()
+	p := e2eStart(t, "tcp+tls", dev, e2eOpts{noOpen: true, server: chain(eventsOn(c), func(conf *ServerConfig) {
+		conf.Logger = log
+	})})
+	log.stop = func() { stopped <- p.server.Stop() }
+	bad := dialRaw(t, p.server)
+	if _, err := bad.Write([]byte("GET / HTTP/1.0\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(e2eWait):
+		t.Fatal("Stop from the Logger did not return")
+	}
+	closed := wantAcceptedThenClosed(t, c, bad.LocalAddr())
+	if closed.Kind != secevent.KindConnClosed || closed.Action != secevent.ActionDisconnected {
+		t.Errorf("closed: %+v", closed)
 	}
 }

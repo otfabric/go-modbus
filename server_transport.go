@@ -79,6 +79,15 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			cid = secevent.NextConnID()
 			ms.emitAccepted(run, cid, sock)
 		}
+		// end reports the outcome of sock once: below, or from a Shutdown that
+		// a callback of this loop calls before then (runShare.final).
+		var ended sync.Once
+		end := func(f func()) { ended.Do(f) }
+		if cid != 0 {
+			share.setFinal(func() {
+				end(func() { ms.emitUnserved(run, cid, sock, "closed unserved: the server is stopping", nil) })
+			})
+		}
 
 		allowed := ms.allowClient(sock)
 		if share.released.Load() {
@@ -90,7 +99,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			addr := sock.RemoteAddr().String()
 			ms.logger.Warningf("rejecting %v: not allowed", addr)
 			_ = sock.Close()
-			ms.emitRefused(run, cid, sock, RejectNotAllowed)
+			end(func() { ms.emitRefused(run, cid, sock, RejectNotAllowed) })
 			ms.reportRejected(addr, RejectNotAllowed)
 			if share.released.Load() {
 				return
@@ -133,6 +142,8 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		ms.lock.Unlock()
 
 		if accepted {
+			// Its goroutine reports its end.
+			share.setFinal(nil)
 			go ms.handleTCPClient(run, sock, cid)
 		}
 		if evicted != nil {
@@ -151,11 +162,11 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				"reached, rejecting %v", addr)
 			_ = sock.Close()
 			if refused {
-				ms.emitRefused(run, cid, sock, RejectMaxClients)
+				end(func() { ms.emitRefused(run, cid, sock, RejectMaxClients) })
 				ms.reportRejected(addr, RejectMaxClients)
 			} else {
 				// Accepted while the server was stopping.
-				ms.emitUnserved(run, cid, sock, "closed unserved: the server is stopping", nil)
+				end(func() { ms.emitUnserved(run, cid, sock, "closed unserved: the server is stopping", nil) })
 			}
 		}
 		if share.released.Load() {
@@ -302,11 +313,24 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, cid uint64) {
 	switch ms.transportType {
 	case modbusTCP:
 		ce, ctx := ms.newConnEvents(run, connCtx, cid, sock, "", nil)
+		ms.finalClosed(run, share, ce)
 		ms.serveConn(run, share, ctx, connCancel, ce,
 			newTCPTransport(sock, ms.conf.Timeout, ms.conf.Logger),
 			sock.RemoteAddr().String(), "")
 
 	case modbusTCPOverTLS:
+		if cid != 0 {
+			// Until it is served, a connection still pending when a Shutdown
+			// is called on this goroutine was not served.
+			share.setFinal(func() {
+				ms.lock.Lock()
+				pending := ms.dropPendingLocked(sock)
+				ms.lock.Unlock()
+				if pending {
+					ms.emitUnserved(run, cid, sock, "the TLS handshake ended: the server is stopping", nil)
+				}
+			})
+		}
 		tlsSock, clientRole, err = ms.startTLS(sock)
 		admitted := false
 		if err == nil {
@@ -337,6 +361,7 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, cid uint64) {
 			effectiveConn = tlsSock
 			state := tlsSock.ConnectionState()
 			ce, ctx := ms.newConnEvents(run, connCtx, cid, sock, clientRole, &state)
+			ms.finalClosed(run, share, ce)
 			ms.serveConn(run, share, ctx, connCancel, ce,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
@@ -357,6 +382,16 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, cid uint64) {
 // serverPipelineDepth is the number of requests a client may have sent ahead of
 // the one being served before the server stops reading from its socket.
 const serverPipelineDepth = 16
+
+// finalClosed makes a Shutdown called on the connection's goroutines report
+// its end (see runShare.final), which the goroutines then no longer do.
+func (ms *Server) finalClosed(run *serverRun, share *runShare, ce *connEvents) {
+	if ce == nil {
+		share.setFinal(nil)
+		return
+	}
+	share.setFinal(func() { ms.emitClosed(run, ce, CloseServerStopped, nil) })
+}
 
 // serveConn serves one Modbus/TCP connection.
 //

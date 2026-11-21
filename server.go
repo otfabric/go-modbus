@@ -361,13 +361,34 @@ type runShare struct {
 	// goroutines then make no further callback that the shutdown would not
 	// wait for: no request is dispatched and no response is written.
 	released atomic.Bool
+
+	// final, when set, reports the end of the connection the share's
+	// goroutines are handling: the security event that a Shutdown called on
+	// one of them would otherwise keep them from reporting. release runs it
+	// before it gives the count back, while the events are still taken.
+	finalMu sync.Mutex
+	final   func()
 }
 
 // done gives the share's count back to wg, once.
 func (s *runShare) done() { s.once.Do(s.wg.Done) }
 
+// setFinal sets (nil: clears) what release runs first.
+func (s *runShare) setFinal(f func()) {
+	s.finalMu.Lock()
+	s.final = f
+	s.finalMu.Unlock()
+}
+
 // release is done for a Shutdown called on one of the share's goroutines.
 func (s *runShare) release() {
+	s.finalMu.Lock()
+	f := s.final
+	s.final = nil
+	s.finalMu.Unlock()
+	if f != nil {
+		f()
+	}
 	s.released.Store(true)
 	s.done()
 }
