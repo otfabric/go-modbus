@@ -1503,9 +1503,13 @@ served this way. Vendor, user-defined and unknown function codes are not support
 are always answered with `Illegal Function`.
 
 In each case the server parses and validates the request before the handler sees it,
-and encodes the response; a handler only supplies data. A malformed request closes the
-connection; one that is well formed but out of range gets the exception the
-specification prescribes (see [INTEROPERABILITY.md](INTEROPERABILITY.md#how-the-server-treats-a-request)).
+and encodes the response; a handler only supplies data. A request whose PDU is shorter
+than its function code's fields, or than its byte count, closes the connection (the
+stream may be out of step); a complete one with bytes beyond its fields gets Illegal
+Data Value and the connection is kept (since v1.20.0), as does one that is well formed
+but out of range, which gets the exception the specification prescribes. A request
+whose function code has the exception bit set (`0x80`..`0xFF`) is not answered and the
+connection is kept (see [INTEROPERABILITY.md](INTEROPERABILITY.md#how-the-server-treats-a-request)).
 
 #### Serial-line function codes (FC07, FC0B, FC0C)
 
@@ -2125,7 +2129,7 @@ const (
     CloseClientClosed   CloseReason = iota + 1 // read ended with io.EOF, or io.ErrUnexpectedEOF mid-request
     CloseIdleTimeout                           // no complete request within Timeout (err wraps os.ErrDeadlineExceeded)
     CloseMalformedFrame                        // MBAP header not framable: ErrInvalidMBAPLength, ErrUnknownProtocolID
-    CloseProtocolError                         // a request violated the protocol: ErrProtocolError
+    CloseProtocolError                         // a truncated request PDU, or a handler that returned ErrProtocolError: ErrProtocolError
     CloseWriteFailed                           // a response could not be written within Timeout
     CloseReadFailed                            // any other read error, a connection reset for example
     CloseServerStopped                         // Shutdown or Stop (err: the closed socket's, typically net.ErrClosed)
@@ -2180,8 +2184,11 @@ type ServerPDUTapFunc func(ctx context.Context, ex ServerPDUExchange)
 - The server's own answers are reported too: Illegal Function for a function
   code no handler serves, Server Device Failure for a handler that failed.
 - `Response` is nil when nothing is sent: a handler that returned
-  `ErrNoResponse`, or a request that violated the protocol (the connection is
-  then closed, reported as `CloseProtocolError`).
+  `ErrNoResponse`, a request whose function code has the exception bit set
+  (`0x80`..`0xFF`, the connection is kept), or a truncated request PDU or a
+  handler that returned `ErrProtocolError` (the connection is then closed,
+  reported as `CloseProtocolError`). A complete request with bytes beyond its
+  fields is answered with Illegal Data Value, which the tap reports.
 - Not reported: bytes the server cannot frame as a request
   (`CloseMalformedFrame`), and anything after a `Shutdown` called from one of
   the connection's own callbacks (the request whose handler called it included).

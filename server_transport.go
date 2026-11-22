@@ -534,9 +534,12 @@ func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, cl
 }
 
 // serveRequest dispatches one request and returns the response to send.
-// closeLink is true when the request violates the protocol: nothing is sent and
-// the connection must be closed. res is nil with closeLink false when the handler
-// returned ErrNoResponse: nothing is sent and the connection is kept.
+// closeLink is true when a handler returned ErrProtocolError: nothing is sent
+// and the connection must be closed. A request whose PDU is malformed is
+// answered with Illegal Data Value and the connection kept (see
+// malformedRequestError). res is nil with closeLink false when the handler
+// returned ErrNoResponse, or the request carried an exception function code
+// (errExceptionFCRequest): nothing is sent and the connection is kept.
 func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (res *adu.Response, closeLink bool) {
 	var reqStart time.Time
 	if ms.metrics != nil {
@@ -559,8 +562,12 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 	}
 
 	if err != nil {
-		if err == ErrProtocolError {
-			ms.logger.Warningf("protocol error, closing link (client address: '%s')", clientAddr)
+		// The server's own errors are not wrapped: a type assertion, which
+		// calls none of the methods of a handler's error, finds them.
+		if malformed, ok := err.(*malformedRequestError); ok && malformed.truncated || err == ErrProtocolError {
+			// A truncated PDU (see malformedRequestError), or a handler that
+			// returned ErrProtocolError itself.
+			ms.logger.Warningf("protocol error, closing link (client address: '%s'): FC 0x%02x: %v", clientAddr, req.FunctionCode, err)
 			if ms.metrics != nil {
 				ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
 			}
@@ -569,6 +576,14 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 
 		if ms.metrics != nil {
 			ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
+		}
+		switch e := err.(type) {
+		case exceptionFCRequestError:
+			ms.logger.Warningf("request with exception function code 0x%02x from %s not answered", req.FunctionCode, clientAddr)
+			return nil, false
+		case *malformedRequestError:
+			ms.logger.Warningf("malformed FC 0x%02x request from %s (%s): answering with Illegal Data Value", req.FunctionCode, clientAddr, e.reason)
+		default:
 		}
 		silent, code := ms.answerFor(req, clientAddr, err)
 		if silent {
@@ -705,6 +720,11 @@ func (ms *Server) dispatchRequest(ctx context.Context, req *adu.Request, txnID u
 	case FCReadFIFOQueue:
 		return ms.handleReadFIFOQueue(ctx, req, txnID, clientAddr, clientRole)
 	default:
+		if req.FunctionCode&0x80 != 0 {
+			// An exception function code in a request: not answered (see
+			// errExceptionFCRequest).
+			return nil, errExceptionFCRequest
+		}
 		// Any other function code, vendor and user-defined ones included, is not
 		// supported: it is reported like an optional handler that is not
 		// implemented. The client gets an Illegal Function exception,
@@ -791,8 +811,8 @@ func (ms *Server) extractRole(cert *x509.Certificate) (role string) {
 
 // decodeAddrQuantity extracts address and quantity from a 4-byte payload.
 func decodeAddrQuantity(payload []byte) (addr, quantity uint16, err error) {
-	if len(payload) != 4 {
-		return 0, 0, ErrProtocolError
+	if err := checkPDULength(payload, 4); err != nil {
+		return 0, 0, err
 	}
 	return bytesToUint16(BigEndian, payload[0:2]), bytesToUint16(BigEndian, payload[2:4]), nil
 }
@@ -820,6 +840,9 @@ func (ms *Server) handleExceptionStatus(ctx context.Context, req *adu.Request, t
 	if !ok {
 		return nil, ErrIllegalFunction
 	}
+	if err := checkPDULength(req.Payload, 0); err != nil {
+		return nil, err
+	}
 	status, err := h.HandleExceptionStatus(ctx, &ExceptionStatusRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -837,6 +860,9 @@ func (ms *Server) handleCommEventCounter(ctx context.Context, req *adu.Request, 
 	h, ok := ms.handler.(CommEventCounterHandler)
 	if !ok {
 		return nil, ErrIllegalFunction
+	}
+	if err := checkPDULength(req.Payload, 0); err != nil {
+		return nil, err
 	}
 	cr, err := h.HandleCommEventCounter(ctx, &CommEventCounterRequest{
 		ClientAddr:   clientAddr,
@@ -861,6 +887,9 @@ func (ms *Server) handleCommEventLog(ctx context.Context, req *adu.Request, txnI
 	h, ok := ms.handler.(CommEventLogHandler)
 	if !ok {
 		return nil, ErrIllegalFunction
+	}
+	if err := checkPDULength(req.Payload, 0); err != nil {
+		return nil, err
 	}
 	cl, err := h.HandleCommEventLog(ctx, &CommEventLogRequest{
 		ClientAddr:   clientAddr,

@@ -100,8 +100,8 @@ func TestServerFunctions_Success(t *testing.T) {
 	}
 }
 
-// Malformed requests drop the link; requests that are well formed but out of
-// range get an exception; handlers that break their contract cost a Server
+// Truncated requests drop the link; requests with bytes beyond their fields,
+// and requests that are well formed but out of range, get an exception; handlers that break their contract cost a Server
 // Device Failure.
 func TestServerFunctions_RequestValidation(t *testing.T) {
 	const wantOK ExceptionCode = 0xFF
@@ -133,7 +133,7 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 			&fnFunctions{diag: func(*DiagnosticsRequest) ([]byte, error) { return make([]byte, 251), nil }},
 			FCDiagnostics, []byte{0, 0}, exServerDeviceFailure, ErrServerDeviceFailure,
 		},
-		{"FC17 with a payload", dev, FCReportServerID, []byte{0x00}, 0, ErrProtocolError},
+		{"FC17 with a payload", dev, FCReportServerID, []byte{0x00}, exIllegalDataValue, ErrIllegalDataValue},
 		{
 			"FC17 handler data too long",
 			&fnFunctions{serverID: func(*ReportServerIDRequest) ([]byte, error) { return make([]byte, 252), nil }},
@@ -141,7 +141,7 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 		},
 
 		{"FC20 empty", dev, FCReadFileRecord, nil, 0, ErrProtocolError},
-		{"FC20 byte count too large", dev, FCReadFileRecord, append(fileReadReq([3]uint16{4, 1, 1}), 0), 0, ErrProtocolError},
+		{"FC20 data beyond its byte count", dev, FCReadFileRecord, append(fileReadReq([3]uint16{4, 1, 1}), 0), exIllegalDataValue, ErrIllegalDataValue},
 		{"FC20 byte count too small", dev, FCReadFileRecord, fileReadReq([3]uint16{4, 1, 1})[:7], 0, ErrProtocolError},
 		{"FC20 byte count zero", dev, FCReadFileRecord, []byte{0}, exIllegalDataValue, ErrIllegalDataValue},
 		{"FC20 byte count not a multiple of 7", dev, FCReadFileRecord, []byte{8, 6, 0, 4, 0, 1, 0, 1, 0}, exIllegalDataValue, ErrIllegalDataValue},
@@ -163,11 +163,12 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 		{"FC20 largest response", &fnFunctions{readFile: readOK}, FCReadFileRecord, fileReadReq([3]uint16{4, 0, 121}), wantOK, nil},
 
 		{"FC21 empty", dev, FCWriteFileRecord, nil, 0, ErrProtocolError},
-		{"FC21 byte count disagrees", dev, FCWriteFileRecord, append(fileWriteReq(4, 7, 1), 0), 0, ErrProtocolError},
+		{"FC21 data beyond its byte count", dev, FCWriteFileRecord, append(fileWriteReq(4, 7, 1), 0), exIllegalDataValue, ErrIllegalDataValue},
+		{"FC21 shorter than its byte count", dev, FCWriteFileRecord, fileWriteReq(4, 7, 1)[:9], 0, ErrProtocolError},
 		{"FC21 byte count below 9", dev, FCWriteFileRecord, []byte{7, 6, 0, 4, 0, 7, 0, 0}, exIllegalDataValue, ErrIllegalDataValue},
 		{"FC21 byte count above 0xFB", dev, FCWriteFileRecord, fileWriteReq(4, 0, make([]uint16, 123)...), exIllegalDataValue, ErrIllegalDataValue},
-		{"FC21 data shorter than its length", dev, FCWriteFileRecord, []byte{9, 6, 0, 4, 0, 7, 0, 2, 0, 1}, 0, ErrProtocolError},
-		{"FC21 truncated sub-request", dev, FCWriteFileRecord, []byte{12, 6, 0, 4, 0, 7, 0, 1, 0, 1, 6, 0, 4}, 0, ErrProtocolError},
+		{"FC21 data shorter than its length", dev, FCWriteFileRecord, []byte{9, 6, 0, 4, 0, 7, 0, 2, 0, 1}, exIllegalDataValue, ErrIllegalDataValue},
+		{"FC21 truncated sub-request", dev, FCWriteFileRecord, []byte{12, 6, 0, 4, 0, 7, 0, 1, 0, 1, 6, 0, 4}, exIllegalDataValue, ErrIllegalDataValue},
 		{"FC21 reference type", dev, FCWriteFileRecord, []byte{9, 5, 0, 4, 0, 7, 0, 1, 0, 1}, exIllegalDataAddress, ErrIllegalDataAddress},
 		{"FC21 file 0", dev, FCWriteFileRecord, fileWriteReq(0, 7, 1), exIllegalDataAddress, ErrIllegalDataAddress},
 		{"FC21 record length 0", dev, FCWriteFileRecord, []byte{9, 6, 0, 4, 0, 7, 0, 0, 0, 1}, exIllegalDataAddress, ErrIllegalDataAddress},
@@ -175,7 +176,7 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 
 		{"FC24 empty", dev, FCReadFIFOQueue, nil, 0, ErrProtocolError},
 		{"FC24 one byte", dev, FCReadFIFOQueue, []byte{0x04}, 0, ErrProtocolError},
-		{"FC24 three bytes", dev, FCReadFIFOQueue, []byte{0x04, 0xDE, 0x00}, 0, ErrProtocolError},
+		{"FC24 three bytes", dev, FCReadFIFOQueue, []byte{0x04, 0xDE, 0x00}, exIllegalDataValue, ErrIllegalDataValue},
 		{"FC24 more than 31 values", dev, FCReadFIFOQueue, u16(0x0032), exIllegalDataValue, ErrIllegalDataValue},
 		{"FC24 unknown queue", dev, FCReadFIFOQueue, u16(0x0999), exIllegalDataAddress, ErrIllegalDataAddress},
 
@@ -302,8 +303,13 @@ func FuzzServerFunctions(f *testing.F) {
 		dev.takeCalls()
 		switch {
 		case len(tr.responses) == 0:
-			if !tr.closed {
+			// A request with the exception bit set is not answered, and the
+			// link is kept; any other unanswered request closes it.
+			if !tr.closed && fc&0x80 == 0 {
 				t.Fatalf("fc 0x%02X: no response and the link is still open", uint8(fc))
+			}
+			if tr.closed && fc&0x80 != 0 {
+				t.Fatalf("fc 0x%02X: link closed for an exception function code", uint8(fc))
 			}
 		case len(tr.responses) > 1:
 			t.Fatalf("fc 0x%02X: %d responses", uint8(fc), len(tr.responses))

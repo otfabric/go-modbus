@@ -76,8 +76,8 @@ func (ms *Server) handleReadDeviceIdentification(ctx context.Context, req *adu.R
 	if !ok || len(req.Payload) >= 1 && MEIType(req.Payload[0]) != MEIReadDeviceIdentification {
 		return nil, ErrIllegalFunction
 	}
-	if len(req.Payload) < 3 {
-		return nil, ErrProtocolError
+	if err := checkPDULength(req.Payload, 3); err != nil {
+		return nil, err
 	}
 
 	category := DeviceIDCategory(req.Payload[1])

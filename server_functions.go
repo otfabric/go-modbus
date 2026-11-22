@@ -132,7 +132,7 @@ func (ms *Server) handleDiagnostics(ctx context.Context, req *adu.Request, txnID
 		return nil, ErrIllegalFunction
 	}
 	if len(req.Payload) < 2 {
-		return nil, ErrProtocolError
+		return nil, errPDUTruncated
 	}
 	sub := req.Payload[0:2]
 	data, err := h.HandleDiagnostics(ctx, &DiagnosticsRequest{
@@ -158,8 +158,8 @@ func (ms *Server) handleReportServerID(ctx context.Context, req *adu.Request, tx
 	if !ok {
 		return nil, ErrIllegalFunction
 	}
-	if len(req.Payload) != 0 {
-		return nil, ErrProtocolError
+	if err := checkPDULength(req.Payload, 0); err != nil {
+		return nil, err
 	}
 	data, err := h.HandleReportServerID(ctx, &ReportServerIDRequest{
 		ClientAddr:   clientAddr,
@@ -184,8 +184,11 @@ func (ms *Server) handleReadFileRecords(ctx context.Context, req *adu.Request, t
 		return nil, ErrIllegalFunction
 	}
 	p := req.Payload
-	if len(p) < 1 || int(p[0]) != len(p)-1 {
-		return nil, ErrProtocolError
+	if len(p) < 1 {
+		return nil, errPDUTruncated
+	}
+	if err := checkDataLength(len(p)-1, int(p[0])); err != nil {
+		return nil, err
 	}
 	n := int(p[0])
 	if n < 7 || n > maxFileByteCount || n%7 != 0 {
@@ -243,8 +246,11 @@ func (ms *Server) handleWriteFileRecords(ctx context.Context, req *adu.Request, 
 		return nil, ErrIllegalFunction
 	}
 	p := req.Payload
-	if len(p) < 1 || int(p[0]) != len(p)-1 {
-		return nil, ErrProtocolError
+	if len(p) < 1 {
+		return nil, errPDUTruncated
+	}
+	if err := checkDataLength(len(p)-1, int(p[0])); err != nil {
+		return nil, err
 	}
 	if n := int(p[0]); n < 9 || n > maxFileReqDataLen {
 		return nil, ErrIllegalDataValue
@@ -252,7 +258,7 @@ func (ms *Server) handleWriteFileRecords(ctx context.Context, req *adu.Request, 
 	var recs []FileRecord
 	for off := 1; off < len(p); {
 		if off+7 > len(p) {
-			return nil, ErrProtocolError
+			return nil, errPDUSubRequest
 		}
 		if p[off] != 0x06 {
 			return nil, ErrIllegalDataAddress
@@ -264,7 +270,7 @@ func (ms *Server) handleWriteFileRecords(ctx context.Context, req *adu.Request, 
 		length := int(bytesToUint16(BigEndian, p[off+5:off+7]))
 		off += 7
 		if off+2*length > len(p) {
-			return nil, ErrProtocolError
+			return nil, errPDUSubRequest
 		}
 		if r.FileNumber == 0 || r.RecordNumber > 0x270F || length == 0 {
 			return nil, ErrIllegalDataAddress
@@ -291,8 +297,8 @@ func (ms *Server) handleReadFIFOQueue(ctx context.Context, req *adu.Request, txn
 	if !ok {
 		return nil, ErrIllegalFunction
 	}
-	if len(req.Payload) != 2 {
-		return nil, ErrProtocolError
+	if err := checkPDULength(req.Payload, 2); err != nil {
+		return nil, err
 	}
 	values, err := h.HandleReadFIFOQueue(ctx, &FIFOQueueRequest{
 		ClientAddr:   clientAddr,

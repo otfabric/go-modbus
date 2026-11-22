@@ -804,10 +804,14 @@ const (
 	// MBAP header the server cannot frame: err is ErrInvalidMBAPLength or
 	// ErrUnknownProtocolID.
 	CloseMalformedFrame
-	// CloseProtocolError is a connection closed because a request violated the
-	// protocol (a PDU whose length does not match its function code, for
-	// example): err is ErrProtocolError. The request is reported to ServerMetrics
-	// as an OnError with ErrProtocolError.
+	// CloseProtocolError is a connection closed because a request PDU was
+	// shorter than the fields of its function code or than its byte count
+	// announces (which on a TCP stream is what an MBAP length that undercounts
+	// the request looks like), or because a handler returned ErrProtocolError:
+	// err is ErrProtocolError. The request is reported to ServerMetrics as an
+	// OnError with an error that matches ErrProtocolError. Since v1.20.0 a
+	// complete request with bytes beyond its fields is answered with Illegal
+	// Data Value and does not close the connection.
 	CloseProtocolError
 	// CloseWriteFailed is a connection closed because a response could not be
 	// written in full within ServerConfig.Timeout: err is the write error.
@@ -2183,8 +2187,10 @@ type ServerPDUExchange struct {
 	// response has the function code with bit 0x80 set, the server's own
 	// exceptions (Illegal Function for a function code no handler serves, for
 	// example) included. It is nil when the server sends no response: a handler
-	// that returned ErrNoResponse, or a request that violated the protocol, on
-	// which the server closes the connection.
+	// that returned ErrNoResponse, a request whose function code has the
+	// exception bit set (0x80-0xFF; the connection is kept), or a request PDU
+	// shorter than its fields or byte count and a handler that returned
+	// ErrProtocolError, on which the server closes the connection.
 	Response []byte
 	// Received is the time the server read the request from the connection,
 	// Answered the time its answer was decided, before the response is

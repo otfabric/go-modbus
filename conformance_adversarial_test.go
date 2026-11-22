@@ -84,7 +84,9 @@ func TestB2B_Adversarial_ServerBranches(t *testing.T) {
 		wantClose bool
 		wantExc   ExceptionCode
 	}{
-		// --- Framing / protocol errors: server drops the link ---
+		// --- Truncated PDUs (fewer bytes than the function code's fields or
+		// than the byte count announces): a synchronization error, the
+		// server drops the link ---
 		{"FC01 short payload", refUnitID, 0x01, []byte{0, 0, 0}, true, 0},
 		{"FC03 short payload", refUnitID, 0x03, []byte{0, 0, 0}, true, 0},
 		{"FC05 wrong length", refUnitID, 0x05, []byte{0, 0, 0xff}, true, 0},
@@ -99,6 +101,15 @@ func TestB2B_Adversarial_ServerBranches(t *testing.T) {
 		{"FC23 too short", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1, 2}, true, 0},
 		{"FC23 without byte count", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1}, true, 0},
 		{"FC43 short payload", refUnitID, 0x2b, []byte{0x0e, 0x01}, true, 0},
+
+		// --- Complete PDUs with bytes beyond their fields: Illegal Data Value
+		// (V1.1b3 section 7), the link is kept ---
+		{"FC01 trailing byte", refUnitID, 0x01, []byte{0, 0, 0, 1, 0}, false, exIllegalDataValue},
+		{"FC03 trailing byte", refUnitID, 0x03, []byte{0, 0, 0, 1, 0}, false, exIllegalDataValue},
+		{"FC05 trailing byte", refUnitID, 0x05, []byte{0, 0, 0xff, 0, 0}, false, exIllegalDataValue},
+		{"FC15 data beyond byte count", refUnitID, 0x0f, []byte{0, 0, 0, 8, 0x01, 0xff, 0x00}, false, exIllegalDataValue},
+		{"FC16 data beyond byte count", refUnitID, 0x10, []byte{0, 0, 0, 1, 0x02, 0x00, 0x01, 0x00}, false, exIllegalDataValue},
+		{"FC43 trailing byte", refUnitID, 0x2b, []byte{0x0e, 0x01, 0x00, 0x00}, false, exIllegalDataValue},
 
 		// --- Semantic errors: server returns a Modbus exception ---
 		{"FC01 quantity zero", refUnitID, 0x01, []byte{0, 0, 0, 0}, false, exIllegalDataValue},

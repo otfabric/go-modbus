@@ -76,9 +76,11 @@ answer:
 
 | Request | Answer |
 |---------|--------|
-| MBAP header invalid (protocol identifier, length) | connection closed |
+| MBAP header invalid (protocol identifier, length), or a frame cut short | connection closed |
+| Function code `0x80`..`0xFF` (the exception bit set; no request carries one) | no answer, connection kept (since v1.20.0; before, an "exception" with the request's own function code) |
 | Function code not implemented (vendor and user-defined ones included), or its handler not provided | exception 1 |
-| PDU too short to hold the fields of its function, FC01..06, FC22 and FC24 with a length other than the one the function has, FC17 with data, FC20 and FC21 with a byte count that is not the length of the rest | connection closed |
+| PDU too short to hold the fields of its function (FC01..06, FC22, FC24 and FC43/14 shorter than their fixed length, FC08 without a whole sub-function, FC15, FC16, FC23 without their byte count, FC20, FC21 without one), or shorter than its byte count announces (FC15, FC16, FC23, FC20, FC21) | connection closed: on a TCP stream this is what an MBAP length that undercounts the request looks like, and the rest of the request would be read as the next header |
+| PDU longer than the fields of its function (FC01..06, FC22, FC24 and FC43/14 longer than their fixed length; FC07, FC11, FC12 and FC17 with any data), or with data beyond its byte count (FC15, FC16, FC23, FC20, FC21), or an FC21 sub-request that overruns the byte count | exception 3, connection kept (since v1.20.0; before, connection closed, and FC07, FC11, FC12 ignored the data) |
 | Quantity 0 or above the maximum of the function (FC01, 02, 03, 04, 15, 16, 23) | exception 3 |
 | FC15, FC16, FC23: byte count that is not the one the quantity asks for | exception 3 |
 | FC05: value other than `0x0000` and `0xFF00` | exception 3 |
@@ -86,10 +88,21 @@ answer:
 | FC20: byte count outside 7..245 or not a multiple of 7, or a response that would not fit in one PDU; FC21: byte count outside 9..251 | exception 3 |
 | FC20, FC21: reference type other than 6, file 0, record above 9999, record length 0 | exception 2 |
 | Address range that runs beyond 65535 | exception 2 |
-| FC15, FC16, FC23: byte count right, but the data has another length | connection closed |
 | Anything else | the `RequestHandler` decides: values, or an error that maps to an exception |
 | FC24: the handler returns more than 31 values | exception 3 |
 | A handler returns a response that does not fit in one PDU, or FC20 records of another length than requested | exception 4 |
+
+Exception 3 for a complete request with bytes beyond its fields follows
+section 7 of the specification, which gives Illegal Data Value for "a fault
+in the structure of the remainder of a complex request, such as that the
+implied length is incorrect". The tables of FC07, FC11, FC12 and FC17 list
+only exceptions 1 and 4; section 7 is the clause that covers their data, and
+it is applied to every function code alike rather than ignoring the data for
+some and closing for others. A truncated PDU is not answered with exception
+3 because the server cannot tell it from a request whose MBAP length is
+wrong, which leaves the stream out of step; closing the connection is how it
+gets back in step. The Modbus Messaging on TCP/IP Implementation Guide was
+not available when this was decided, and no clause of it is claimed here.
 
 Two consequences for an application that models a device:
 

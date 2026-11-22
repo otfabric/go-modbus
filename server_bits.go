@@ -61,8 +61,8 @@ func (ms *Server) handleReadBools(ctx context.Context, req *adu.Request, txnID u
 
 // handleWriteSingleCoil handles FC05 (WriteSingleCoil).
 func (ms *Server) handleWriteSingleCoil(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
-	if len(req.Payload) != 4 {
-		return nil, ErrProtocolError
+	if err := checkPDULength(req.Payload, 4); err != nil {
+		return nil, err
 	}
 
 	addr := bytesToUint16(BigEndian, req.Payload[0:2])
@@ -96,7 +96,7 @@ func (ms *Server) handleWriteMultipleCoils(ctx context.Context, req *adu.Request
 	// Address, quantity and byte count: without them the request cannot be
 	// read at all.
 	if len(req.Payload) < 5 {
-		return nil, ErrProtocolError
+		return nil, errPDUTruncated
 	}
 
 	addr := bytesToUint16(BigEndian, req.Payload[0:2])
@@ -116,14 +116,14 @@ func (ms *Server) handleWriteMultipleCoils(ctx context.Context, req *adu.Request
 	if req.Payload[4] != uint8(expectedLen) {
 		return nil, ErrIllegalDataValue
 	}
+	// The frame carries more or less data than it announces: the implied
+	// length is incorrect, an Illegal Data Value too (section 7).
+	if err := checkDataLength(len(req.Payload)-5, expectedLen); err != nil {
+		return nil, err
+	}
 
 	if uint32(addr)+uint32(quantity)-1 > 0xffff {
 		return nil, ErrIllegalDataAddress
-	}
-
-	// The frame carries more or less data than it announces: malformed.
-	if len(req.Payload)-5 != expectedLen {
-		return nil, ErrProtocolError
 	}
 
 	_, err := ms.handler.HandleCoils(ctx, &CoilsRequest{

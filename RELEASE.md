@@ -1,5 +1,30 @@
 # go-modbus Releases
 
+## v1.20.0
+
+**Date:** unreleased
+**Previous release:** v1.19.0
+
+Conformance hardening against the MODBUS Application Protocol Specification V1.1b3: the server tells a request whose PDU is complete but malformed from one whose framing is lost, and answers the first with an exception instead of closing the connection. No exported identifier is removed or changed. Behaviour changes are listed under Changed; each follows a clause of the specification named there.
+
+### Changed
+
+- Server: a complete request PDU with bytes beyond the fields of its function code (FC01..06, FC22, FC24 and FC43/14 longer than their fixed length; FC07, FC11, FC12 and FC17 with any data; FC15, FC16, FC23, FC20 and FC21 with data beyond their byte count; an FC21 sub-request that overruns the byte count) is answered with exception 3, Illegal Data Value, and the connection is kept (V1.1b3 section 7: "a fault in the structure of the remainder of a complex request, such as that the implied length is incorrect"). Up to v1.19.0 the connection was closed, and FC07, FC11 and FC12 ignored the data. `ServerMetrics.OnError` receives an error that matches both `ErrIllegalDataValue` and `ErrProtocolError`, so a filter on `ErrProtocolError` still sees it.
+- Server: a request PDU shorter than the fields of its function code, or than its byte count announces, still closes the connection (`CloseProtocolError`): on a TCP stream it is what an MBAP length that undercounts the request looks like, and the rest of the request would be read as the next MBAP header. FC15, FC16 and FC23 now check the length of the data against the byte count before the address range, so such a request no longer gets exception 2 first.
+- Server: a request whose function code has the exception bit set (`0x80`..`0xFF`) is not answered, and the connection is kept. Up to v1.19.0 it was answered with exception 1 under the request's own function code (the code with `0x80` OR-ed in is the same code), which reads as an exception response to the function code `0x80` below it. `ServerMetrics.OnError` still receives an error that matches `ErrIllegalFunction`; `ServerPDUTap` reports `Response` nil.
+- A handler that returns `ErrProtocolError` itself still closes the connection, as before. The warning logged when the server closes a connection on a protocol error keeps the text `protocol error, closing link` and now names the function code and the reason.
+
+### Documentation
+
+- INTEROPERABILITY.md "How the server treats a request" (the table and the reasoning for exception 3 and for closing on a truncated PDU), API.md (server handlers, `CloseProtocolError`, `ServerPDUTap`), OBSERVABILITY.md, the `CloseProtocolError` and `ServerPDUExchange.Response` comments.
+
+### Tests
+
+- `server_pdu_errors_test.go`: how the server's request errors classify with `errors.Is`; on one TCP connection, a complete but invalid FC03, FC05, FC07, FC11, FC12, FC15, FC16, FC17, FC20, FC21, FC24 and FC43 request each followed by a valid FC03 that is served; truncated PDUs closing the connection with `CloseProtocolError`; a pipelined batch mixing valid, malformed and exception-FC requests answered in order; MBAP lengths 0, 1, 255 and 0xFFFF, a bad protocol identifier and a frame cut short closing the connection without a wait; all 256 function codes, with and without data, never answered under a function code other than the request's or the request's plus `0x80`.
+- `hostile_server_test.go`, `conformance_adversarial_test.go`, `server_functions_test.go`, `server_dispatch_test.go`: the cases that closed on bytes beyond the fields now expect exception 3 and a connection a following FC03 is served on; truncated variants added; exception-bit function codes expect no answer and a usable connection. `FuzzServerRequest` and `FuzzServerFunctions` accept an unanswered exception-bit request on an open connection, and only that.
+
+---
+
 ## v1.19.0
 
 **Date:** 2026-11-18

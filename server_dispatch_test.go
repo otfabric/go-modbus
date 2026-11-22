@@ -230,6 +230,12 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 			name:    "FC23 data longer than its byte count",
 			handler: &fnHandler{readWrite: okRW},
 			fc:      FCReadWriteMultipleRegs, payload: append(append(u16(0, 1, 0, 1), 0x02), 0x00, 0x07, 0xFF),
+			wantExc: exIllegalDataValue, wantErr: ErrIllegalDataValue,
+		},
+		{
+			name:    "FC23 data shorter than its byte count",
+			handler: &fnHandler{readWrite: okRW},
+			fc:      FCReadWriteMultipleRegs, payload: append(append(u16(0, 1, 0, 1), 0x02), 0x00),
 			wantErr: ErrProtocolError,
 		},
 		{
