@@ -1,5 +1,28 @@
 # go-modbus Releases
 
+## v1.22.1
+
+**Date:** 2026-11-23
+**Previous release:** v1.22.0
+
+A fix for RTU responses whose length is not in their header, which a client that ran late could cut short. No exported identifier is added, removed or changed, and nothing changes on the wire.
+
+### Fixed
+
+- RTU (`rtu`, `rtuovertcp`, `rtuoverudp`): an FC43/14 Read Device Identification response is read by its structure (section 6.21: the Number Of Objects, then each object's id and length), not until the line falls quiet for t3.5. Up to v1.22.0 a client goroutine that ran more than t3.5 late inside the frame took the bytes it had for the whole frame and reported `ErrBadCRC`, because a read whose deadline has already passed reports a timeout even when bytes are waiting. t3.5 is 1.75 ms on the tunnelled framings, so a loaded host (a CI runner under the race detector) was enough. A frame that ends early is `ErrShortFrame` and one whose objects run past the 256 bytes of an RTU frame is `ErrProtocolError`, as for the other function codes.
+- RTU: FC08 responses, and FC43 responses of other MEI types, are still delimited by t3.5 of silence, since their length is not in the frame; a timeout now ends the frame only when a second read, with a fresh deadline, finds no byte either. Each such response takes up to one t3.5 longer to complete.
+
+### Changed
+
+- The bundled `modbus-cli` is built on v1.22.0 (was v1.20.0).
+
+### Tests
+
+- A link that reports a timeout while bytes are waiting, at every read of a frame in turn, for FC43/14 (with and without objects), another MEI type and FC08; FC43/14 frames cut short, oversized, corrupted, followed by more bytes, and interrupted while in flight; FC43/14 seeds with several objects and with another MEI type in `FuzzHostileRTUResponse`.
+- Chaos soak (`TestChaosMonkey`, the nightly `make soak`): a scenario that corrupts unit IDs in both directions accepts Illegal Function. The proxy could corrupt the unit of a request, which the test device answers with Illegal Function, and then corrupt the unit of that answer back to the one requested; the client then holds a well-formed exception for its own request, which it cannot tell apart. The nightly run of 2026-11-23 failed on it (seed 2272165658, which now passes).
+
+---
+
 ## v1.22.0
 
 **Date:** 2026-11-23

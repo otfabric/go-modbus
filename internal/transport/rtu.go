@@ -279,7 +279,12 @@ func (rt *RTU) readRTUFrame(ctx context.Context, deadline time.Time) (*adu.Respo
 	}
 	if bytesNeeded == protocol.RTUResponseLengthVariable {
 		switch protocol.FunctionCode(rxbuf[1]) {
-		case protocol.FCDiagnostics, protocol.FCEncapsulatedInterface:
+		case protocol.FCEncapsulatedInterface:
+			if protocol.MEIType(rxbuf[2]) == protocol.MEIReadDeviceIdentification {
+				return rt.readDeviceIDResponse(rxbuf[:3])
+			}
+			return rt.readVariableLengthResponse(ctx, deadline, rxbuf[:3])
+		case protocol.FCDiagnostics:
 			return rt.readVariableLengthResponse(ctx, deadline, rxbuf[:3])
 		default:
 			return nil, protocol.ErrProtocolError
@@ -331,16 +336,69 @@ func midFrameErr(err error) error {
 	return err
 }
 
+// readDeviceIDResponse reads an FC43/14 Read Device Identification response
+// (section 6.21) by its structure, after header (unit, function code, MEI
+// type): Read Device ID code, conformity level, More Follows, Next Object Id
+// and Number Of Objects, then each object's id, length and value, then the
+// CRC. The length is known from the frame, so it does not depend on timing; a
+// frame that ends early is ErrShortFrame, and one whose objects run past the
+// largest RTU frame is ErrProtocolError. Like the frames of fixed length, it
+// reads under the request deadline ExecuteRequest set, which Interrupt cuts
+// short.
+func (rt *RTU) readDeviceIDResponse(header []byte) (*adu.Response, error) {
+	buf := make([]byte, adu.MaxRTUFrameLength)
+	offset := copy(buf, header)
+	read := func(n int) error {
+		if offset+n > len(buf) {
+			return protocol.ErrProtocolError
+		}
+		if _, err := io.ReadFull(rt.Link, buf[offset:offset+n]); err != nil {
+			return midFrameErr(err)
+		}
+		offset += n
+		return nil
+	}
+	// Read Device ID code, conformity level, More Follows, Next Object Id,
+	// Number Of Objects.
+	if err := read(5); err != nil {
+		return nil, err
+	}
+	for range int(buf[offset-1]) {
+		if err := read(2); err != nil { // object id, object length
+			return nil, err
+		}
+		if err := read(int(buf[offset-1])); err != nil {
+			return nil, err
+		}
+	}
+	if err := read(2); err != nil {
+		return nil, err
+	}
+	if !adu.ValidateRTUCRC(buf[:offset]) {
+		return nil, protocol.ErrBadCRC
+	}
+	unitID, fc, payload := adu.ParseRTUFrame(buf[:offset])
+	return &adu.Response{UnitID: unitID, FunctionCode: fc, Payload: payload}, nil
+}
+
 // readVariableLengthResponse reads an RTU response whose length is not known
-// from the header alone (FC08 diagnostics, FC2B encapsulated interface).
+// from the header alone (FC08 diagnostics, FC2B encapsulated interface other
+// than Read Device Identification).
 // It reads byte-by-byte until an inter-frame silence (t3.5) is detected, then
 // validates CRC and parses the frame. A device that trickles bytes cannot keep
 // it reading past the request deadline or a cancelled ctx.
+//
+// A read whose deadline passed before it ran reports a timeout even when bytes
+// are waiting (a net.Conn does), so a reader that runs late, on a loaded host,
+// would take the middle of a frame for its end. A timeout is therefore taken
+// for the silence only when a second read, with a fresh deadline, times out
+// too.
 func (rt *RTU) readVariableLengthResponse(ctx context.Context, deadline time.Time, header []byte) (*adu.Response, error) {
 	const minFrameBytes = 6
 	buf := make([]byte, adu.MaxRTUFrameLength)
 	copy(buf, header)
 	offset := len(header)
+	quiet := false
 	for offset < adu.MaxRTUFrameLength {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -355,11 +413,16 @@ func (rt *RTU) readVariableLengthResponse(ctx context.Context, deadline time.Tim
 		n, readErr := rt.Link.Read(buf[offset : offset+1])
 		if n > 0 {
 			offset += n
+			quiet = false
 			continue
 		}
 		if readErr != nil && os.IsTimeout(readErr) {
 			if !time.Now().Before(deadline) {
 				return nil, protocol.ErrRequestTimedOut
+			}
+			if !quiet {
+				quiet = true
+				continue
 			}
 			break
 		}
