@@ -27,10 +27,32 @@ func discardBytes(r io.Reader, n int) error {
 // mode, Engine.execMu serializes all calls; in pool mode, each goroutine
 // gets its own TCP instance from the pool.
 type TCP struct {
-	Logger    logging.Logger
-	Socket    net.Conn
-	Timeout   time.Duration
-	lastTxnID uint16
+	Logger  logging.Logger
+	Socket  net.Conn
+	Timeout time.Duration
+	// RequestPDULength, when set (server use), returns the length of the
+	// request PDU, function code included, of a function code whose requests
+	// have a fixed size, and 0 for any other. ReadFrame then checks the MBAP
+	// length of such a request as soon as it has read the function code, and
+	// reads no further when the two disagree (see RequestLengthError).
+	RequestPDULength func(fc byte) int
+	lastTxnID        uint16
+}
+
+// RequestLengthError is returned by ReadFrame, together with the request's
+// unit ID and function code and an empty payload, when the MBAP length of a
+// request disagrees with the fixed length RequestPDULength gives for its
+// function code. The rest of the frame is not read: the stream is out of step
+// (the MBAP length is wrong, or the PDU is), and reading what the MBAP length
+// announces would wait for, and take, bytes of the next request.
+type RequestLengthError struct {
+	// Want is the PDU length of the function code, Have the one the MBAP
+	// length announces (both with the function code).
+	Want, Have int
+}
+
+func (e *RequestLengthError) Error() string {
+	return fmt.Sprintf("MBAP length announces a request PDU of %d bytes, the function code's is %d", e.Have, e.Want)
 }
 
 // NewTCP returns a new TCP transport.
@@ -106,6 +128,11 @@ func (tt *TCP) WriteResponse(res *adu.Response) error {
 func (tt *TCP) ReadFrame() (*adu.Request, uint16, error) {
 	req, txnID, err := tt.readMBAPFrameRaw()
 	if err != nil {
+		var lenErr *RequestLengthError
+		if errors.As(err, &lenErr) {
+			tt.Logger.Debugf("RX: unit=0x%02x fc=0x%02x: %v", req.UnitID, req.FunctionCode, err)
+			return req, txnID, err
+		}
 		return nil, 0, err
 	}
 	tt.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", req.UnitID, req.FunctionCode, req.Payload)
@@ -198,6 +225,26 @@ func (tt *TCP) readMBAPFrameRaw() (*adu.Request, uint16, error) {
 		return nil, 0, err
 	}
 	body := make([]byte, mbapLen-1)
+	if tt.RequestPDULength != nil {
+		// The function code first: a request of a fixed size whose MBAP
+		// length disagrees is reported without reading what that length
+		// announces.
+		if _, err := io.ReadFull(tt.Socket, body[:1]); err != nil {
+			return nil, 0, err
+		}
+		if want := tt.RequestPDULength(body[0]); want > 0 && want != len(body) {
+			return &adu.Request{UnitID: unitID, FunctionCode: body[0]}, txnID,
+				&RequestLengthError{Want: want, Have: len(body)}
+		}
+		if _, err := io.ReadFull(tt.Socket, body[1:]); err != nil {
+			return nil, 0, err
+		}
+		return &adu.Request{
+			UnitID:       unitID,
+			FunctionCode: body[0],
+			Payload:      body[1:],
+		}, txnID, nil
+	}
 	if _, err := io.ReadFull(tt.Socket, body); err != nil {
 		return nil, 0, err
 	}

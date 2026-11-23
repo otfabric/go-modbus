@@ -146,10 +146,21 @@ func TestServerCloseReason_MalformedFrame(t *testing.T) {
 func TestServerCloseReason_ProtocolError(t *testing.T) {
 	m := &closeMetrics{}
 	_, conn := startCloseServer(t, m, nil)
-	// FC03 with three data bytes instead of four.
+	// FC03 with three data bytes instead of four: answered with Illegal Data
+	// Value, then closed.
 	if _, err := conn.Write(rawRequestFrame(1, 1, byte(FCReadHoldingRegisters), []byte{0, 0, 0})); err != nil {
 		t.Fatal(err)
 	}
+	wantAnsweredThenClosed(t, conn, rawRequestFrame(1, 1, 0x83, []byte{byte(exIllegalDataValue)}))
+	wantReason(t, m, conn.LocalAddr().String(), CloseProtocolError, ErrProtocolError)
+}
+
+// A handler that returns ErrProtocolError: closed without an answer.
+func TestServerCloseReason_HandlerProtocolError(t *testing.T) {
+	m := &closeMetrics{}
+	h := &fnHandler{holding: func(*HoldingRegistersRequest) ([]uint16, error) { return nil, ErrProtocolError }}
+	_, conn := startCallbackServer(t, h, func(c *ServerConfig) { c.Metrics = m })
+	sendReadRequest(t, conn)
 	wantClosedUnanswered(t, conn)
 	wantReason(t, m, conn.LocalAddr().String(), CloseProtocolError, ErrProtocolError)
 }

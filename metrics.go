@@ -167,10 +167,14 @@ const (
 	// MBAP header the server cannot frame: err is ErrInvalidMBAPLength or
 	// ErrUnknownProtocolID.
 	CloseMalformedFrame
-	// CloseProtocolError is a connection closed because a request violated the
-	// protocol (a PDU whose length does not match its function code, for
-	// example): err is ErrProtocolError. The request is reported to ServerMetrics
-	// as an OnError with ErrProtocolError.
+	// CloseProtocolError is a connection closed because a request PDU was
+	// shorter or longer than the fields of its function code or than its byte
+	// count announces (which on a TCP stream is what a wrong MBAP length looks
+	// like), or because a handler returned ErrProtocolError: err is
+	// ErrProtocolError. The request is reported to ServerMetrics as an OnError
+	// with an error that matches ErrProtocolError. Since v1.20.0 a request PDU
+	// of the wrong length is answered with Illegal Data Value before the
+	// connection is closed.
 	CloseProtocolError
 	// CloseWriteFailed is a connection closed because a response could not be
 	// written in full within ServerConfig.Timeout: err is the write error.

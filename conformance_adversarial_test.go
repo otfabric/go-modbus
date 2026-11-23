@@ -3,6 +3,7 @@
 package modbus
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -51,9 +52,10 @@ func rawRequestFrame(txid uint16, unitID, fc byte, payload []byte) []byte {
 }
 
 // rawExchange dials addr, sends one request, and returns the parsed response.
-// closed is true when the server dropped the connection without replying (the
-// expected behavior for ErrProtocolError).
-func rawExchange(t *testing.T, addr string, unitID, fc byte, payload []byte) (res *adu.Response, closed bool) {
+// closed is true when the server dropped the connection without replying.
+// With checkClose, closedAfter reports whether the server closed the
+// connection after its response (it does after a PDU length error).
+func rawExchange(t *testing.T, addr string, unitID, fc byte, payload []byte, checkClose bool) (res *adu.Response, closed, closedAfter bool) {
 	t.Helper()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -67,9 +69,15 @@ func rawExchange(t *testing.T, addr string, unitID, fc byte, payload []byte) (re
 	}
 	r, err := readMBAPResponse(conn)
 	if err != nil {
-		return nil, true
+		return nil, true, false
 	}
-	return r, false
+	if checkClose {
+		_ = conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
+		n, err := conn.Read(make([]byte, 1))
+		var ne net.Error
+		closedAfter = n == 0 && err != nil && (!errors.As(err, &ne) || !ne.Timeout())
+	}
+	return r, false, closedAfter
 }
 
 func TestB2B_Adversarial_ServerBranches(t *testing.T) {
@@ -81,24 +89,30 @@ func TestB2B_Adversarial_ServerBranches(t *testing.T) {
 		unitID    byte
 		fc        byte
 		payload   []byte
-		wantClose bool
+		wantClose bool // answered, then the connection closed
 		wantExc   ExceptionCode
 	}{
-		// --- Framing / protocol errors: server drops the link ---
-		{"FC01 short payload", refUnitID, 0x01, []byte{0, 0, 0}, true, 0},
-		{"FC03 short payload", refUnitID, 0x03, []byte{0, 0, 0}, true, 0},
-		{"FC05 wrong length", refUnitID, 0x05, []byte{0, 0, 0xff}, true, 0},
-		{"FC06 wrong length", refUnitID, 0x06, []byte{0, 0, 0}, true, 0},
-		{"FC15 too short", refUnitID, 0x0f, []byte{0, 0, 0, 1, 1}, true, 0},
-		{"FC15 without byte count", refUnitID, 0x0f, []byte{0, 0, 0, 1}, true, 0},
-		{"FC15 data-length mismatch", refUnitID, 0x0f, []byte{0, 0, 0, 16, 0x02, 0xff}, true, 0},
-		{"FC16 too short", refUnitID, 0x10, []byte{0, 0, 0, 1, 2}, true, 0},
-		{"FC16 without byte count", refUnitID, 0x10, []byte{0, 0, 0, 1}, true, 0},
-		{"FC16 data-length mismatch", refUnitID, 0x10, []byte{0, 0, 0, 2, 0x04, 0x00, 0x01, 0x00}, true, 0},
-		{"FC22 wrong length", refUnitID, 0x16, []byte{0, 0, 0, 0, 0}, true, 0},
-		{"FC23 too short", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1, 2}, true, 0},
-		{"FC23 without byte count", refUnitID, 0x17, []byte{0, 0, 0, 1, 0, 0, 0, 1}, true, 0},
-		{"FC43 short payload", refUnitID, 0x2b, []byte{0x0e, 0x01}, true, 0},
+		// --- PDU length errors (fewer or more bytes than the function code's
+		// fields or than the byte count announces): Illegal Data Value
+		// (V1.1b3 section 7), then the server closes the link, whose framing
+		// is in doubt ---
+		{"FC01 short payload", refUnitID, 0x01, []byte{0, 0, 0}, true, exIllegalDataValue},
+		{"FC03 short payload", refUnitID, 0x03, []byte{0, 0, 0}, true, exIllegalDataValue},
+		{"FC05 wrong length", refUnitID, 0x05, []byte{0, 0, 0xff}, true, exIllegalDataValue},
+		{"FC06 wrong length", refUnitID, 0x06, []byte{0, 0, 0}, true, exIllegalDataValue},
+		{"FC15 too short", refUnitID, 0x0f, []byte{0, 0, 0, 1, 1}, true, exIllegalDataValue},
+		{"FC15 without byte count", refUnitID, 0x0f, []byte{0, 0, 0, 1}, true, exIllegalDataValue},
+		{"FC15 data-length mismatch", refUnitID, 0x0f, []byte{0, 0, 0, 16, 0x02, 0xff}, true, exIllegalDataValue},
+		{"FC16 too short", refUnitID, 0x10, []byte{0, 0, 0, 1, 2}, true, exIllegalDataValue},
+		{"FC16 without byte count", refUnitID, 0x10, []byte{0, 0, 0, 1}, true, exIllegalDataValue},
+		{"FC16 data-length mismatch", refUnitID, 0x10, []byte{0, 0, 0, 2, 0x04, 0x00, 0x01, 0x00}, true, exIllegalDataValue},
+		{"FC22 wrong length", refUnitID, 0x16, []byte{0, 0, 0, 0, 0}, true, exIllegalDataValue},
+		{"FC01 trailing byte", refUnitID, 0x01, []byte{0, 0, 0, 1, 0}, true, exIllegalDataValue},
+		{"FC03 trailing byte", refUnitID, 0x03, []byte{0, 0, 0, 1, 0}, true, exIllegalDataValue},
+		{"FC05 trailing byte", refUnitID, 0x05, []byte{0, 0, 0xff, 0, 0}, true, exIllegalDataValue},
+		{"FC15 data beyond byte count", refUnitID, 0x0f, []byte{0, 0, 0, 8, 0x01, 0xff, 0x00}, true, exIllegalDataValue},
+		{"FC16 data beyond byte count", refUnitID, 0x10, []byte{0, 0, 0, 1, 0x02, 0x00, 0x01, 0x00}, true, exIllegalDataValue},
+		{"FC43 trailing byte", refUnitID, 0x2b, []byte{0x0e, 0x01, 0x00, 0x00}, true, exIllegalDataValue},
 
 		// --- Semantic errors: server returns a Modbus exception ---
 		{"FC01 quantity zero", refUnitID, 0x01, []byte{0, 0, 0, 0}, false, exIllegalDataValue},
@@ -138,15 +152,12 @@ func TestB2B_Adversarial_ServerBranches(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res, closed := rawExchange(t, addr, tc.unitID, tc.fc, tc.payload)
-			if tc.wantClose {
-				if !closed {
-					t.Fatalf("expected link close, got response %+v", res)
-				}
-				return
-			}
+			res, closed, closedAfter := rawExchange(t, addr, tc.unitID, tc.fc, tc.payload, tc.wantClose)
 			if closed {
 				t.Fatal("expected exception response, got link close")
+			}
+			if tc.wantClose && !closedAfter {
+				t.Errorf("the link stayed open after the answer to a PDU length error")
 			}
 			if res.UnitID != tc.unitID {
 				t.Errorf("unit ID = 0x%02x, want 0x%02x", res.UnitID, tc.unitID)

@@ -103,8 +103,10 @@ func TestServerPDUTap_OrderAndServerExceptions(t *testing.T) {
 	}
 }
 
-// No response: a handler that returns ErrNoResponse, and a request that
-// violates the protocol, are tapped with a nil Response.
+// No response: a handler that returns ErrNoResponse or ErrProtocolError is
+// tapped with a nil Response. A request whose MBAP length disagrees with its
+// function code is tapped with the exception it is answered with and, as its
+// Request, the function code alone: the rest was not read.
 func TestServerPDUTap_NoResponse(t *testing.T) {
 	t.Run("ErrNoResponse", func(t *testing.T) {
 		tap := &serverTapRecorder{}
@@ -116,16 +118,27 @@ func TestServerPDUTap_NoResponse(t *testing.T) {
 			t.Errorf("exchange %+v, want the request and no response", ex)
 		}
 	})
-	t.Run("protocol error", func(t *testing.T) {
+	t.Run("handler protocol error", func(t *testing.T) {
+		tap := &serverTapRecorder{}
+		h := &fnHandler{holding: func(*HoldingRegistersRequest) ([]uint16, error) { return nil, ErrProtocolError }}
+		_, conn := startTapServer(t, h, tap, nil)
+		sendReadRequest(t, conn)
+		wantClosedUnanswered(t, conn)
+		e2eEventually(t, "the exchange", func() bool { return len(tap.snapshot()) == 1 })
+		if ex := tap.snapshot()[0]; ex.Response != nil || len(ex.Request) != 5 {
+			t.Errorf("exchange %+v, want the request and no response", ex)
+		}
+	})
+	t.Run("MBAP length error", func(t *testing.T) {
 		tap := &serverTapRecorder{}
 		_, conn := startTapServer(t, holdingOne(), tap, nil)
 		if _, err := conn.Write(rawRequestFrame(1, 1, byte(FCReadHoldingRegisters), []byte{0, 0, 0})); err != nil {
 			t.Fatal(err)
 		}
-		wantClosedUnanswered(t, conn)
+		wantAnsweredThenClosed(t, conn, rawRequestFrame(1, 1, 0x83, []byte{byte(exIllegalDataValue)}))
 		e2eEventually(t, "the exchange", func() bool { return len(tap.snapshot()) == 1 })
-		if ex := tap.snapshot()[0]; ex.Response != nil || !bytes.Equal(ex.Request, []byte{3, 0, 0, 0}) {
-			t.Errorf("exchange %+v, want the request and no response", ex)
+		if ex := tap.snapshot()[0]; !bytes.Equal(ex.Response, []byte{0x83, 0x03}) || !bytes.Equal(ex.Request, []byte{3}) {
+			t.Errorf("exchange %+v, want the function code and the exception", ex)
 		}
 	})
 }

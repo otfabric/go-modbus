@@ -1005,6 +1005,11 @@ type chaosWorkload struct {
 	checkData bool
 	// allowed is the set of acceptable error classes while faults are active.
 	allowed map[string]bool
+	// lengthExceptions accepts Illegal Data Value while the link is faulty:
+	// the server answers it to a request whose MBAP length the proxy
+	// corrupted (chaosCorruptLen from client to server) when the length still
+	// frames, and then closes the connection.
+	lengthExceptions bool
 	// clean is set while no faults are active: every call must then succeed.
 	clean atomic.Bool
 
@@ -1092,6 +1097,7 @@ func (w *chaosWorker) call(name string, fn func(ctx context.Context) error) erro
 	case clean:
 		wl.failf("worker %d %s: failed on a healthy link: %v", w.id, name, err)
 	case wl.allowed[class]:
+	case wl.lengthExceptions && errors.Is(err, ErrIllegalDataValue):
 	default:
 		wl.failf("worker %d %s: unexpected error class %q: %v", w.id, name, class, err)
 	}

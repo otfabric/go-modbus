@@ -241,7 +241,7 @@ func TestE2E_Registers_Write(t *testing.T) {
 		e2eWantParamError(t, "WriteRegisters(65535, 2)", c.WriteRegisters(ctx, e2eUnit, 0xFFFF, []uint16{1, 2}), dev)
 
 		// Server-side enforcement for FC16.
-		zero := append(u16(0, 0), 0, 0)
+		zero := append(u16(0, 0), 0) // byte count 0, no data: consistently framed
 		assertExceptionResponse(t, sendRawFC(t, c, e2eUnit, byte(FCWriteMultipleRegisters), zero), exIllegalDataValue)
 		wrap := append(u16(0xFFFF, 2), 4, 0, 1, 0, 2)
 		assertExceptionResponse(t, sendRawFC(t, c, e2eUnit, byte(FCWriteMultipleRegisters), wrap), exIllegalDataAddress)

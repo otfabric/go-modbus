@@ -111,9 +111,25 @@ func FuzzServerRequest(f *testing.F) {
 			return
 		}
 
+		if fc&0x80 != 0 {
+			// An exception function code is not answered and the link is
+			// kept: the next response is the follow-up's.
+			const followUp uint16 = 2
+			if _, err := conn.Write(adu.AssembleMBAP(followUp, refUnitID, 0x03, []byte{0, 0, 0, 1})); err != nil {
+				return
+			}
+			res, err := readMBAPResponse(conn)
+			if err != nil {
+				t.Fatalf("fc 0x%02x: no answer to the follow-up FC03: %v", fc, err)
+			}
+			if res.TransactionID != followUp || res.FunctionCode != 0x03 {
+				t.Fatalf("fc 0x%02x: follow-up answered with %+v", fc, res)
+			}
+			return
+		}
 		res, err := readMBAPResponse(conn)
 		if err != nil {
-			// A closed connection (protocol error) is an acceptable outcome.
+			// A closed connection (truncated PDU) is an acceptable outcome.
 			return
 		}
 		if res.TransactionID != txnID {

@@ -12,6 +12,7 @@ const operationsHelp = `Available operations:
   wr:<type>:<addr>:<value>        Write register
   scan:<target>                   Scan address space
   ping:<count>[:<interval>]       Ping device
+  devid[:<category|object>]       Read device identification (FC43/14)
   sleep:<duration>                Pause execution
   suid:<id> / sid:<id>            Set unit ID for subsequent operations
   repeat                          Restart all operations from the beginning
@@ -26,6 +27,10 @@ Register types (rh/ri/wr):
   (62 32-bit values, 31 64-bit values, 250 bytes) and writes at most
   123 registers (246 bytes); ranges past address 0xffff are rejected.
   wr:bytes takes a hex string, with or without a 0x prefix.
+
+Device identification (devid): basic (default), regular or extended read the
+  objects of that category; a number (0..255, decimal or 0x hex) reads that one
+  object.
 
 Scan targets:
   c/coils, di/discreteInputs, h/hr/holding/holdingRegisters,

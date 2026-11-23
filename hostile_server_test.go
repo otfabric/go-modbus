@@ -372,9 +372,11 @@ func TestHostileServer_PipelinedBurst(t *testing.T) {
 
 // TestHostileServer_UnknownAndExceptionBitFCs sends every function code the
 // server does not serve, including those with the exception bit set (which a
-// client must never send as a request). Each is answered with exception 1
-// (Illegal Function) under the request's transaction and unit ID, whatever the
-// payload, and the connection stays usable.
+// client must never send as a request). One below 0x80 is answered with
+// exception 1 (Illegal Function) under the request's transaction and unit ID,
+// whatever the payload. One with the exception bit set is not answered: its
+// exception response would carry the request's own function code. Either way
+// the connection stays usable.
 func TestHostileServer_UnknownAndExceptionBitFCs(t *testing.T) {
 	hs := hostileStartServer(t, nil)
 	served := map[byte]bool{1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true,
@@ -390,6 +392,18 @@ func TestHostileServer_UnknownAndExceptionBitFCs(t *testing.T) {
 			txn++
 			if _, err := conn.Write(rawRequestFrame(txn, 0x11, byte(fc), payload)); err != nil {
 				t.Fatalf("FC 0x%02x: write: %v", fc, err)
+			}
+			if fc&0x80 != 0 {
+				// The next frame is the answer to the follow-up, not to this.
+				txn++
+				if _, err := conn.Write(rawRequestFrame(txn, 0x11, 0x03, []byte{0, 0, 0, 1})); err != nil {
+					t.Fatalf("FC 0x%02x: follow-up write: %v", fc, err)
+				}
+				frame, err := hostileReadFrame(t, conn)
+				if err != nil || binary.BigEndian.Uint16(frame) != txn || frame[7] != 0x03 {
+					t.Fatalf("FC 0x%02x with %d payload bytes: follow-up got % X, %v; want its FC03 answer", fc, len(payload), frame, err)
+				}
+				continue
 			}
 			frame, err := hostileReadFrame(t, conn)
 			if err != nil {
@@ -408,9 +422,13 @@ type hostileCase struct {
 	name    string
 	fc      byte
 	payload []byte
-	// close: the server drops the link; exc != 0: it answers with that
-	// exception; otherwise it answers with success, checked by ok when set.
+	// close: a PDU length error, answered with exception 3 after which the
+	// server closes the link; drop: a framing error, the server closes the
+	// link without an answer; exc != 0: it answers with that exception and
+	// keeps the link; otherwise it answers with success, checked by ok when
+	// set.
 	close bool
+	drop  bool
 	exc   ExceptionCode
 	ok    func(payload []byte) error
 }
@@ -432,8 +450,12 @@ func hostileRunCases(t *testing.T, hs *hostileServer, cases []hostileCase) {
 			if _, err := conn.Write(rawRequestFrame(0x0102, 0x21, tc.fc, tc.payload)); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			frame, err := hostileReadFrame(t, conn)
 			if tc.close {
+				wantAnsweredThenClosed(t, conn, rawRequestFrame(0x0102, 0x21, tc.fc|0x80, []byte{byte(exIllegalDataValue)}))
+				return
+			}
+			frame, err := hostileReadFrame(t, conn)
+			if tc.drop {
 				if err == nil {
 					t.Fatalf("got % X, want the link closed", frame)
 				}
@@ -450,24 +472,58 @@ func hostileRunCases(t *testing.T, hs *hostileServer, cases []hostileCase) {
 				if fc != tc.fc|0x80 || len(payload) != 1 || ExceptionCode(payload[0]) != tc.exc {
 					t.Fatalf("got FC 0x%02x payload % X, want exception %d", fc, payload, tc.exc)
 				}
-				return
-			}
-			if fc != tc.fc {
-				t.Fatalf("got FC 0x%02x payload % X, want success", fc, payload)
-			}
-			if tc.ok != nil {
-				if err := tc.ok(payload); err != nil {
-					t.Fatal(err)
+			} else {
+				if fc != tc.fc {
+					t.Fatalf("got FC 0x%02x payload % X, want success", fc, payload)
+				}
+				if tc.ok != nil {
+					if err := tc.ok(payload); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
-			// The connection is still usable.
-			if _, err := conn.Write(rawRequestFrame(9, 0x21, 0x03, []byte{0, 0, 0, 1})); err != nil {
-				t.Fatalf("follow-up write: %v", err)
-			}
-			if _, err := hostileReadFrame(t, conn); err != nil {
-				t.Fatalf("follow-up request: %v", err)
-			}
+			// The connection is still usable, after an exception too: a valid
+			// FC03 on it is answered, under its own transaction ID.
+			hostileFollowUpFC03(t, conn, 9)
 		})
+	}
+}
+
+// hostileFollowUpOrClosed is hostileFollowUpFC03 on a link the server may
+// have closed: it reports false when it finds the link closed, and fails the
+// test when the follow-up is answered out of step or not at all.
+func hostileFollowUpOrClosed(t *testing.T, conn net.Conn, txn uint16) bool {
+	t.Helper()
+	if _, err := conn.Write(rawRequestFrame(txn, 0x21, 0x03, []byte{0, 0, 0, 1})); err != nil {
+		return false
+	}
+	frame, err := hostileReadFrame(t, conn)
+	if err != nil {
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			t.Fatalf("follow-up FC03: no answer and no close")
+		}
+		return false
+	}
+	if binary.BigEndian.Uint16(frame) != txn || frame[7] != 0x03 || len(frame) != 11 {
+		t.Fatalf("follow-up FC03: got % X", frame)
+	}
+	return true
+}
+
+// hostileFollowUpFC03 sends a valid FC03 request for one register under txn
+// and checks that it is answered with a normal response under txn.
+func hostileFollowUpFC03(t *testing.T, conn net.Conn, txn uint16) {
+	t.Helper()
+	if _, err := conn.Write(rawRequestFrame(txn, 0x21, 0x03, []byte{0, 0, 0, 1})); err != nil {
+		t.Fatalf("follow-up write: %v", err)
+	}
+	frame, err := hostileReadFrame(t, conn)
+	if err != nil {
+		t.Fatalf("follow-up request: %v", err)
+	}
+	if binary.BigEndian.Uint16(frame) != txn || frame[7] != 0x03 || len(frame) != 11 {
+		t.Fatalf("follow-up FC03: got % X", frame)
 	}
 }
 
@@ -520,13 +576,15 @@ func TestHostileServer_QuantityAndAddressBoundaries(t *testing.T) {
 		hostileCase{name: "FC15 qty 1 ends past 0xFFFF", fc: 0x0F, payload: append(hostileU16(0xFFFF, 2), 1, 0), exc: exIllegalDataAddress},
 		hostileCase{name: "FC16 qty 123", fc: 0x10, payload: regs(123), ok: hostileLen(4)},
 		// 124 registers do not fit a request PDU: byte count 248 + 6 = 254 > 253.
-		hostileCase{name: "FC16 qty 124 byte count 248 no data", fc: 0x10, payload: append(hostileU16(0, 124), 248), exc: exIllegalDataValue},
+		// The PDU does not hold the data its byte count announces: a length
+		// error, checked before the quantity.
+		hostileCase{name: "FC16 qty 124 byte count 248 no data", fc: 0x10, payload: append(hostileU16(0, 124), 248), close: true},
 		hostileCase{name: "FC16 byte count 0 qty 1", fc: 0x10, payload: append(hostileU16(0, 1), 0), exc: exIllegalDataValue},
 		hostileCase{name: "FC16 last register", fc: 0x10, payload: append(hostileU16(0xFFFF, 1), 2, 0, 0), ok: hostileLen(4)},
 		hostileCase{name: "FC23 read 125 write 121", fc: 0x17,
 			payload: append(hostileU16(0, 125, 0, 121), append([]byte{242}, make([]byte, 242)...)...), ok: hostileLen(251)},
 		hostileCase{name: "FC23 read 126", fc: 0x17, payload: append(hostileU16(0, 126, 0, 1), 2, 0, 0), exc: exIllegalDataValue},
-		hostileCase{name: "FC23 write 122", fc: 0x17, payload: append(hostileU16(0, 1, 0, 122), 244), exc: exIllegalDataValue},
+		hostileCase{name: "FC23 write 122", fc: 0x17, payload: append(hostileU16(0, 1, 0, 122), 244), close: true},
 		hostileCase{name: "FC23 write ends past 0xFFFF", fc: 0x17, payload: append(hostileU16(0, 1, 0xFFFF, 2), 4, 0, 0, 0, 0), exc: exIllegalDataAddress},
 		hostileCase{name: "FC23 read ends past 0xFFFF", fc: 0x17, payload: append(hostileU16(0xFFFF, 2, 0, 1), 2, 0, 0), exc: exIllegalDataAddress},
 		hostileCase{name: "FC23 data longer than byte count", fc: 0x17, payload: append(hostileU16(0, 1, 0, 1), 2, 0, 0, 0), close: true},
@@ -535,7 +593,9 @@ func TestHostileServer_QuantityAndAddressBoundaries(t *testing.T) {
 		hostileCase{name: "FC05 at 0xFFFF on", fc: 0x05, payload: hostileU16(0xFFFF, 0xFF00), ok: hostileLen(4)},
 		hostileCase{name: "FC06 at 0xFFFF", fc: 0x06, payload: hostileU16(0xFFFF, 0xBEEF), ok: hostileLen(4)},
 		hostileCase{name: "FC06 5 bytes", fc: 0x06, payload: []byte{0, 0, 0, 0, 0}, close: true},
+		hostileCase{name: "FC06 3 bytes", fc: 0x06, payload: []byte{0, 0, 0}, close: true},
 		hostileCase{name: "FC22 7 bytes", fc: 0x16, payload: make([]byte, 7), close: true},
+		hostileCase{name: "FC22 5 bytes", fc: 0x16, payload: make([]byte, 5), close: true},
 		hostileCase{name: "FC22 at 0xFFFF", fc: 0x16, payload: hostileU16(0xFFFF, 0xFFFF, 0), ok: hostileLen(6)},
 	)
 	hostileRunCases(t, hs, cases)
@@ -564,6 +624,9 @@ func TestHostileServer_OtherFunctionCodes(t *testing.T) {
 		{name: "FC12", fc: 0x0C, ok: hostileLen(9)},
 		{name: "FC17", fc: 0x11, ok: hostileLen(3)},
 		{name: "FC17 with data", fc: 0x11, payload: []byte{0}, close: true},
+		{name: "FC07 with data", fc: 0x07, payload: []byte{0}, close: true},
+		{name: "FC11 with data", fc: 0x0B, payload: []byte{0, 0}, close: true},
+		{name: "FC12 with data", fc: 0x0C, payload: []byte{1}, close: true},
 
 		{name: "FC08 empty", fc: 0x08, close: true},
 		{name: "FC08 one byte", fc: 0x08, payload: []byte{0}, close: true},
@@ -593,15 +656,15 @@ func TestHostileServer_OtherFunctionCodes(t *testing.T) {
 			}
 			return s
 		}()...), ok: hostileLen(1 + 35*4)},
-		{name: "FC20 byte count 0xFC", fc: 0x14, payload: append([]byte{0xFC}, make([]byte, 0xFC)...), close: true},
+		{name: "FC20 byte count 0xFC", fc: 0x14, payload: append([]byte{0xFC}, make([]byte, 0xFC)...), drop: true},
 
 		{name: "FC21 empty", fc: 0x15, close: true},
 		{name: "FC21 byte count 8", fc: 0x15, payload: append([]byte{8}, make([]byte, 8)...), exc: exIllegalDataValue},
 		{name: "FC21 ok", fc: 0x15, payload: readFile(writeSub(6, 1, 0, 1, []byte{1, 2})), ok: hostileLen(10)},
 		{name: "FC21 reference type 5", fc: 0x15, payload: readFile(writeSub(5, 1, 0, 1, []byte{1, 2})), exc: exIllegalDataAddress},
-		{name: "FC21 length runs past the data", fc: 0x15, payload: readFile(writeSub(6, 1, 0, 2, []byte{1, 2})), close: true},
-		{name: "FC21 length 0xFFFF", fc: 0x15, payload: readFile(writeSub(6, 1, 0, 0xFFFF, []byte{1, 2})), close: true},
-		{name: "FC21 trailing partial sub-request", fc: 0x15, payload: readFile(writeSub(6, 1, 0, 1, []byte{1, 2}), []byte{6, 0, 1}), close: true},
+		{name: "FC21 length runs past the data", fc: 0x15, payload: readFile(writeSub(6, 1, 0, 2, []byte{1, 2})), exc: exIllegalDataValue},
+		{name: "FC21 length 0xFFFF", fc: 0x15, payload: readFile(writeSub(6, 1, 0, 0xFFFF, []byte{1, 2})), exc: exIllegalDataValue},
+		{name: "FC21 trailing partial sub-request", fc: 0x15, payload: readFile(writeSub(6, 1, 0, 1, []byte{1, 2}), []byte{6, 0, 1}), exc: exIllegalDataValue},
 		{name: "FC21 record 0x2710", fc: 0x15, payload: readFile(writeSub(6, 1, 0x2710, 1, []byte{1, 2})), exc: exIllegalDataAddress},
 
 		{name: "FC24 empty", fc: 0x18, close: true},
@@ -612,6 +675,7 @@ func TestHostileServer_OtherFunctionCodes(t *testing.T) {
 
 		{name: "FC43 empty", fc: 0x2B, close: true},
 		{name: "FC43 MEI only", fc: 0x2B, payload: []byte{0x0E}, close: true},
+		{name: "FC43 trailing byte", fc: 0x2B, payload: []byte{0x0E, 1, 0, 0}, close: true},
 		{name: "FC43 MEI 0x0D", fc: 0x2B, payload: []byte{0x0D, 1, 0}, exc: exIllegalFunction},
 		{name: "FC43 MEI 0x0D alone", fc: 0x2B, payload: []byte{0x0D}, exc: exIllegalFunction},
 		{name: "FC43 category 0", fc: 0x2B, payload: []byte{0x0E, 0, 0}, exc: exIllegalDataValue},
@@ -775,6 +839,12 @@ func TestHostileServer_RandomPDUSweep(t *testing.T) {
 		if _, err := conn.Write(rawRequestFrame(txn, unit, fc, payload)); err != nil {
 			t.Fatalf("round %d: write: %v", i, err)
 		}
+		if fc&0x80 != 0 {
+			// Not answered (exception bit set): the next answer is the
+			// follow-up's.
+			hostileFollowUpFC03(t, conn, 0xF000|txn)
+			continue
+		}
 		frame, err := hostileReadFrame(t, conn)
 		if err != nil {
 			var ne net.Error
@@ -797,6 +867,12 @@ func TestHostileServer_RandomPDUSweep(t *testing.T) {
 				}
 				if res[0] == byte(exServerDeviceFailure) {
 					t.Errorf("round %d: FC 0x%02x payload % X: Server Device Failure from a well-behaved handler", i, fc, payload)
+				}
+				// After a PDU length error the server closes the link: a
+				// follow-up FC03 is either served in step or finds it closed.
+				if res[0] == byte(exIllegalDataValue) && !hostileFollowUpOrClosed(t, conn, 0xE000|txn) {
+					closes++
+					redial()
 				}
 				break
 			}

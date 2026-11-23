@@ -169,18 +169,26 @@ func writeRuntimeValue(ctx context.Context, client *modbus.Client, unitID uint8,
 
 // cliResult is a structured result for JSON output mode.
 type cliResult struct {
-	Op    string  `json:"op"`
-	Addr  *uint16 `json:"addr,omitempty"`
-	Type  string  `json:"type,omitempty"`
-	Value any     `json:"value,omitempty"`
-	Hex   string  `json:"hex,omitempty"`
-	Error string  `json:"error,omitempty"`
+	Op   string  `json:"op"`
+	Addr *uint16 `json:"addr,omitempty"`
+	// Object is the object id of a device identification record.
+	Object *uint8 `json:"object,omitempty"`
+	Type   string `json:"type,omitempty"`
+	Value  any    `json:"value,omitempty"`
+	Hex    string `json:"hex,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // at returns a pointer to addr, for cliResult.Addr: a plain uint16 with
 // omitempty would drop address 0.
 func at(addr uint16) *uint16 {
 	return &addr
+}
+
+// objectID returns a pointer to id, for cliResult.Object: object 0x00 is the
+// vendor name.
+func objectID(id uint8) *uint8 {
+	return &id
 }
 
 // output writes operation results either as text or as line-delimited JSON.
@@ -463,6 +471,9 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 
 		case ping:
 			performPing(ctx, client, currentUnitID, o.count, o.duration, out)
+
+		case deviceID:
+			trackErr(performDeviceID(ctx, client, currentUnitID, *o, out))
 		}
 
 		if failFast && opErr.failed > 0 {
@@ -470,4 +481,32 @@ func executeOperations(ctx context.Context, client *modbus.Client, runList []ope
 		}
 	}
 	return result()
+}
+
+// performDeviceID reads the device identification (FC43 / MEI type 14) of the
+// unit and prints the conformity level and one line per object.
+func performDeviceID(ctx context.Context, client *modbus.Client, unitID uint8, o operation, out *output) error {
+	di, err := client.ReadDeviceIdentification(ctx, unitID, o.devCategory, o.devObject)
+	if err != nil {
+		if out.json {
+			out.emit(cliResult{Op: "deviceId", Error: err.Error()})
+		} else {
+			out.printf("failed to read device identification: %v\n", err)
+		}
+		return err
+	}
+	level := fmt.Sprintf("0x%02x", di.ConformityLevel)
+	if out.json {
+		out.emit(cliResult{Op: "deviceId", Type: "conformity", Value: level})
+	} else {
+		out.printf("conformity level %s (individual access: %v)\n", level, di.SupportsIndividualAccess())
+	}
+	for _, obj := range di.Objects {
+		if out.json {
+			out.emit(cliResult{Op: "deviceIdObject", Object: objectID(uint8(obj.ID)), Type: obj.Name, Value: obj.Value})
+		} else {
+			out.printf("0x%02x\t%-20s : %q\n", uint8(obj.ID), obj.Name, obj.Value)
+		}
+	}
+	return nil
 }

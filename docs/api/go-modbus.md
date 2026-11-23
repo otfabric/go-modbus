@@ -226,7 +226,7 @@ New creates, configures and returns a modbus client object.
 func (mc *Client) BusMessageCount(ctx context.Context, unitID uint8) (uint16, error)
 ```
 
-BusMessageCount reads the bus message count (sub-function 0x000B).
+BusMessageCount reads the bus message count (sub-function 0x000B). The request carries the data field 00 00 (up to v1.19.0 it carried none).
 
 #### func (Client) Close
 
@@ -272,7 +272,7 @@ DiagnosticBusExceptionErrorCount reads the bus exception error count (sub-functi
 func (mc *Client) DiagnosticClearCounters(ctx context.Context, unitID uint8) error
 ```
 
-DiagnosticClearCounters clears all counters and the diagnostic register (sub-function 0x000A).
+DiagnosticClearCounters clears all counters and the diagnostic register (sub-function 0x000A). The response must echo the request data 00 00.
 
 #### func (Client) DiagnosticClearOverrunCounterAndFlag
 
@@ -280,7 +280,7 @@ DiagnosticClearCounters clears all counters and the diagnostic register (sub-fun
 func (mc *Client) DiagnosticClearOverrunCounterAndFlag(ctx context.Context, unitID uint8) error
 ```
 
-DiagnosticClearOverrunCounterAndFlag clears the overrun counter and error flag (sub-function 0x0014).
+DiagnosticClearOverrunCounterAndFlag clears the overrun counter and error flag (sub-function 0x0014). The response must echo the request data 00 00.
 
 #### func (Client) DiagnosticForceListenOnlyMode
 
@@ -288,7 +288,7 @@ DiagnosticClearOverrunCounterAndFlag clears the overrun counter and error flag (
 func (mc *Client) DiagnosticForceListenOnlyMode(ctx context.Context, unitID uint8) error
 ```
 
-DiagnosticForceListenOnlyMode sends Force Listen Only Mode (sub-function 0x0004). Per the spec, no response is returned by serial-line devices (the device silently enters listen-only mode). Over TCP/TLS through a gateway, behavior depends on the gateway implementation — it may return a normal echo or time out.
+DiagnosticForceListenOnlyMode sends Force Listen Only Mode (sub-function 0x0004, data 00 00). The specification defines no response: a serial-line device silently enters listen-only mode, and the call then fails with ErrRequestTimedOut. Over TCP/TLS through a gateway, behavior depends on the gateway implementation: it may return a normal response, which is accepted whatever its data, or time out. This library's server has no listen-only state of its own; a DiagnosticsHandler may implement one.
 
 #### func (Client) DiagnosticLoopback
 
@@ -296,7 +296,7 @@ DiagnosticForceListenOnlyMode sends Force Listen Only Mode (sub-function 0x0004)
 func (mc *Client) DiagnosticLoopback(ctx context.Context, unitID uint8, value uint16) (uint16, error)
 ```
 
-DiagnosticLoopback sends a Return Query Data (sub-function 0x0000) request and returns the echoed value. Useful for verifying communication with a remote device.
+DiagnosticLoopback sends a Return Query Data (sub-function 0x0000) request with value as its data and checks that the device echoes it. Useful for verifying communication with a remote device. It returns the echoed value; a response whose data is not the two bytes sent is a \*ProtocolError (up to v1.19.0 a different value was returned without an error).
 
 #### func (Client) DiagnosticRegister
 
@@ -304,7 +304,7 @@ DiagnosticLoopback sends a Return Query Data (sub-function 0x0000) request and r
 func (mc *Client) DiagnosticRegister(ctx context.Context, unitID uint8) (uint16, error)
 ```
 
-DiagnosticRegister reads the diagnostic register (sub-function 0x0002).
+DiagnosticRegister reads the diagnostic register (sub-function 0x0002). The request carries the data field 00 00 (up to v1.19.0 it carried none).
 
 #### func (Client) DiagnosticServerBusyCount
 
@@ -344,7 +344,7 @@ DiagnosticServerNoResponseCount reads the server no-response count (sub-function
 func (mc *Client) Diagnostics(ctx context.Context, unitID uint8, subFunction DiagnosticSubFunction, data []byte) (dr *DiagnosticResponse, err error)
 ```
 
-Diagnostics sends a Diagnostics request (FC 0x08). subFunction selects the diagnostic (use DiagnosticSubFunction constants). data is optional request data (sub-function-specific; use nil or empty for none). The response echoes the sub-function and returns sub-function-specific data.
+Diagnostics sends a Diagnostics request (FC 0x08). subFunction selects the diagnostic (use DiagnosticSubFunction constants; vendor sub-functions are sent as they are). data is the request data (sub-function-specific; nil or empty for none), a whole number of 16-bit items (section 6.8): an odd length is a \*ParameterError (Param "data") and nothing is sent. The response must echo the sub-function; its data is returned as received, whatever its length, so that vendor sub-functions can be read. The typed wrappers below check the data of the sub-functions they send, and send the data field 00 00 where the specification gives it (section 6.8.1).
 
 At most 250 bytes of data fit a request. With more, Diagnostics returns a \*ParameterError (Param "data") and sends nothing, on every transport. That error also matches, with errors.Is, what the transport's framer returned for such a request before Diagnostics checked it: ErrInvalidMBAPLength on tcp, tcp+tls and udp, ErrProtocolError on rtu, rtuovertcp, rtuoverudp, ascii and asciiovertcp. A function code that AllowedFunctionCodes refuses and a client that is not open are reported first, as for a request that fits, and ClientMetrics sees OnRequest and OnError for it.
 
@@ -509,6 +509,11 @@ Spec limits:
 	FileNumber   must be 1–0xFFFF
 	RecordNumber must be 0–0x270F (decimal 0–9999)
 	Total request byte count must not exceed 0xF5 (at most 35 sub-requests)
+	Total response data length, the sum of 2 + 2*RecordLength over the
+	sub-requests, must not exceed 0xF5 (at most 121 registers in all for
+	one sub-request, fewer for several)
+
+Arguments outside these limits are reported as a \*ParameterError and nothing is sent.
 
 #### func (Client) ReadHoldingRegister
 
@@ -804,10 +809,14 @@ const (
 	// MBAP header the server cannot frame: err is ErrInvalidMBAPLength or
 	// ErrUnknownProtocolID.
 	CloseMalformedFrame
-	// CloseProtocolError is a connection closed because a request violated the
-	// protocol (a PDU whose length does not match its function code, for
-	// example): err is ErrProtocolError. The request is reported to ServerMetrics
-	// as an OnError with ErrProtocolError.
+	// CloseProtocolError is a connection closed because a request PDU was
+	// shorter or longer than the fields of its function code or than its byte
+	// count announces (which on a TCP stream is what a wrong MBAP length looks
+	// like), or because a handler returned ErrProtocolError: err is
+	// ErrProtocolError. The request is reported to ServerMetrics as an OnError
+	// with an error that matches ErrProtocolError. Since v1.20.0 a request PDU
+	// of the wrong length is answered with Illegal Data Value before the
+	// connection is closed.
 	CloseProtocolError
 	// CloseWriteFailed is a connection closed because a response could not be
 	// written in full within ServerConfig.Timeout: err is the write error.
@@ -1280,7 +1289,9 @@ type DiagnosticsHandler interface {
 }
 ```
 
-DiagnosticsHandler is an optional interface for serving FC08 (Diagnostics). The handler returns the response data; the server echoes the sub-function in front of it. For Return Query Data (0x0000) the data should echo req.Data. For Force Listen Only Mode (0x0004), a serial-line device sends no response: return ErrNoResponse to behave like one. Other state changes (restart communications, clear counters) are the handler's to apply. At most 250 data bytes fit in a response.
+DiagnosticsHandler is an optional interface for serving FC08 (Diagnostics). The handler returns the response data; the server echoes the sub-function in front of it. For Return Query Data (0x0000) the data should echo req.Data. For Force Listen Only Mode (0x0004), a serial-line device sends no response: return ErrNoResponse to behave like one. Other state changes (restart communications, clear counters) are the handler's to apply; the server keeps no listen-only state of its own.
+
+The data field is N x 2 bytes in both directions (MODBUS Application Protocol V1.1b3, section 6.8). A request with an odd number of data bytes is answered with Illegal Data Value without calling the handler; data the handler returns with an odd length, or more than 250 bytes, is not sent: the request is answered with Server Device Failure. Vendor sub-functions reach the handler like the others.
 
 ### type DiagnosticsRequest
 
@@ -1856,7 +1867,7 @@ type ReportServerIDHandler interface {
 }
 ```
 
-ReportServerIDHandler is an optional interface for serving FC17 (Report Server ID). The handler returns the device-specific payload: by convention the server ID bytes, a run indicator byte (0xFF on, 0x00 off) and optional additional data (Client.ReportServerID reads the last byte as the run indicator). The server adds the byte count. At most 251 bytes fit.
+ReportServerIDHandler is an optional interface for serving FC17 (Report Server ID). The handler returns everything after the byte count, in the order of MODBUS Application Protocol V1.1b3, section 6.13: the Server ID (device specific, at least one byte is advisable), the Run Indicator Status byte (0x00 OFF, 0xFF ON) and optional Additional Data. The server adds the byte count; it cannot tell where the Server ID ends, so it does not check the run indicator. Data must hold at least the run indicator: an empty result is answered with Server Device Failure, as is one of more than 251 bytes. Client.ReportServerID guesses the run indicator from the last byte only when it is 0x00 or 0xFF; a device with Additional Data should document the length of its Server ID so that clients can use ReportServerIDResponse.RunIndicator.
 
 ### type ReportServerIDRequest
 
@@ -1880,9 +1891,17 @@ type ReportServerIDResponse struct {
 }
 ```
 
-ReportServerIDResponse is the response from Report Server ID (FC 0x11). Data contains the raw device-specific payload (server ID bytes, run indicator, and any optional additional data).
+ReportServerIDResponse is the response from Report Server ID (FC 0x11). Data contains the raw device-specific payload after the byte count: the Server ID, the Run Indicator Status byte (0x00 OFF, 0xFF ON) and any Additional Data (MODBUS Application Protocol V1.1b3, section 6.13). The length of the Server ID is device specific, so where the run indicator is cannot be told from the response alone.
 
-RunIndicatorStatus is a heuristic parse: when the payload contains at least 2 bytes, the last byte is interpreted as the run indicator (0xFF = ON, 0x00 = OFF). This follows the common convention but may misinterpret vendor-specific data on devices that pack additional information into the payload. When the heuristic does not apply (fewer than 2 bytes), the field is nil. Callers that need strict parsing should inspect Data directly.
+RunIndicatorStatus is a guess from the last byte of Data, not a parse: it is set whenever Data has at least 2 bytes, true when that byte is 0xFF and false otherwise. That byte is the run indicator only on a device that sends no Additional Data. When the length of the device's Server ID is known, use RunIndicator instead, which also tells a byte that is neither 0x00 nor 0xFF.
+
+#### func (ReportServerIDResponse) RunIndicator
+
+```go
+func (rs *ReportServerIDResponse) RunIndicator(serverIDLen int) (on, ok bool)
+```
+
+RunIndicator returns the Run Indicator Status of a device whose Server ID is serverIDLen bytes long: the byte of Data at that offset. ok is false when Data is too short for it or the byte is neither 0x00 (OFF) nor 0xFF (ON).
 
 ### type RequestHandler
 
@@ -2177,14 +2196,17 @@ type ServerPDUExchange struct {
 	ClientRole string
 	// UnitID is the unit id the request was addressed to.
 	UnitID uint8
-	// Request is the request PDU as received.
+	// Request is the request PDU as received. For a request whose MBAP
+	// length the server rejected as soon as it read the function code (a
+	// fixed-size function code), it is the function code alone.
 	Request []byte
 	// Response is the response PDU the server answers with: an exception
 	// response has the function code with bit 0x80 set, the server's own
 	// exceptions (Illegal Function for a function code no handler serves, for
 	// example) included. It is nil when the server sends no response: a handler
-	// that returned ErrNoResponse, or a request that violated the protocol, on
-	// which the server closes the connection.
+	// that returned ErrNoResponse, a request whose function code has the
+	// exception bit set (0x80-0xFF; the connection is kept), or a handler that
+	// returned ErrProtocolError, on which the server closes the connection.
 	Response []byte
 	// Received is the time the server read the request from the connection,
 	// Answered the time its answer was decided, before the response is

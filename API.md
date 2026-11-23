@@ -463,6 +463,8 @@ coils, err := client.ReadCoils(ctx, 1, 0x0000, 8)
 // coils[0] = coil at address 0, coils[7] = coil at address 7
 ```
 
+The byte count of an FC01/FC02 response must be exactly ceil(quantity/8), else `*ProtocolError`. The unused high bits of the last byte are to be zero (V1.1b3 sections 6.1, 6.2); bits a device leaves set there are ignored, not reported.
+
 #### 16-bit registers
 
 ```go
@@ -686,6 +688,8 @@ fmt.Println("file 4 record 1:", results[0]) // e.g. [0x0DFE 0x0020]
 fmt.Println("file 3 record 9:", results[1]) // e.g. [0x33CD 0x0040]
 ```
 
+The response must fit too: each sub-request is answered with 2 + 2*RecordLength bytes, and their sum, the response data length, is at most 0xF5 (V1.1b3 section 6.14). That is at most 121 registers for one sub-request and fewer in all for several (every sub-response is even, so 244 bytes is the largest sum). Since v1.20.0, requests that ask for more are refused with a `*ParameterError` (`Param` `"RecordLength"` when one sub-request alone is too large, `"requests"` when the sum is) and nothing is sent; up to v1.19.0 they were sent and a conforming server answered with exception 3. The file response length of each sub-response is accepted from 1 upwards: the 0x07 minimum of the response table contradicts the worked example (0x05) and the layout, and is not enforced.
+
 #### Write File Records — FC21
 
 Writes one or more groups of registers to a file on the remote device.
@@ -780,7 +784,9 @@ Sends a FC43 / MEI 0x0E request for a specific category or one object. Pages thr
 | `modbus.DeviceIDExtended` | `0x03` | Extended (+ private objects 0x80–0xFF) |
 | `modbus.DeviceIDIndividual` | `0x04` | Single object (set `startObject` to desired ID) |
 
-For stream access (Basic/Regular/Extended), pass `startObject` as `0x00` to start from the first object. For Individual, pass the desired object ID. If you request a higher category than the device supports, it responds at its actual conformity level.
+For stream access (Basic/Regular/Extended), pass `startObject` as `0x00` to start from the first object. For Individual, pass the desired object ID. If you request a higher category than the device supports, it responds at its actual conformity level, with the objects of that level.
+
+The response's ReadDevId code is to be the request's (V1.1b3 section 6.21, "Same as request ReadDevId code"). For stream access a lower stream code is tolerated, from a device that answers a request above its conformity level with the code of its level, and `DeviceIdentification.Category` reports it; a higher code, or one outside 1..3, is a `*ProtocolError` (since v1.20.0). For individual access (`DeviceIDIndividual`) the code must be 04 and the response must carry exactly one object, the requested one. Number Of Objects is read as the number of objects in that PDU.
 
 **Response types:**
 
@@ -887,6 +893,12 @@ func (mc *Client) SupportsDeviceIdentification(ctx context.Context, unitID uint8
 it never returns a non-nil error for expected probe-negative outcomes — those are
 captured in the `ProbeResult`. Only context cancellation and unsupported probe FCs
 return a non-nil error.
+
+`ProbeException` is reported only for an exception to the probed function: function
+code plus 0x80, exactly one byte, a code 0x01..0x0B. Any other exception-shaped
+response (another function code, a missing or extra byte, code 0x00 or above 0x0B) is
+`ProbeValidationFailed` (since v1.20.0; before, any response with the high bit set and
+a payload was `ProbeException` with its first byte as the code).
 
 ```go
 func (mc *Client) ProbeFunction(ctx context.Context, unitID uint8, fc FunctionCode) (ProbeResult, error)
@@ -1020,11 +1032,13 @@ if err != nil {
 // cl.Events contains 0-64 event bytes (most recent first)
 ```
 
-#### Diagnostics (FC 0x08)
+The event field holds 0-64 bytes (V1.1b3 section 6.10): a response with a byte count above 70 (6 + 64) is a `*ProtocolError` (since v1.20.0).
 
 #### Diagnostics (FC 0x08)
 
 Sends a Diagnostics request with a sub-function code and optional data. The response echoes the sub-function and returns sub-function-specific data. Use **DiagnosticSubFunction** constants for well-known sub-functions.
+
+The data field is a whole number of 16-bit items in both directions (V1.1b3 section 6.8, "N x 2 Bytes"), for vendor sub-functions too. `data` of odd length is a `*ParameterError` (`Method` `"Diagnostics"`, `Param` `"data"`) and nothing is sent (since v1.20.0); like the too-long case below, `AllowedFunctionCodes` and a client that is not open are reported first, and `ClientMetrics` sees `OnRequest` and `OnError`. The response must echo the sub-function; its data is returned as received, whatever its length, so that vendor sub-functions stay readable. The typed wrappers (see "Convenience helpers") check the data of the sub-functions they send.
 
 ```go
 func (mc *Client) Diagnostics(
@@ -1083,7 +1097,7 @@ if err != nil {
 **Example — Return Diagnostic Register:**
 
 ```go
-dr, err := client.Diagnostics(ctx, 1, modbus.DiagReturnDiagnosticRegister, nil)
+dr, err := client.Diagnostics(ctx, 1, modbus.DiagReturnDiagnosticRegister, []byte{0x00, 0x00})
 if err != nil {
     log.Fatal(err)
 }
@@ -1101,9 +1115,14 @@ func (mc *Client) ReportServerID(ctx context.Context, unitID uint8) (*ReportServ
 ```go
 type ReportServerIDResponse struct {
     Data               []byte
-    RunIndicatorStatus *bool  // parsed from last byte: true=ON (0xFF), false=OFF (0x00); nil if not present
+    RunIndicatorStatus *bool  // a guess from the last byte when Data has 2 bytes or more: true for 0xFF, else false
 }
+
+// RunIndicator reads the run indicator of a device whose Server ID is serverIDLen bytes long.
+func (rs *ReportServerIDResponse) RunIndicator(serverIDLen int) (on, ok bool)
 ```
+
+The response is Byte Count, Server ID (device specific), Run Indicator Status and optional Additional Data (V1.1b3 section 6.13). Where the Server ID ends cannot be told from the response, so `Data` (everything after the byte count) is the reliable field. `RunIndicatorStatus` is set when `Data` has at least 2 bytes, true when its last byte is `0xFF` and false otherwise (unchanged from v1.19.0): that is the run indicator of a device without Additional Data, and may be a data byte on one with it. `RunIndicator(serverIDLen)` reads the byte at that offset and reports `ok` false when `Data` is too short or the byte is neither `0x00` nor `0xFF` (since v1.20.0). A response with Byte Count 0, which lacks the mandatory run indicator, is returned with empty `Data`.
 
 **Example:**
 
@@ -1112,23 +1131,29 @@ rs, err := client.ReportServerID(ctx, 1)
 if err != nil {
     log.Fatal(err)
 }
-// rs.Data contains server ID and optional additional data; rs.RunIndicatorStatus indicates ON/OFF when present
+// The device's documentation says its Server ID is 1 byte long.
+if on, ok := rs.RunIndicator(1); ok {
+    fmt.Println("running:", on)
+}
 ```
 
 #### Convenience helpers
 
 ```go
-// FC08 sub-function 0x0000 — loopback test; returns the echoed value.
+// FC08 sub-function 0x0000 — loopback test; the response must echo value.
 func (mc *Client) DiagnosticLoopback(ctx context.Context, unitID uint8, value uint16) (uint16, error)
 
 // FC08 sub-function 0x0002 — read the diagnostic register.
 func (mc *Client) DiagnosticRegister(ctx context.Context, unitID uint8) (uint16, error)
 
-// FC08 sub-function 0x0004 — force the device into listen-only mode (no responses).
-// No response is expected; the method returns nil on success.
+// FC08 sub-function 0x0004 — force the device into listen-only mode.
+// The specification defines no response: a serial device does not answer, and the
+// call fails with ErrRequestTimedOut. A gateway may answer; any normal response is
+// accepted.
 func (mc *Client) DiagnosticForceListenOnlyMode(ctx context.Context, unitID uint8) error
 
-// FC08 sub-function 0x000A — clear all counters and the diagnostic register.
+// FC08 sub-function 0x000A — clear all counters and the diagnostic register;
+// the response must echo 00 00.
 func (mc *Client) DiagnosticClearCounters(ctx context.Context, unitID uint8) error
 
 // FC08 sub-function 0x000B — read the bus message count.
@@ -1144,8 +1169,23 @@ func (mc *Client) DiagnosticServerBusyCount(ctx context.Context, unitID uint8) (
 func (mc *Client) DiagnosticBusCharacterOverrunCount(ctx context.Context, unitID uint8) (uint16, error)
 ```
 
+Every wrapper sends the data field section 6.8.1 gives its sub-function: the loopback its
+value, every other one `00 00`. Request PDUs, for example: `08 00 02 00 00`
+(`DiagnosticRegister`), `08 00 0B 00 00` (`BusMessageCount`), `08 00 0A 00 00`
+(`DiagnosticClearCounters`). Up to v1.19.0 `DiagnosticRegister` and `BusMessageCount` sent
+`08 00 02` and `08 00 0B`, without the data field.
+
 All counter wrappers validate that the response contains exactly 2 data bytes and return a
-`*ProtocolError` if the payload is malformed.
+`*ProtocolError` if the payload is malformed. `DiagnosticLoopback`,
+`DiagnosticClearCounters` and `DiagnosticClearOverrunCounterAndFlag` check that the response
+data is the echo of the request data ("Echo Request Data") and return a `*ProtocolError`
+otherwise; up to v1.19.0 the loopback returned whatever value came back, and the two clear
+wrappers accepted any two bytes. The generic `Diagnostics` checks none of this, for advanced
+and vendor use.
+
+`DiagnosticClearOverrunCounterAndFlag` (0x0014) also expects the echo of `00 00`. No wrapper
+is offered for Restart Communications Option (0x0001) or Change ASCII Input Delimiter
+(0x0003): use `Diagnostics`, which sends the data you give (`00 00` or `FF 00`; `CHAR 00`).
 
 ---
 
@@ -1503,9 +1543,15 @@ served this way. Vendor, user-defined and unknown function codes are not support
 are always answered with `Illegal Function`.
 
 In each case the server parses and validates the request before the handler sees it,
-and encodes the response; a handler only supplies data. A malformed request closes the
-connection; one that is well formed but out of range gets the exception the
-specification prescribes (see [INTEROPERABILITY.md](INTEROPERABILITY.md#how-the-server-treats-a-request)).
+and encodes the response; a handler only supplies data. A request whose PDU is shorter
+or longer than its function code's fields, or than its byte count, is answered with
+Illegal Data Value and the connection is then closed, since the stream may be out of
+step (since v1.20.0; up to v1.19.0 it was closed without an answer); the handler is not
+called, nor for anything pipelined behind it. A request that is well framed but out of
+range gets the exception the specification prescribes and the connection is kept. A
+request whose function code has the exception bit set (`0x80`..`0xFF`) is not answered
+and the connection is kept (see
+[INTEROPERABILITY.md](INTEROPERABILITY.md#how-the-server-treats-a-request)).
 
 #### Serial-line function codes (FC07, FC0B, FC0C)
 
@@ -1547,6 +1593,10 @@ type CommEventLogRequest struct {
 These handlers follow the same transport-neutral policy as the client: they are dispatched
 regardless of transport type, since gateways commonly forward these PDUs over TCP/UDP.
 
+At most 64 event bytes fit an FC12 response (V1.1b3 section 6.10). A `CommEventLogHandler`
+that returns more is answered with Server Device Failure and the failure logged (since
+v1.20.0; up to v1.19.0, up to 249 were sent); the events are never truncated.
+
 #### Diagnostics (FC08)
 
 ```go
@@ -1568,7 +1618,15 @@ The handler returns the response data; the server echoes the sub-function in fro
 For Return Query Data (0x0000) echo `req.Data`; for the counters return the counter as two
 big-endian bytes. Return `ErrIllegalFunction` for a sub-function the device does not have.
 A serial-line device does not answer Force Listen Only Mode (0x0004): return
-`ErrNoResponse` to behave like one. At most 250 data bytes fit in a response.
+`ErrNoResponse` to behave like one. The server keeps no listen-only state of its own; a
+handler that emulates one decides which later requests it answers. At most 250 data bytes
+fit in a response.
+
+The data field is N x 2 bytes in both directions (V1.1b3 section 6.8). Since v1.20.0 a
+request whose data has an odd length is answered with Illegal Data Value (exception 3,
+the "Data Value == OK" step of figure 18) without calling the handler, and data the handler
+returns with an odd length is not sent: the request is answered with Server Device Failure
+and the failure logged. Vendor sub-functions reach the handler like the others.
 
 #### Report Server ID (FC17, 0x11)
 
@@ -1579,9 +1637,14 @@ type ReportServerIDHandler interface {
 ```
 
 `ReportServerIDRequest` carries `ClientAddr`, `ClientRole`, `UnitID` and `FunctionCode`.
-The handler returns the device-specific payload, by convention the server ID, a run
-indicator byte (0xFF on, 0x00 off) and optional additional data; the server adds the byte
-count. At most 251 bytes fit.
+The handler returns everything after the byte count, in the order of V1.1b3 section 6.13:
+the Server ID (device specific; at least one byte is advisable), the Run Indicator Status
+byte (0x00 OFF, 0xFF ON) and optional Additional Data. The server adds the byte count. It
+cannot tell where the Server ID ends, so it does not check the run indicator; it does check
+that the mandatory run indicator can be there: since v1.20.0 an empty result is answered
+with Server Device Failure rather than a response with Byte Count 0. At most 251 bytes fit.
+A device with Additional Data should document the length of its Server ID, so that clients
+can read the run indicator with `ReportServerIDResponse.RunIndicator`.
 
 #### File records (FC20, FC21)
 
@@ -1695,6 +1758,18 @@ server derives a sensible level from the objects provided. Only MEI type 14 (0x0
 supported; other MEI types return `Illegal Function`, an
 out-of-range Read Device ID code returns `Illegal Data Value`, and individual access to an
 unknown object returns `Illegal Data Address`.
+
+Since v1.20.0: `ConformityLevel` must be 0x01–0x03 (stream access only) or 0x81–0x83
+(stream and individual access), or 0 to let the server derive one; any other value is
+answered with Server Device Failure and logged. The server serves a stream request at the
+lower of the requested category and the level's (a basic device asked for regular
+identification answers with its basic objects, under the request's ReadDevId code 02);
+objects above the level are not served. Individual access to a device whose level lacks
+0x80 is answered with Illegal Data Value (03); to an object the device does not have, or
+that lies above its level, with Illegal Data Address (02). `Objects` must not contain an
+object ID twice, and no object may be longer than 244 bytes (it must fit a response of its
+own); either is answered with Server Device Failure for every FC43 request and logged. The
+mandatory basic objects (0x00–0x02) are not checked.
 
 ---
 
@@ -2125,7 +2200,7 @@ const (
     CloseClientClosed   CloseReason = iota + 1 // read ended with io.EOF, or io.ErrUnexpectedEOF mid-request
     CloseIdleTimeout                           // no complete request within Timeout (err wraps os.ErrDeadlineExceeded)
     CloseMalformedFrame                        // MBAP header not framable: ErrInvalidMBAPLength, ErrUnknownProtocolID
-    CloseProtocolError                         // a request violated the protocol: ErrProtocolError
+    CloseProtocolError                         // a request PDU of the wrong length (after exception 3), or a handler that returned ErrProtocolError: ErrProtocolError
     CloseWriteFailed                           // a response could not be written within Timeout
     CloseReadFailed                            // any other read error, a connection reset for example
     CloseServerStopped                         // Shutdown or Stop (err: the closed socket's, typically net.ErrClosed)
@@ -2180,8 +2255,14 @@ type ServerPDUTapFunc func(ctx context.Context, ex ServerPDUExchange)
 - The server's own answers are reported too: Illegal Function for a function
   code no handler serves, Server Device Failure for a handler that failed.
 - `Response` is nil when nothing is sent: a handler that returned
-  `ErrNoResponse`, or a request that violated the protocol (the connection is
-  then closed, reported as `CloseProtocolError`).
+  `ErrNoResponse`, a request whose function code has the exception bit set
+  (`0x80`..`0xFF`, the connection is kept), or a handler that returned
+  `ErrProtocolError` (the connection is then closed, reported as
+  `CloseProtocolError`). A request PDU of the wrong length is answered with
+  Illegal Data Value, which the tap reports, before the connection is closed.
+  When the server rejected its MBAP length as soon as it read the function
+  code (the fixed-size function codes), `Request` holds the function code
+  alone: the rest was not read.
 - Not reported: bytes the server cannot frame as a request
   (`CloseMalformedFrame`), and anything after a `Shutdown` called from one of
   the connection's own callbacks (the request whose handler called it included).

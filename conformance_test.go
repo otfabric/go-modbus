@@ -253,7 +253,14 @@ func TestB2B_UnsupportedFunctionCodes(t *testing.T) {
 		defer cleanup()
 
 		for _, fc := range unsupported {
-			res := sendRawFC(t, client, refUnitID, fc, []byte{0x00, 0x00, 0x00, 0x01})
+			// The fixed-size ones (FC17, FC24) get a PDU of their size: one of
+			// another size is answered too, but the connection is then closed
+			// (TestServerPDUErrors_MBAPLengthMismatch).
+			payload := []byte{0x00, 0x00, 0x00, 0x01}
+			if n := requestPDULength(fc); n > 0 {
+				payload = payload[:n-1]
+			}
+			res := sendRawFC(t, client, refUnitID, fc, payload)
 			assertMBAPResponseWellFormed(t, res, refUnitID, fc)
 			assertExceptionResponse(t, res, exIllegalFunction)
 		}

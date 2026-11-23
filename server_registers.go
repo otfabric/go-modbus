@@ -61,8 +61,8 @@ func (ms *Server) handleReadRegisters(ctx context.Context, req *adu.Request, txn
 
 // handleWriteSingleRegister handles FC06 (WriteSingleRegister).
 func (ms *Server) handleWriteSingleRegister(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (*adu.Response, error) {
-	if len(req.Payload) != 4 {
-		return nil, ErrProtocolError
+	if err := checkPDULength(req.Payload, 4); err != nil {
+		return nil, err
 	}
 
 	addr := bytesToUint16(BigEndian, req.Payload[0:2])
@@ -95,8 +95,8 @@ func (ms *Server) handleMaskWriteRegister(ctx context.Context, req *adu.Request,
 	if !ok {
 		return nil, ErrIllegalFunction
 	}
-	if len(req.Payload) != 6 {
-		return nil, ErrProtocolError
+	if err := checkPDULength(req.Payload, 6); err != nil {
+		return nil, err
 	}
 
 	addr := bytesToUint16(BigEndian, req.Payload[0:2])
@@ -129,7 +129,7 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 	// Both addresses, both quantities and the byte count: without them the
 	// request cannot be read at all.
 	if len(req.Payload) < 9 {
-		return nil, ErrProtocolError
+		return nil, errPDUTruncated
 	}
 
 	readAddr := bytesToUint16(BigEndian, req.Payload[0:2])
@@ -137,6 +137,14 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 	writeAddr := bytesToUint16(BigEndian, req.Payload[4:6])
 	writeQty := bytesToUint16(BigEndian, req.Payload[6:8])
 	byteCount := req.Payload[8]
+
+	// The PDU must hold the data its own byte count announces, no more and
+	// no less: otherwise its length is in doubt, and with it the framing of
+	// the stream (an Illegal Data Value, section 7, and the connection is
+	// closed; see malformedRequestError). Checked before the values.
+	if err := checkDataLength(len(req.Payload)-9, int(byteCount)); err != nil {
+		return nil, err
+	}
 
 	if readQty == 0 || readQty > maxRWReadRegs {
 		return nil, ErrIllegalDataValue
@@ -157,11 +165,6 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 	if uint32(writeAddr)+uint32(writeQty)-1 > 0xffff {
 		return nil, ErrIllegalDataAddress
 	}
-	// The frame carries more or less data than it announces: malformed.
-	if len(req.Payload)-9 != expectedLen {
-		return nil, ErrProtocolError
-	}
-
 	writeValues := bytesToUint16s(BigEndian, req.Payload[9:])
 
 	regs, err := rwh.HandleReadWriteRegisters(ctx, &ReadWriteRegistersRequest{
@@ -192,7 +195,15 @@ func (ms *Server) handleWriteMultipleRegisters(ctx context.Context, req *adu.Req
 	// Address, quantity and byte count: without them the request cannot be
 	// read at all.
 	if len(req.Payload) < 5 {
-		return nil, ErrProtocolError
+		return nil, errPDUTruncated
+	}
+
+	// The PDU must hold the data its own byte count announces, no more and
+	// no less: otherwise its length is in doubt, and with it the framing of
+	// the stream (an Illegal Data Value, section 7, and the connection is
+	// closed; see malformedRequestError). Checked before the values.
+	if err := checkDataLength(len(req.Payload)-5, int(req.Payload[4])); err != nil {
+		return nil, err
 	}
 
 	addr := bytesToUint16(BigEndian, req.Payload[0:2])
@@ -211,11 +222,6 @@ func (ms *Server) handleWriteMultipleRegisters(ctx context.Context, req *adu.Req
 
 	if uint32(addr)+uint32(quantity)-1 > 0xffff {
 		return nil, ErrIllegalDataAddress
-	}
-
-	// The frame carries more or less data than it announces: malformed.
-	if len(req.Payload)-5 != expectedLen {
-		return nil, ErrProtocolError
 	}
 
 	_, err := ms.handler.HandleHoldingRegisters(ctx, &HoldingRegistersRequest{

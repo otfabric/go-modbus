@@ -26,6 +26,8 @@ Modbus exception from the unit.
 | Configured timeout, or context deadline expiring in flight | `ErrRequestTimedOut` |
 | Context already cancelled or expired when the call starts | `ctx.Err()` (`context.Canceled` / `context.DeadlineExceeded`); nothing is sent |
 | Context cancelled while the request is in flight | `context.Canceled` (`errors.Is`); returns promptly. A cancellation that arrives just before the request would be written is honoured before it is: nothing is sent |
+| `Diagnostics` with data of odd length (the data field is N x 2 bytes, V1.1b3 section 6.8) | `*ParameterError` (`Method` `"Diagnostics"`, `Param` `"data"`; `errors.Is` → `ErrUnexpectedParameters`); nothing is sent. Since v1.20.0 |
+| `ReadFileRecords` whose sub-requests ask for a response larger than the 0xF5-byte response data length (V1.1b3 section 6.14) | `*ParameterError` (`Method` `"ReadFileRecords"`, `Param` `"RecordLength"` for one sub-request, `"requests"` for the sum; `errors.Is` → `ErrUnexpectedParameters`); nothing is sent. Since v1.20.0 |
 | Request that does not fit a frame (`Diagnostics` with more than 250 data bytes; every other method bounds its arguments) | `*ParameterError` (`Method` `"Diagnostics"`, `Param` `"data"`; `errors.Is` → `ErrUnexpectedParameters`), which also matches what v1.15.3 returned: `ErrInvalidMBAPLength` on `tcp`, `tcp+tls` and `udp`, `ErrProtocolError` on the serial framings (`rtu`, `ascii`, `rtuovertcp`, `rtuoverudp`, `asciiovertcp`); nothing is sent |
 | Connection lost, refused or reset | stdlib error (`io.EOF`, `*net.OpError`, …); the next request reconnects |
 | Dial or TLS handshake failed (default or `Config.Dialer`) | error starting `modbus: dial <network> <addr>:` or `modbus: tls handshake tcp <addr>:` (or `modbus: ` followed by a `*net.OpError` that already names the same dial), wrapping the cause (`errors.Is` / `errors.As` reach `*net.OpError` or the dialer's own error); `Timeout()` when the cause timed out |
@@ -87,8 +89,8 @@ with that exception.
 |---|---|---|
 | `ErrIllegalFunction` | 0x01 | The unit does not serve this function code |
 | `ErrIllegalDataAddress` | 0x02 | The address range does not exist on the unit |
-| `ErrIllegalDataValue` | 0x03 | A value in the request is not acceptable. The server also answers with it when a request's quantity or byte count is out of range |
-| `ErrServerDeviceFailure` | 0x04 | The unit failed while performing the action. The server answers with it when a handler returns an unmapped error or a response that does not fit |
+| `ErrIllegalDataValue` | 0x03 | A value in the request is not acceptable. The server also answers with it when a request's quantity or byte count is out of range, and (since v1.20.0) when a request PDU is shorter or longer than its fields or byte count (the connection is then closed) or carries FC08 data of odd length |
+| `ErrServerDeviceFailure` | 0x04 | The unit failed while performing the action. The server answers with it when a handler returns an unmapped error, a response that does not fit, or (since v1.20.0) data the function cannot carry: FC08 data of odd length, FC17 without the run indicator |
 | `ErrAcknowledge` | 0x05 | The unit accepted a long-running request and is still processing it |
 | `ErrServerDeviceBusy` | 0x06 | The unit is busy; send the request again later |
 | `ErrMemoryParityError` | 0x08 | The unit found a parity error reading extended file memory |
@@ -114,6 +116,7 @@ built-in retry policies. `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` and
 |---|---|
 | `ErrSerialPortNotOpen` | A read or write on a serial port that was never opened or was closed. The client treats it as a lost link |
 | `ErrNoResponse` | Returned **by a `RequestHandler`**, not by the client: the server sends nothing and keeps the connection, so the client runs into its timeout. It models a silent device |
+| `ErrProtocolError` (server) | Returned by a `RequestHandler`, the server closes the connection without answering (`CloseProtocolError`). The server's own request checks report to `ServerMetrics.OnError` an error that matches it and `ErrIllegalDataValue`: for a PDU whose length disagrees with its fields or byte count (answered with exception 3, then the connection is closed), an FC21 sub-request that overruns the byte count or FC08 data of odd length (answered with exception 3, the connection kept). Since v1.20.0 these errors, and the one for a request with an exception function code (which matches `ErrIllegalFunction`), are not the sentinels themselves: compare with `errors.Is`, not `==`. `ErrProtocolError` there does not mean the connection was closed; `ConnectionCloseMetrics` says that |
 
 ### SunSpec discovery
 

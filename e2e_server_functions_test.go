@@ -81,12 +81,12 @@ func TestE2E_Diagnostics(t *testing.T) {
 		c := p.client
 		ctx := context.Background()
 
-		dr, err := c.Diagnostics(ctx, e2eUnit, DiagReturnQueryData, []byte{0xCA, 0xFE, 0x01})
-		if err != nil || dr.SubFunction != DiagReturnQueryData || !reflect.DeepEqual(dr.Data, []byte{0xCA, 0xFE, 0x01}) {
+		dr, err := c.Diagnostics(ctx, e2eUnit, DiagReturnQueryData, []byte{0xCA, 0xFE, 0x01, 0x02})
+		if err != nil || dr.SubFunction != DiagReturnQueryData || !reflect.DeepEqual(dr.Data, []byte{0xCA, 0xFE, 0x01, 0x02}) {
 			t.Errorf("Return Query Data = %+v, %v", dr, err)
 		}
 		if call := e2eOneCall(t, "Return Query Data", dev); call.Kind != "diag" || call.SubFunc != DiagReturnQueryData ||
-			!reflect.DeepEqual(call.Data, []byte{0xCA, 0xFE, 0x01}) || call.UnitID != e2eUnit {
+			!reflect.DeepEqual(call.Data, []byte{0xCA, 0xFE, 0x01, 0x02}) || call.UnitID != e2eUnit {
 			t.Errorf("handler saw %+v", call)
 		}
 		// The largest echo that fits in one response.
