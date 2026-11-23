@@ -20,8 +20,9 @@ import (
 
 // ErrInvalidRole is reported, wrapped, in TLSHandshakeInfo.RoleErr when a
 // client certificate carries a Modbus Role extension the server cannot use:
-// more than one, or one that is not a DER UTF8String. The client is then
-// served with no role (ClientRole is empty), as before this error existed.
+// more than one, or one that is not exactly one DER UTF8String (bytes after
+// it included). The client is then
+// served with no role (ClientRole is empty).
 var ErrInvalidRole = errors.New("modbus: invalid Modbus Role extension")
 
 // TLSHandshakeMetrics is an optional extension of ServerMetrics and of
@@ -202,9 +203,14 @@ type ProtocolViolation struct {
 	HasFunctionCode bool
 	// Err says what is wrong (see ProtocolViolationMetrics).
 	Err error
-	// Exception is the exception code the server answers with; zero when it
-	// sends no answer. Closed reports whether the server closes the
-	// connection because of it.
+	// Exception is the exception code the server decided to answer with;
+	// zero when it decided to send no answer. Closed reports whether the
+	// server decided to close the connection because of it. Both are
+	// decisions, not observed outcomes: the callback runs before the answer
+	// is written and before the connection is closed. A write that then
+	// fails, or a client that left first, is reported by
+	// ConnectionCloseMetrics (CloseWriteFailed, CloseClientClosed), which
+	// also reports the close itself.
 	Exception ExceptionCode
 	Closed    bool
 }

@@ -2380,8 +2380,9 @@ connection is used; it must not make requests on the same client.
 `PeerCertificates` are parsed afresh for each call from copies of their DER
 encoding. `Role` empty with `RoleErr` nil is a certificate without a role;
 `RoleErr` set is one whose role extension the server could not use (more than
-one, or not a DER UTF8String) — the client is then served with no role, as
-before.
+one, or not exactly one DER UTF8String, bytes after it included) — the client
+is then served with no role, as before (except for bytes after the
+UTF8String, which v1.20.0 ignored).
 
 ### `AcceptErrorMetrics` (optional, server)
 
@@ -2415,8 +2416,8 @@ type ProtocolViolation struct {
     FunctionCode           FunctionCode
     HasFunctionCode        bool          // false: header not framable, nothing after it read
     Err                    error
-    Exception              ExceptionCode // 0: no answer sent
-    Closed                 bool          // the server closes the connection because of it
+    Exception              ExceptionCode // the answer decided; 0: none
+    Closed                 bool          // the server decided to close the connection because of it
 }
 ```
 
@@ -2431,7 +2432,11 @@ Not reported here: a function code the server does not serve, a value out of
 range, a refusal by the authorizer, and handler errors (`ErrProtocolError`
 included). Those are ordinary outcomes, reported to `ServerMetrics.OnError`.
 A framed request reported here is also reported to `OnError`, before this
-call; `ConnectionCloseMetrics` reports a close it caused. The server does not
+call; `ConnectionCloseMetrics` reports a close it caused. `Exception` and
+`Closed` are what the server decided: the call runs before the answer is
+written and the connection closed, so an answer that could not be delivered
+shows only in `ConnectionCloseMetrics` (`CloseWriteFailed`,
+`CloseClientClosed`). The server does not
 interpret violations: what counts as hostile is the receiver's decision.
 
 ### `ResponseAnomalyMetrics` (optional, client)

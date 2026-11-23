@@ -758,3 +758,33 @@ func TestAddrString(t *testing.T) {
 		t.Errorf("addrString = %q", s)
 	}
 }
+
+type panickingAnomalies struct{ secRecorder }
+
+func (*panickingAnomalies) OnResponseAnomaly(ResponseAnomaly) { panic("anomaly hook failed") }
+
+// A ResponseAnomalyMetrics that panics is logged, and the request it was
+// called for goes on to its own response.
+func TestResponseAnomalyMetrics_PanicIsContained(t *testing.T) {
+	logs := &errorLogger{}
+	c, srv := scriptedMBAPClient(t, func(conf *Config) {
+		conf.Metrics = &panickingAnomalies{}
+		conf.Logger = logs
+	})
+	go func() {
+		hdr := make([]byte, 12)
+		if _, err := io.ReadFull(srv, hdr); err != nil {
+			return
+		}
+		txn := uint16(hdr[0])<<8 | uint16(hdr[1])
+		_, _ = srv.Write(rawRequestFrame(txn-1, 1, 3, []byte{2, 0, 9}))
+		_, _ = srv.Write(rawRequestFrame(txn, 1, 3, []byte{2, 0, 7}))
+	}()
+	v, err := c.ReadHoldingRegister(t.Context(), 1, 0)
+	if err != nil || v != 7 {
+		t.Fatalf("read = %d, %v; want 7", v, err)
+	}
+	if !logs.logged("ResponseAnomalyMetrics.OnResponseAnomaly did not return normally") {
+		t.Errorf("panic not logged; logged %q", logs.errors)
+	}
+}

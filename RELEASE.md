@@ -9,7 +9,7 @@ Provider-agnostic security observability and opt-in server hardening. Optional i
 ### Added
 
 - `TLSHandshakeMetrics` (server and client) with `TLSHandshakeInfo`: the outcome of every `tcp+tls` handshake, failed, timed-out and evicted ones included, with addresses, duration, negotiated version and cipher suite, SNI, copies of the peer's certificates, whether they were verified, and on the server the client's role and `RoleErr`.
-- `ErrInvalidRole`: wrapped in `TLSHandshakeInfo.RoleErr` for a client certificate whose Modbus Role extension the server cannot use (more than one, or not a DER UTF8String), so that it can be told from a certificate without a role. Such a client is still served with no role, as before.
+- `ErrInvalidRole`: wrapped in `TLSHandshakeInfo.RoleErr` for a client certificate whose Modbus Role extension the server cannot use (more than one, or not exactly one DER UTF8String), so that it can be told from a certificate without a role. Such a client is served with no role.
 - `AcceptErrorMetrics` (server): every failed `Accept` and the wait before the next attempt, which was only logged.
 - `ProtocolViolationMetrics` (server) with `ProtocolViolation`: requests that break the framing or the structure of their function code (an MBAP length outside 2–254 or a protocol ID other than 0, a PDU of the wrong length, contradicting fields, an exception function code), with the MBAP header as received, the exception answered and whether the connection is closed. Ordinary refusals (unserved function code, value out of range, handler errors) are not violations.
 - `ResponseAnomalyMetrics` (client) with `ResponseAnomaly` and `ResponseAnomalyKind` (`AnomalyTransactionID`, `AnomalyProtocolID`, `AnomalyDiscarded`): MBAP frames the client skipped and stale bytes the serial framings discarded, which do not show in a request's outcome.
@@ -22,6 +22,7 @@ Provider-agnostic security observability and opt-in server hardening. Optional i
 
 ### Changed
 
+- Server, tcp+tls: a Modbus Role extension with bytes after its UTF8String is invalid: the client is served with no role, and `RoleErr` wraps `ErrInvalidRole`. Up to v1.20.0 the bytes were ignored and the role was served. The extension value is the DER encoding of one value (RFC 5280 section 4.1).
 - None of the new settings has a default; the new interfaces are found by type assertion once, in `New` and `NewServer`. Without them nothing changes, on the wire or in the callbacks already reported.
 - Server: `Stop` and `Shutdown` may be called from the new callbacks and from the authorizer, with the same guarantees as from the existing ones; no callback runs once they returned.
 
@@ -31,7 +32,9 @@ Provider-agnostic security observability and opt-in server hardening. Optional i
 
 ### Tests
 
-- `security_metrics_test.go`: TLS handshakes completed, failed, timed out, with an invalid role, from a client, with certificate copies, a panicking callback and `Stop` from one; protocol violations by kind and their absence for ordinary refusals; accept errors (`testing/synctest`) and `Stop` from that callback; skipped MBAP frames on a scripted connection. `internal/transport/anomaly_test.go`: discarded serial bytes.
+- `security_metrics_test.go`: TLS handshakes completed, failed, timed out, with an invalid role, from a client, with certificate copies, a panicking callback and `Stop` from one; protocol violations by kind and their absence for ordinary refusals; accept errors (`testing/synctest`) and `Stop` from that callback; skipped MBAP frames on a scripted connection, and a panicking anomaly hook that leaves the request's result unchanged; a panicking accept hook; a handshake that could not be started; certificate copies, an encoding that does not parse left out. `internal/transport/anomaly_test.go`: discarded serial bytes. `internal/transport/tcp_security_test.go`: the MBAP header read with a frame-start function (in one read, the first byte alone, after an empty read, a byte with an error), the connection closing or resetting before and inside the header, the last header that could not be framed, a skipped transaction ID reported for its request.
+- `server_dispatch_test.go`: a Modbus Role extension with bytes after its UTF8String, and with two values, is `ErrInvalidRole`.
+- `examples/security_hooks`: the example's policy, which refuses the FC08 sub-functions that change the device's state (0x01, 0x03, 0x04, 0x0A, 0x14), reserved ones and broadcast changes to clients without the operator role.
 - `server_hardening_test.go`: the per-host limit, also while handshaking and under churn; the first-request and frame timeouts, also while a request is served and against each other; defaults off; negative values rejected.
 - `server_authorization_test.go`: the authorizer asked once for every served request and never for those the server answers itself, the request fields per function code, a refusal never reaching the handler, the answers per error kind, a panicking authorizer, `Stop` from it, decisions by role.
 - `bench_security_test.go`: `BenchmarkSecurityHooks`, a loopback FC03 round trip with the hooks, the authorizer and the hardening settings absent and present.

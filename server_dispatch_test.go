@@ -631,6 +631,8 @@ func TestServerExtractRole_MalformedExtension(t *testing.T) {
 		"truncated UTF8String":  {0x0c, 0x05, 'a'},
 		"not a UTF8String":      {0x13, 0x02, 'o', 'p'},
 		"too short to be a TLV": {0x0c},
+		"bytes after the value": {0x0c, 0x02, 'o', 'p', 0x00},
+		"two values":            {0x0c, 0x02, 'o', 'p', 0x0c, 0x02, 'a', 'd'},
 	}
 	for name, value := range cases {
 		cert := &x509.Certificate{Extensions: []pkix.Extension{{Id: modbusRoleOID, Value: value}}}

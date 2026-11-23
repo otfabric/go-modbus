@@ -128,7 +128,7 @@ monitoring product it uses.
 | Connection refused at accept (`AllowClient`, `MaxClients`, `MaxClientsPerHost`) or evicted mid-handshake | `ConnectionMetrics.OnConnectionRejected` |
 | TLS handshake completed or failed: version, suite, SNI, peer chain, role, unusable role | `TLSHandshakeMetrics.OnTLSHandshake` (server and client) |
 | Connection opened, with the client's role; closed, and why (idle, first-request and frame timeouts, malformed frame, protocol error, write failure, reset, stop) | `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics` |
-| Framing or structure violation: bad MBAP length or protocol ID, wrong PDU length, contradicting fields, exception function code | `ProtocolViolationMetrics.OnProtocolViolation` |
+| Framing or structure violation: bad MBAP length or protocol ID, wrong PDU length, contradicting fields, exception function code; the answer and close the server decided on (delivery: `ConnectionCloseMetrics`) | `ProtocolViolationMetrics.OnProtocolViolation` |
 | Request refused by `ServerConfig.Authorizer` | `ServerMetrics.OnError` with an error matching `ErrNotAuthorized` |
 | Function code not served, value out of range, handler error | `ServerMetrics.OnError`, `ServerConfig.PDUTap` |
 | Every request and answer, raw | `ServerConfig.PDUTap` (server), `Config.PDUTap` (client) |

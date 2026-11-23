@@ -2,17 +2,19 @@
 
 // Command security_hooks runs a Modbus TCP server that reports what the
 // library observes about its connections and requests to an application-owned
-// channel, refuses writes from clients that are not allowed to write, and
-// opts into the per-host and slow-client limits. It uses nothing but the
-// standard library and go-modbus: what to do with the facts (log them, count
-// them, send them to a SIEM) is the application's.
+// channel, refuses writes and state-changing diagnostics from clients that
+// are not allowed to make them, and opts into the per-host and slow-client
+// limits. It uses nothing but the standard library and go-modbus: what to do
+// with the facts (log them, count them, send them to a SIEM) is the
+// application's.
 //
 // Run it with
 //
 //	go run ./examples/security_hooks
 //
 // and try it with modbus-cli, for example a read (served) and a write
-// (refused with exception 1):
+// (refused with exception 1, as are the FC08 sub-functions that change the
+// device's state):
 //
 //	modbus-cli --target tcp://localhost:5502 rh:uint16:0
 //	modbus-cli --target tcp://localhost:5502 wr:uint16:0:42
@@ -89,20 +91,47 @@ func (o *observer) OnProtocolViolation(v modbus.ProtocolViolation) {
 		"hasFC", v.HasFunctionCode, "exception", v.Exception, "closed", v.Closed, "err", v.Err)
 }
 
-// authorize serves reads and diagnostics to everyone, writes only to clients
-// whose verified tcp+tls certificate carries the "operator" role (so on plain
-// tcp, as here, every write is refused), and never broadcast writes.
+// authorize serves reads, and the diagnostics that only report, to every
+// client. Everything else, writes and the FC08 sub-functions that change the
+// device's state, it serves only to clients whose verified tcp+tls
+// certificate carries the "operator" role (so on plain tcp, as here, all of
+// it is refused), and never to the broadcast unit.
 func authorize(_ context.Context, req *modbus.AuthorizationRequest) error {
-	if req.Access == modbus.AccessRead || req.Access == modbus.AccessDiagnostic {
+	if req.Access == modbus.AccessRead || reportsOnly(req) {
 		return nil
 	}
 	if req.UnitID == 0 {
-		return errors.New("no broadcast writes")
+		return errors.New("no broadcast changes")
 	}
 	if req.ClientRole == "operator" {
 		return nil
 	}
-	return errors.New("writes need the operator role") // answered with exception 1
+	return errors.New("changes need the operator role") // answered with exception 1
+}
+
+// reportsOnly reports whether req is a diagnostic that changes nothing on the
+// device. FC07, FC11, FC12, FC17 and FC43 read state or identification; of the
+// FC08 sub-functions (MODBUS Application Protocol V1.1b3, section 6.8.1), 0x00
+// echoes its data and 0x02 and 0x0B-0x12 return a register or a counter,
+// while 0x01 restarts the port, 0x03 changes the ASCII delimiter, 0x04
+// forces Listen Only Mode and 0x0A and 0x14 clear counters. An unknown
+// sub-function is not assumed to be harmless.
+func reportsOnly(req *modbus.AuthorizationRequest) bool {
+	if req.Access != modbus.AccessDiagnostic {
+		return false
+	}
+	if req.FunctionCode != modbus.FCDiagnostics {
+		return true
+	}
+	if !req.HasSubFunction {
+		return false
+	}
+	switch sub := req.SubFunction; {
+	case sub == 0x00, sub == 0x02, sub >= 0x0B && sub <= 0x12:
+		return true
+	default:
+		return false
+	}
 }
 
 type registers struct {

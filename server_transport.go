@@ -1003,9 +1003,16 @@ func (ms *Server) extractRole(cert *x509.Certificate) (role string, roleErr erro
 		if len(ext.Value) < 2 || ext.Value[0] != 0x0c {
 			return "", fmt.Errorf("%w: not a UTF8String", ErrInvalidRole)
 		}
-		if _, err := asn1.Unmarshal(ext.Value, &role); err != nil {
+		rest, err := asn1.Unmarshal(ext.Value, &role)
+		if err != nil {
 			ms.logger.Warningf("failed to decode Modbus Role extension: %v", err)
 			return "", fmt.Errorf("%w: %w", ErrInvalidRole, err)
+		}
+		if len(rest) > 0 {
+			// The extension value is the DER encoding of one value (RFC 5280
+			// section 4.1): bytes after the UTF8String make it invalid.
+			ms.logger.Warningf("Modbus Role extension has %d bytes after its UTF8String", len(rest))
+			return "", fmt.Errorf("%w: %d bytes after the UTF8String", ErrInvalidRole, len(rest))
 		}
 	}
 	return role, nil
