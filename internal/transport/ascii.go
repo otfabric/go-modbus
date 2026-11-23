@@ -37,6 +37,9 @@ type ASCII struct {
 	// verify is set after a drain: the requests that follow first check that
 	// the link is quiet, until one finds it so (see RTU.verify).
 	verify bool
+	// OnAnomaly, when set (client use), receives the bytes discarded before a
+	// request (AnomalyDiscarded).
+	OnAnomaly AnomalyFunc
 }
 
 // asciiDrainWindow is how long the link is read and discarded, at least,
@@ -75,7 +78,8 @@ func (at *ASCII) Resync() {
 func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
 	switch {
 	case at.drain:
-		drainLink(ctx, at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout)
+		n := drainLink(ctx, at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout)
+		reportDiscarded(at.OnAnomaly, req, n)
 		if err := ctx.Err(); err != nil {
 			// The drain was cut short: the next request starts with it again.
 			return nil, err
@@ -84,6 +88,7 @@ func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Res
 		at.verify = true
 	case at.verify:
 		n := drainLink(ctx, at.Link, asciiDrainWindow, asciiDrainWindow, at.Timeout)
+		reportDiscarded(at.OnAnomaly, req, n)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -101,6 +106,7 @@ func (at *ASCII) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Res
 	}
 	// Anything still buffered belongs to an earlier exchange (e.g. a response
 	// that arrived after its request timed out): drop it.
+	reportDiscarded(at.OnAnomaly, req, len(at.rxbuf))
 	at.rxbuf = at.rxbuf[:0]
 
 	frame := adu.AssembleASCIIFrame(req.UnitID, req.FunctionCode, req.Payload)

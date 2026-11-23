@@ -352,9 +352,25 @@ func TestTCPReadResponse_UnknownProtocolIDLoop(t *testing.T) {
 		txchan <- frame
 	}
 
-	_, err := tt.readResponse()
+	var anomalies []Anomaly
+	tt.OnAnomaly = func(req *adu.Request, a Anomaly) {
+		if req.UnitID != 0x31 || req.FunctionCode != 0x06 {
+			t.Errorf("anomaly for request %+v, want unit 0x31 fc 0x06", req)
+		}
+		anomalies = append(anomalies, a)
+	}
+	_, err := tt.readResponse(&adu.Request{UnitID: 0x31, FunctionCode: 0x06})
 	if !errors.Is(err, protocol.ErrUnknownProtocolID) {
 		t.Errorf("expected ErrUnknownProtocolID, got %v", err)
+	}
+	if len(anomalies) != maxAnomalies {
+		t.Fatalf("%d anomalies reported, want %d", len(anomalies), maxAnomalies)
+	}
+	for _, a := range anomalies {
+		want := Anomaly{Kind: AnomalyProtocolID, Expected: 1, TransactionID: 1, ProtocolID: 1}
+		if a != want {
+			t.Errorf("anomaly %+v, want %+v", a, want)
+		}
 	}
 
 	close(txchan)

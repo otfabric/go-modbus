@@ -22,6 +22,13 @@ func (ms *Server) handleReadBools(ctx context.Context, req *adu.Request, txnID u
 		return nil, ErrIllegalDataAddress
 	}
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessRead)
+		ar.ReadAddr, ar.ReadQuantity = addr, quantity
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	var coils []bool
 	fc := FunctionCode(req.FunctionCode)
 	if fc == FCReadCoils {
@@ -71,6 +78,13 @@ func (ms *Server) handleWriteSingleCoil(ctx context.Context, req *adu.Request, t
 		return nil, ErrIllegalDataValue
 	}
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessWrite)
+		ar.WriteAddr, ar.WriteQuantity = addr, 1
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	_, err := ms.handler.HandleCoils(ctx, &CoilsRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -129,6 +143,13 @@ func (ms *Server) handleWriteMultipleCoils(ctx context.Context, req *adu.Request
 		return nil, ErrIllegalDataAddress
 	}
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessWrite)
+		ar.WriteAddr, ar.WriteQuantity = addr, quantity
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	_, err := ms.handler.HandleCoils(ctx, &CoilsRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,

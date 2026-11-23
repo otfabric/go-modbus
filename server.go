@@ -62,7 +62,40 @@ type ServerConfig struct {
 	// on the goroutine that accepts connections, so it should return quickly;
 	// one that panics refuses the connection. A function serves as one through
 	// ClientFilterFunc.
-	AllowClient   ClientFilter
+	AllowClient ClientFilter
+	// MaxClientsPerHost, when set, limits the tcp and tcp+tls connections
+	// the server serves at once from one remote host (the IP address of the
+	// client, without its port), connections still in their TLS handshake
+	// included. A connection beyond it is closed as soon as it is accepted,
+	// before anything is read from it: it takes no MaxClients slot, does not
+	// replace a connection still handshaking, and ConnectionMetrics reports
+	// it as RejectPerHostLimit. Zero (the default) sets no limit. Clients
+	// behind one NAT or proxy share a host.
+	MaxClientsPerHost uint
+	// FirstRequestTimeout, when set, replaces Timeout as the idle timeout of
+	// a connection until its first complete request has been read: a client
+	// that connects and sends no request is closed after it, and
+	// ConnectionCloseMetrics reports CloseFirstRequestTimeout. It runs from
+	// the moment the server starts serving the connection (on tcp+tls, once
+	// its handshake completed; TLSHandshakeTimeout bounds the handshake).
+	// Zero (the default) uses Timeout; negative is a configuration error.
+	FirstRequestTimeout time.Duration
+	// FrameTimeout, when set, bounds the time a request takes to arrive in
+	// full once its first byte has been read: a request still incomplete
+	// after it closes the connection, and ConnectionCloseMetrics reports
+	// CloseFrameTimeout. It applies to every request, also while earlier
+	// ones are being served, and together with the idle timeout: the earlier
+	// of the two ends the wait. Zero (the default) leaves a request the idle
+	// timeout alone, as before; negative is a configuration error. A value
+	// well above the round-trip time of the slowest legitimate client keeps
+	// it from cutting off a request split over several segments.
+	FrameTimeout time.Duration
+	// Authorizer, when set, is asked about every request before a handler
+	// method serves it, and can refuse it: the handler is then not called,
+	// and the client is answered with an exception (see RequestAuthorizer).
+	// Nil (the default) serves every request, as before. A function serves
+	// as one through RequestAuthorizerFunc.
+	Authorizer    RequestAuthorizer
 	TLSServerCert *tls.Certificate
 	TLSClientCAs  *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
@@ -170,15 +203,18 @@ var ErrNoResponse = errors.New("modbus: no response")
 // optional handler interfaces as well.
 //
 // Stopping the server from a handler. A handler method may call Stop or
-// Shutdown, and so may a ServerMetrics, ConnectionMetrics,
-// ConnectionLifecycleMetrics or ConnectionCloseMetrics method,
-// ServerConfig.AllowClient, ServerConfig.PDUTap and the Logger.
+// Shutdown, and so may a method of ServerConfig.Metrics (ServerMetrics and
+// its optional extensions: ConnectionMetrics, ConnectionLifecycleMetrics,
+// ConnectionCloseMetrics, TLSHandshakeMetrics, AcceptErrorMetrics,
+// ProtocolViolationMetrics), ServerConfig.AllowClient, ServerConfig.PDUTap,
+// ServerConfig.Authorizer and the Logger.
 // The call stops the server as a call from any other goroutine does: it stops
 // accepting, cancels the context of every connection and closes the
 // listener and the client sockets. Then it waits for the server's goroutines,
 // the handlers running for other connections included, except the ones of the
 // connection it was called on (or the accept loop, for ServerConfig.AllowClient,
-// a ConnectionMetrics method or a log entry of the accept loop). Stop returns once they have
+// a ConnectionMetrics or AcceptErrorMetrics method or a log entry of the
+// accept loop). Stop returns once they have
 // ended. Shutdown also returns when its context ends, and at once when that
 // context is already done: Shutdown with the handler's own context, which the
 // shutdown cancels, returns context.Canceled without waiting.
@@ -293,6 +329,12 @@ type Server struct {
 	started bool
 	handler RequestHandler
 	metrics ServerMetrics
+	// The optional extensions of metrics the server looks for on
+	// every connection or request, found once by NewServer (nil: not
+	// implemented).
+	tlsMetrics       TLSHandshakeMetrics
+	acceptMetrics    AcceptErrorMetrics
+	violationMetrics ProtocolViolationMetrics
 	// tcpClients holds the sockets of the connected clients.
 	tcpClients []net.Conn
 	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
@@ -390,6 +432,9 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 		metrics: conf.Metrics,
 		wg:      &sync.WaitGroup{},
 	}
+	ms.tlsMetrics, _ = conf.Metrics.(TLSHandshakeMetrics)
+	ms.acceptMetrics, _ = conf.Metrics.(AcceptErrorMetrics)
+	ms.violationMetrics, _ = conf.Metrics.(ProtocolViolationMetrics)
 
 	splitURL = strings.SplitN(ms.conf.URL, "://", 2)
 	if len(splitURL) == 2 {
@@ -404,6 +449,13 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 		ms.logger.Errorf("missing host part in URL '%s'", conf.URL)
 		err = newConfigurationError("URL", "missing host")
 		return
+	}
+
+	if ms.conf.FirstRequestTimeout < 0 {
+		return nil, newConfigurationError("FirstRequestTimeout", "must not be negative")
+	}
+	if ms.conf.FrameTimeout < 0 {
+		return nil, newConfigurationError("FrameTimeout", "must not be negative")
 	}
 
 	switch serverType {
@@ -498,9 +550,9 @@ func (ms *Server) Start() (err error) {
 // goroutines of the cycle may still be running; nothing else waits for them.
 //
 // Shutdown may be called from the application's code that the server runs: a
-// RequestHandler method, a ServerMetrics, ConnectionMetrics,
-// ConnectionLifecycleMetrics or ConnectionCloseMetrics method,
-// ServerConfig.AllowClient, ServerConfig.PDUTap, the Logger. It
+// RequestHandler method, a method of ServerConfig.Metrics (ServerMetrics or
+// one of its optional extensions), ServerConfig.AllowClient,
+// ServerConfig.PDUTap, ServerConfig.Authorizer, the Logger. It
 // then waits for every goroutine of the server except the ones of the
 // connection, or of the accept loop, that it was called on (see
 // RequestHandler, "Stopping the server from a handler"). When ctx is already
@@ -566,9 +618,10 @@ func (ms *Server) Addr() net.Addr {
 // after a Shutdown whose context ended, or while another Stop is waiting,
 // returns nil at once.
 //
-// Called from a RequestHandler method, a ServerMetrics, ConnectionMetrics,
-// ConnectionLifecycleMetrics or ConnectionCloseMetrics method,
-// ServerConfig.AllowClient, ServerConfig.PDUTap or the Logger,
+// Called from a RequestHandler method, a method of ServerConfig.Metrics
+// (ServerMetrics or one of its optional extensions),
+// ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer or
+// the Logger,
 // Stop returns once every other goroutine of the server has ended; it does
 // not wait for the connection, or the accept loop, it was called on (see
 // RequestHandler).

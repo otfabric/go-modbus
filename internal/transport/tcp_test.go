@@ -48,7 +48,7 @@ func TestTCPTransactionIDMismatchExhausted(t *testing.T) {
 		txchan <- frame
 	}
 
-	_, err := tt.readResponse()
+	_, err := tt.readResponse(&adu.Request{})
 	if !errors.Is(err, protocol.ErrBadTransactionID) {
 		t.Errorf("readResponse: want ErrBadTransactionID, got %v", err)
 	}
@@ -70,7 +70,7 @@ func TestTCPReadResponse(t *testing.T) {
 		0x92, 0x18, 0x00, 0x00, 0x00, 0x04,
 		0x31, 0x06, 0x12, 0x34,
 	}
-	res, err := tt.readResponse()
+	res, err := tt.readResponse(&adu.Request{})
 	if err != nil {
 		t.Fatalf("readResponse: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestTCPReadResponse(t *testing.T) {
 	// Skip wrong txn, then match
 	txchan <- []byte{0x92, 0x19, 0x00, 0x00, 0x00, 0x04, 0x31, 0x06, 0x12, 0x34}
 	txchan <- []byte{0x92, 0x18, 0x00, 0x00, 0x00, 0x04, 0x39, 0x02, 0x10, 0x01}
-	res, err = tt.readResponse()
+	res, err = tt.readResponse(&adu.Request{})
 	if err != nil {
 		t.Fatalf("readResponse: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestTCPReadResponse(t *testing.T) {
 	// Invalid protocol then invalid length
 	txchan <- []byte{0x92, 0x18, 0x00, 0x01, 0x00, 0x04, 0x31, 0x06, 0x12, 0x34}
 	txchan <- []byte{0x92, 0x18, 0x00, 0x00, 0x00, 0x01, 0x31}
-	_, err = tt.readResponse()
+	_, err = tt.readResponse(&adu.Request{})
 	if !errors.Is(err, protocol.ErrInvalidMBAPLength) {
 		t.Errorf("want ErrInvalidMBAPLength, got %v", err)
 	}

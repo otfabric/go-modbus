@@ -157,6 +157,13 @@ func (ms *Server) handleDiagnostics(ctx context.Context, req *adu.Request, txnID
 		return nil, errPDUOddData
 	}
 	sub := req.Payload[0:2]
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		ar.SubFunction, ar.HasSubFunction = bytesToUint16(BigEndian, sub), true
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	data, err := h.HandleDiagnostics(ctx, &DiagnosticsRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -190,6 +197,12 @@ func (ms *Server) handleReportServerID(ctx context.Context, req *adu.Request, tx
 	}
 	if err := checkPDULength(req.Payload, 0); err != nil {
 		return nil, err
+	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
 	}
 	data, err := h.HandleReportServerID(ctx, &ReportServerIDRequest{
 		ClientAddr:   clientAddr,
@@ -251,6 +264,13 @@ func (ms *Server) handleReadFileRecords(ctx context.Context, req *adu.Request, t
 	// The response must fit in one PDU: a request that asks for more is invalid.
 	if respLen > maxFileByteCount {
 		return nil, ErrIllegalDataValue
+	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessRead)
+		ar.FileRecords = append([]FileRecordRequest(nil), subs...)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
 	}
 	records, err := h.HandleReadFileRecords(ctx, &ReadFileRecordsRequest{
 		ClientAddr:   clientAddr,
@@ -316,6 +336,13 @@ func (ms *Server) handleWriteFileRecords(ctx context.Context, req *adu.Request, 
 		off += 2 * length
 		recs = append(recs, r)
 	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessWrite)
+		ar.FileRecords = fileRecordRefs(recs)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	if err := h.HandleWriteFileRecords(ctx, &WriteFileRecordsRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -336,6 +363,13 @@ func (ms *Server) handleReadFIFOQueue(ctx context.Context, req *adu.Request, txn
 	}
 	if err := checkPDULength(req.Payload, 2); err != nil {
 		return nil, err
+	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessRead)
+		ar.ReadAddr = bytesToUint16(BigEndian, req.Payload)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
 	}
 	values, err := h.HandleReadFIFOQueue(ctx, &FIFOQueueRequest{
 		ClientAddr:   clientAddr,

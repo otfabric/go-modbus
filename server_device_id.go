@@ -87,6 +87,13 @@ func (ms *Server) handleReadDeviceIdentification(ctx context.Context, req *adu.R
 		return nil, ErrIllegalDataValue
 	}
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		ar.SubFunction, ar.HasSubFunction = uint16(MEIReadDeviceIdentification), true
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	resp, err := h.HandleDeviceIdentification(ctx, &DeviceIdentificationRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
