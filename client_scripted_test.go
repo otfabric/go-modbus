@@ -177,6 +177,13 @@ func goodDevice(req *adu.Request) (*adu.Response, error) {
 	case FCGetCommEventLog:
 		return okRes(req, 0x08, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x20, 0x00), nil
 	case FCDiagnostics:
+		// Like a device (V1.1b3 6.8.1): Clear Counters and Clear Overrun
+		// echo the request data, the others answer AB CD.
+		switch DiagnosticSubFunction(bytesToUint16(BigEndian, p[0:2])) {
+		case DiagClearCountersAndDiagnosticReg, DiagClearOverrunCounterAndFlag:
+			return okRes(req, p...), nil
+		default:
+		}
 		return okRes(req, p[0], p[1], 0xAB, 0xCD), nil
 	case FCReportServerID:
 		return okRes(req, 0x03, 'I', 'D', 0xFF), nil
@@ -694,9 +701,35 @@ func TestClientCalls_RequestPDUs(t *testing.T) {
 			[]adu.Request{{UnitID: 1, FunctionCode: 0x0F, Payload: []byte{0x00, 0x13, 0x00, 0x0A, 0x02, 0xCD, 0x01}}},
 		},
 		{
-			"DiagnosticRegister sends no data field",
+			// The data field 00 00 of section 6.8.1; up to v1.19.0 none was sent.
+			"DiagnosticRegister sends the data field 00 00",
 			func(ctx context.Context, c *Client) error { _, err := c.DiagnosticRegister(ctx, 1); return err },
-			[]adu.Request{{UnitID: 1, FunctionCode: 0x08, Payload: []byte{0x00, 0x02}}},
+			[]adu.Request{{UnitID: 1, FunctionCode: 0x08, Payload: []byte{0x00, 0x02, 0x00, 0x00}}},
+		},
+		{
+			"BusMessageCount sends the data field 00 00",
+			func(ctx context.Context, c *Client) error { _, err := c.BusMessageCount(ctx, 1); return err },
+			[]adu.Request{{UnitID: 1, FunctionCode: 0x08, Payload: []byte{0x00, 0x0B, 0x00, 0x00}}},
+		},
+		{
+			// WriteCoil sends only the two values of section 6.5.
+			"WriteCoil true and false send FF 00 and 00 00",
+			func(ctx context.Context, c *Client) error {
+				if err := c.WriteCoil(ctx, 1, 10, true); err != nil {
+					return err
+				}
+				return c.WriteCoil(ctx, 1, 10, false)
+			},
+			[]adu.Request{
+				{UnitID: 1, FunctionCode: 0x05, Payload: []byte{0x00, 0x0A, 0xFF, 0x00}},
+				{UnitID: 1, FunctionCode: 0x05, Payload: []byte{0x00, 0x0A, 0x00, 0x00}},
+			},
+		},
+		{
+			// WriteCoilRaw is the opt-in vendor extension: the value is sent as given.
+			"WriteCoilRaw sends its value unchanged",
+			func(ctx context.Context, c *Client) error { return c.WriteCoilRaw(ctx, 1, 10, 0x5500) },
+			[]adu.Request{{UnitID: 1, FunctionCode: 0x05, Payload: []byte{0x00, 0x0A, 0x55, 0x00}}},
 		},
 		{
 			"DiagnosticForceListenOnlyMode",

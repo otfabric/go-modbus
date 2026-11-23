@@ -37,6 +37,12 @@ type FileRecord struct {
 //	FileNumber   must be 1–0xFFFF
 //	RecordNumber must be 0–0x270F (decimal 0–9999)
 //	Total request byte count must not exceed 0xF5 (at most 35 sub-requests)
+//	Total response data length, the sum of 2 + 2*RecordLength over the
+//	sub-requests, must not exceed 0xF5 (at most 121 registers in all for
+//	one sub-request, fewer for several)
+//
+// Arguments outside these limits are reported as a *ParameterError and
+// nothing is sent.
 func (mc *Client) ReadFileRecords(ctx context.Context, unitID uint8, requests []FileRecordRequest) (records [][]uint16, err error) {
 	if len(requests) == 0 {
 		err = newParameterError("ReadFileRecords", "requests", "must not be empty")
@@ -64,6 +70,31 @@ func (mc *Client) ReadFileRecords(ctx context.Context, unitID uint8, requests []
 		if r.RecordLength == 0 {
 			err = newParameterError("ReadFileRecords", "RecordLength",
 				fmt.Sprintf("sub-request %d: must be >= 1", i))
+			return
+		}
+	}
+
+	// The response must fit as well (V1.1b3 section 6.14: the registers read,
+	// "combined with all other fields in the expected response, must not
+	// exceed the allowable length of the MODBUS PDU"). Each sub-response is a
+	// length byte, the reference type and 2 bytes per register, and their
+	// sum, the response data length, is one byte limited to 0xF5. Then the
+	// PDU (function code, data length, data) is at most 247 of 253 bytes.
+	// The sum stops at the first sub-request that takes it past the limit,
+	// so it stays below 0xF5 + 2 + 2*0xFFFF and cannot overflow an int.
+	respLen := 0
+	for i, r := range requests {
+		sub := 2 + 2*int(r.RecordLength)
+		if sub > maxFileByteCount {
+			err = newParameterError("ReadFileRecords", "RecordLength",
+				fmt.Sprintf("sub-request %d: %d registers need %d response bytes, at most %d (%d registers) fit",
+					i, r.RecordLength, sub, maxFileByteCount, (maxFileByteCount-2)/2))
+			return
+		}
+		respLen += sub
+		if respLen > maxFileByteCount {
+			err = newParameterError("ReadFileRecords", "requests",
+				fmt.Sprintf("sub-requests 0..%d need at least %d response bytes, at most %d fit", i, respLen, maxFileByteCount))
 			return
 		}
 	}

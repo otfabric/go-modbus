@@ -188,6 +188,7 @@ func chaosRunScenario(t *testing.T, sc chaosScenario, seed int64) {
 	if sc.exceptions {
 		wl.allowed[chaosClassException] = true
 	}
+	wl.lengthExceptions = sc.plan.c2s&chaosCorruptLen != 0
 	var marks []string
 	began := time.Now()
 	mark := func(what string) {

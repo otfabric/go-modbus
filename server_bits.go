@@ -99,6 +99,14 @@ func (ms *Server) handleWriteMultipleCoils(ctx context.Context, req *adu.Request
 		return nil, errPDUTruncated
 	}
 
+	// The PDU must hold the data its own byte count announces, no more and
+	// no less: otherwise its length is in doubt, and with it the framing of
+	// the stream (an Illegal Data Value, section 7, and the connection is
+	// closed; see malformedRequestError). Checked before the values.
+	if err := checkDataLength(len(req.Payload)-5, int(req.Payload[4])); err != nil {
+		return nil, err
+	}
+
 	addr := bytesToUint16(BigEndian, req.Payload[0:2])
 	quantity := bytesToUint16(BigEndian, req.Payload[2:4])
 
@@ -115,11 +123,6 @@ func (ms *Server) handleWriteMultipleCoils(ctx context.Context, req *adu.Request
 	}
 	if req.Payload[4] != uint8(expectedLen) {
 		return nil, ErrIllegalDataValue
-	}
-	// The frame carries more or less data than it announces: the implied
-	// length is incorrect, an Illegal Data Value too (section 7).
-	if err := checkDataLength(len(req.Payload)-5, expectedLen); err != nil {
-		return nil, err
 	}
 
 	if uint32(addr)+uint32(quantity)-1 > 0xffff {

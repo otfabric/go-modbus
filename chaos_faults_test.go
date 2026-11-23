@@ -83,6 +83,9 @@ type chaosFaultCase struct {
 	lenTo   func(cur int) int
 	splitAt int
 	gap     time.Duration
+	// serverCloses: the server answers the faulted request and then closes
+	// the connection, which the client finds out about on its next request.
+	serverCloses bool
 }
 
 func chaosFaultCases(timeout time.Duration) []chaosFaultCase {
@@ -118,12 +121,15 @@ func chaosFaultCases(timeout time.Duration) []chaosFaultCase {
 		chaosFaultCase{name: "c2s/corrupt-proto", dir: chaosC2S, fault: chaosCorruptProto, want: chaosClassTransport},
 		chaosFaultCase{name: "s2c/corrupt-proto", dir: chaosS2C, fault: chaosCorruptProto, want: chaosClassTimeout},
 		chaosFaultCase{name: "s2c/corrupt-fc", dir: chaosS2C, fault: chaosCorruptFC, want: chaosClassProtocol},
-		// A request whose length field is wrong makes the server drop the connection, or
-		// wait for bytes that never come.
+		// A request whose length field is invalid makes the server drop the
+		// connection. One that is valid but disagrees with the fixed length of
+		// the function code (FC04 here) is answered with Illegal Data Value as
+		// soon as the function code is read, without waiting for the bytes a
+		// longer length announces, and the connection is closed after it.
 		chaosFaultCase{name: "c2s/corrupt-len/zero", dir: chaosC2S, fault: chaosCorruptLen, lenTo: fixed(0), want: chaosClassTransport},
 		chaosFaultCase{name: "c2s/corrupt-len/huge", dir: chaosC2S, fault: chaosCorruptLen, lenTo: fixed(0xffff), want: chaosClassTransport},
-		chaosFaultCase{name: "c2s/corrupt-len/shorter", dir: chaosC2S, fault: chaosCorruptLen, lenTo: shorter, want: chaosClassTransport},
-		chaosFaultCase{name: "c2s/corrupt-len/longer", dir: chaosC2S, fault: chaosCorruptLen, lenTo: longer, want: chaosClassTimeout},
+		chaosFaultCase{name: "c2s/corrupt-len/shorter", dir: chaosC2S, fault: chaosCorruptLen, lenTo: shorter, want: chaosClassException, serverCloses: true},
+		chaosFaultCase{name: "c2s/corrupt-len/longer", dir: chaosC2S, fault: chaosCorruptLen, lenTo: longer, want: chaosClassException, serverCloses: true},
 		// A response whose length field is wrong, or that stalls half-way, leaves bytes
 		// of the old frame in the stream: the client must drop the connection.
 		chaosFaultCase{name: "s2c/corrupt-len/zero", dir: chaosS2C, fault: chaosCorruptLen, lenTo: fixed(0), want: chaosClassProtocol},
@@ -224,7 +230,7 @@ func chaosRunFaultCase(t *testing.T, mode chaosMode, fc chaosFaultCase, timeout 
 	// the peer only when it uses it: that costs one request.
 	const followUp = 2 * time.Second
 	allowance := 0
-	if mode.retry == nil && fc.fault&(chaosRSTAfter|chaosFINAfter) != 0 {
+	if mode.retry == nil && (fc.fault&(chaosRSTAfter|chaosFINAfter) != 0 || fc.serverCloses) {
 		allowance = 1
 	}
 	for i := range 4 {

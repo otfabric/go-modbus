@@ -162,8 +162,10 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 		fc      FunctionCode
 		payload []byte
 		// wantExc is the expected exception code; 0 means the link must be
-		// dropped without a response (protocol error).
+		// dropped without a response (protocol error). closes: after the
+		// exception the link is closed (a PDU length error).
 		wantExc ExceptionCode
+		closes  bool
 		wantErr error // error reported to metrics
 	}{
 		{
@@ -211,7 +213,7 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 		{
 			name:    "FC23 zero write quantity",
 			handler: &fnHandler{readWrite: okRW},
-			fc:      FCReadWriteMultipleRegs, payload: append(u16(0, 1, 0, 0), 0x00, 0x00),
+			fc:      FCReadWriteMultipleRegs, payload: append(u16(0, 1, 0, 0), 0x00),
 			wantExc: exIllegalDataValue, wantErr: ErrIllegalDataValue,
 		},
 		{
@@ -230,13 +232,13 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 			name:    "FC23 data longer than its byte count",
 			handler: &fnHandler{readWrite: okRW},
 			fc:      FCReadWriteMultipleRegs, payload: append(append(u16(0, 1, 0, 1), 0x02), 0x00, 0x07, 0xFF),
-			wantExc: exIllegalDataValue, wantErr: ErrIllegalDataValue,
+			wantExc: exIllegalDataValue, closes: true, wantErr: ErrIllegalDataValue,
 		},
 		{
 			name:    "FC23 data shorter than its byte count",
 			handler: &fnHandler{readWrite: okRW},
 			fc:      FCReadWriteMultipleRegs, payload: append(append(u16(0, 1, 0, 1), 0x02), 0x00),
-			wantErr: ErrProtocolError,
+			wantExc: exIllegalDataValue, closes: true, wantErr: ErrProtocolError,
 		},
 		{
 			name:    "FC23 byte count disagrees with write quantity",
@@ -307,8 +309,8 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 					t.Fatal("link was not closed after a protocol error")
 				}
 			} else {
-				if tr.closed {
-					t.Fatal("link was closed for a request that only warrants an exception")
+				if tr.closed != tc.closes {
+					t.Fatalf("link closed %v after the exception, want %v", tr.closed, tc.closes)
 				}
 				want := &adu.Response{
 					UnitID:        0x2A,

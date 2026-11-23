@@ -282,11 +282,11 @@ func TestE2E_Bits_Write(t *testing.T) {
 		e2eWantParamError(t, "WriteCoils(65535, 2)", c.WriteCoils(ctx, e2eUnit, 0xFFFF, []bool{true, true}), dev)
 
 		// Server-side limit enforcement for FC15 (quantity 1969 with a
-		// consistent byte count, and quantity 0).
+		// consistent byte count, and quantity 0 with byte count 0).
 		over := append(u16(0, 1969), 247)
 		over = append(over, make([]byte, 247)...)
 		assertExceptionResponse(t, sendRawFC(t, c, e2eUnit, byte(FCWriteMultipleCoils), over), exIllegalDataValue)
-		zero := append(u16(0, 0), 0, 0)
+		zero := append(u16(0, 0), 0) // byte count 0, no data: consistently framed
 		assertExceptionResponse(t, sendRawFC(t, c, e2eUnit, byte(FCWriteMultipleCoils), zero), exIllegalDataValue)
 		wrap := append(u16(0xFFFF, 2), 1, 0x03)
 		assertExceptionResponse(t, sendRawFC(t, c, e2eUnit, byte(FCWriteMultipleCoils), wrap), exIllegalDataAddress)

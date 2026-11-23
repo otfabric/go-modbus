@@ -74,8 +74,9 @@ func (b *lockedBuffer) String() string {
 }
 
 // A nil response from a handler is answered explicitly: Server Device Failure
-// where the response cannot be built from nil, a normal answer where nil is an
-// empty, valid result. Neither may go through the panic recovery.
+// where the response cannot be built from nil (or nil is not a valid result,
+// as for FC17), a normal answer where nil is an empty, valid result. Neither
+// may go through the panic recovery.
 func TestServer_NilHandlerResponses(t *testing.T) {
 	var logs lockedBuffer
 	p := e2eStart(t, "tcp", nilResponseHandler{}, e2eOpts{server: func(c *ServerConfig) {
@@ -97,7 +98,9 @@ func TestServer_NilHandlerResponses(t *testing.T) {
 		{FCDiagnostics, func() error { _, err := c.Diagnostics(ctx, e2eUnit, DiagReturnQueryData, nil); return err }, false},
 		{FCGetCommEventCounters, func() error { _, err := c.GetCommEventCounter(ctx, e2eUnit); return err }, true},
 		{FCGetCommEventLog, func() error { _, err := c.GetCommEventLog(ctx, e2eUnit); return err }, true},
-		{FCReportServerID, func() error { _, err := c.ReportServerID(ctx, e2eUnit); return err }, false},
+		// No data has no run indicator, which section 6.13 makes mandatory:
+		// since v1.20.0 not sent as Byte Count 0.
+		{FCReportServerID, func() error { _, err := c.ReportServerID(ctx, e2eUnit); return err }, true},
 		{FCReadFileRecord, func() error {
 			_, err := c.ReadFileRecords(ctx, e2eUnit, []FileRecordRequest{{FileNumber: 1, RecordLength: 1}})
 			return err

@@ -37,8 +37,15 @@ type DiagnosticsRequest struct {
 // in front of it. For Return Query Data (0x0000) the data should echo
 // req.Data. For Force Listen Only Mode (0x0004), a serial-line device sends no
 // response: return ErrNoResponse to behave like one. Other state changes
-// (restart communications, clear counters) are the handler's to apply.
-// At most 250 data bytes fit in a response.
+// (restart communications, clear counters) are the handler's to apply; the
+// server keeps no listen-only state of its own.
+//
+// The data field is N x 2 bytes in both directions (MODBUS Application
+// Protocol V1.1b3, section 6.8). A request with an odd number of data bytes is
+// answered with Illegal Data Value without calling the handler; data the
+// handler returns with an odd length, or more than 250 bytes, is not sent:
+// the request is answered with Server Device Failure. Vendor sub-functions
+// reach the handler like the others.
 type DiagnosticsHandler interface {
 	HandleDiagnostics(ctx context.Context, req *DiagnosticsRequest) (data []byte, err error)
 }
@@ -53,10 +60,17 @@ type ReportServerIDRequest struct {
 }
 
 // ReportServerIDHandler is an optional interface for serving FC17 (Report
-// Server ID). The handler returns the device-specific payload: by convention
-// the server ID bytes, a run indicator byte (0xFF on, 0x00 off) and optional
-// additional data (Client.ReportServerID reads the last byte as the run
-// indicator). The server adds the byte count. At most 251 bytes fit.
+// Server ID). The handler returns everything after the byte count, in the
+// order of MODBUS Application Protocol V1.1b3, section 6.13: the Server ID
+// (device specific, at least one byte is advisable), the Run Indicator Status
+// byte (0x00 OFF, 0xFF ON) and optional Additional Data. The server adds the
+// byte count; it cannot tell where the Server ID ends, so it does not check
+// the run indicator. Data must hold at least the run indicator: an empty
+// result is answered with Server Device Failure, as is one of more than 251
+// bytes. Client.ReportServerID guesses the run indicator from the last byte
+// only when it is 0x00 or 0xFF; a device with Additional Data should document
+// the length of its Server ID so that clients can use
+// ReportServerIDResponse.RunIndicator.
 type ReportServerIDHandler interface {
 	HandleReportServerID(ctx context.Context, req *ReportServerIDRequest) (data []byte, err error)
 }
@@ -123,6 +137,9 @@ const (
 	maxDiagnosticsData   = maxPDUPayload - 2
 	maxReportServerIDLen = maxPDUPayload - 1
 	maxPDUPayload        = 252
+	// maxCommEvents is the size of the event field of Get Comm Event Log
+	// (FC12): 0-64 bytes (MODBUS Application Protocol V1.1b3, section 6.10).
+	maxCommEvents = 64
 )
 
 // handleDiagnostics serves FC08.
@@ -133,6 +150,11 @@ func (ms *Server) handleDiagnostics(ctx context.Context, req *adu.Request, txnID
 	}
 	if len(req.Payload) < 2 {
 		return nil, errPDUTruncated
+	}
+	// The data field is N x 2 bytes (section 6.8), whatever the sub-function:
+	// an odd length is an Illegal Data Value, and the handler is not called.
+	if len(req.Payload)%2 != 0 {
+		return nil, errPDUOddData
 	}
 	sub := req.Payload[0:2]
 	data, err := h.HandleDiagnostics(ctx, &DiagnosticsRequest{
@@ -147,6 +169,14 @@ func (ms *Server) handleDiagnostics(ctx context.Context, req *adu.Request, txnID
 		return nil, err
 	}
 	if len(data) > maxDiagnosticsData {
+		ms.logger.Errorf("diagnostics handler returned %d data bytes for sub-function 0x%04x, at most %d fit: answering with Server Device Failure",
+			len(data), bytesToUint16(BigEndian, sub), maxDiagnosticsData)
+		return nil, ErrServerDeviceFailure
+	}
+	if len(data)%2 != 0 {
+		// Not a valid response (section 6.8): it is not sent.
+		ms.logger.Errorf("diagnostics handler returned %d data bytes for sub-function 0x%04x, not a whole number of 16-bit items: answering with Server Device Failure",
+			len(data), bytesToUint16(BigEndian, sub))
 		return nil, ErrServerDeviceFailure
 	}
 	return newSuccessResponse(req, txnID, append(append([]byte(nil), sub...), data...)), nil
@@ -172,6 +202,13 @@ func (ms *Server) handleReportServerID(ctx context.Context, req *adu.Request, tx
 	}
 	n := len(data)
 	if n > maxReportServerIDLen {
+		ms.logger.Errorf("report server ID handler returned %d bytes, at most %d fit: answering with Server Device Failure", n, maxReportServerIDLen)
+		return nil, ErrServerDeviceFailure
+	}
+	if n == 0 {
+		// The Run Indicator Status is mandatory (section 6.13): a response
+		// with Byte Count 0 is not a valid one and is not sent.
+		ms.logger.Errorf("report server ID handler returned no data (the run indicator is mandatory): answering with Server Device Failure")
 		return nil, ErrServerDeviceFailure
 	}
 	return newSuccessResponse(req, txnID, append([]byte{byte(n)}, data...)), nil

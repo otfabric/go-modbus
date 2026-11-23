@@ -79,30 +79,44 @@ answer:
 | MBAP header invalid (protocol identifier, length), or a frame cut short | connection closed |
 | Function code `0x80`..`0xFF` (the exception bit set; no request carries one) | no answer, connection kept (since v1.20.0; before, an "exception" with the request's own function code) |
 | Function code not implemented (vendor and user-defined ones included), or its handler not provided | exception 1 |
-| PDU too short to hold the fields of its function (FC01..06, FC22, FC24 and FC43/14 shorter than their fixed length, FC08 without a whole sub-function, FC15, FC16, FC23 without their byte count, FC20, FC21 without one), or shorter than its byte count announces (FC15, FC16, FC23, FC20, FC21) | connection closed: on a TCP stream this is what an MBAP length that undercounts the request looks like, and the rest of the request would be read as the next header |
-| PDU longer than the fields of its function (FC01..06, FC22, FC24 and FC43/14 longer than their fixed length; FC07, FC11, FC12 and FC17 with any data), or with data beyond its byte count (FC15, FC16, FC23, FC20, FC21), or an FC21 sub-request that overruns the byte count | exception 3, connection kept (since v1.20.0; before, connection closed, and FC07, FC11, FC12 ignored the data) |
+| PDU length error: a PDU shorter or longer than the fields of its function (FC01..06, FC22, FC24 and FC43/14 of another length than their fixed one; FC07, FC11, FC12 and FC17 with any data; FC08 without a whole sub-function; FC15, FC16, FC23, FC20, FC21 without their byte count), or whose data is shorter or longer than its byte count announces (FC15, FC16, FC23, FC20, FC21) | exception 3 as a best effort, then the connection is closed (`CloseProtocolError`); nothing read after it is served (since v1.20.0; before, closed without an answer, and FC07, FC11, FC12 ignored the data). For FC01..07, FC11, FC12, FC17, FC22 and FC24 the MBAP length is checked as soon as the function code is read |
+| FC21 sub-request that overruns the byte count; FC08 data of odd length | exception 3, connection kept |
 | Quantity 0 or above the maximum of the function (FC01, 02, 03, 04, 15, 16, 23) | exception 3 |
-| FC15, FC16, FC23: byte count that is not the one the quantity asks for | exception 3 |
+| FC15, FC16, FC23: byte count that is not the one the quantity asks for (the data matching the byte count) | exception 3 |
 | FC05: value other than `0x0000` and `0xFF00` | exception 3 |
 | FC43/14: read device ID code outside 1..4 | exception 3 |
+| FC43/14: read device ID code 4 (individual access) to a device whose conformity level has no `0x80` bit | exception 3 (since v1.20.0) |
 | FC20: byte count outside 7..245 or not a multiple of 7, or a response that would not fit in one PDU; FC21: byte count outside 9..251 | exception 3 |
 | FC20, FC21: reference type other than 6, file 0, record above 9999, record length 0 | exception 2 |
 | Address range that runs beyond 65535 | exception 2 |
 | Anything else | the `RequestHandler` decides: values, or an error that maps to an exception |
 | FC24: the handler returns more than 31 values | exception 3 |
 | A handler returns a response that does not fit in one PDU, or FC20 records of another length than requested | exception 4 |
+| FC08: the handler returns data of odd length; FC12: more than 64 event bytes; FC17: no data (no room for the run indicator); FC43/14: a conformity level other than 0, `0x01`..`0x03`, `0x81`..`0x83`, a duplicate object identifier or an object longer than 244 bytes | exception 4 (since v1.20.0) |
 
-Exception 3 for a complete request with bytes beyond its fields follows
-section 7 of the specification, which gives Illegal Data Value for "a fault
-in the structure of the remainder of a complex request, such as that the
-implied length is incorrect". The tables of FC07, FC11, FC12 and FC17 list
-only exceptions 1 and 4; section 7 is the clause that covers their data, and
-it is applied to every function code alike rather than ignoring the data for
-some and closing for others. A truncated PDU is not answered with exception
-3 because the server cannot tell it from a request whose MBAP length is
-wrong, which leaves the stream out of step; closing the connection is how it
-gets back in step. The Modbus Messaging on TCP/IP Implementation Guide was
-not available when this was decided, and no clause of it is claimed here.
+Exception 3 for a PDU length error follows section 7 of the specification,
+which gives Illegal Data Value for "a fault in the structure of the remainder
+of a complex request, such as that the implied length is incorrect". The
+tables of FC07, FC11, FC12 and FC17 list only exceptions 1 and 4; section 7
+is the clause that covers their data, and it is applied to every function
+code alike rather than ignoring the data for some. The connection is closed
+after the exception because on Modbus TCP the MBAP length delimits the
+request, and a PDU of the wrong length cannot be told from a request whose
+MBAP length is wrong: the rest of that request is still in the stream, or
+the server has taken the first bytes of the next one. An exception does not
+put the stream back in step; closing the connection does. The exception is a
+best effort: the server half-closes the connection after it and discards
+what the client still sends for up to 100 ms, so that the close does not
+reset the connection under the answer, but a client may still see the close
+first. For a function code whose requests have a fixed size the server checks
+the MBAP length as soon as it has read the function code, so it neither waits
+for bytes an overcounting length announces nor takes them from the next
+request. A request whose framing is consistent but whose values are not (a
+quantity, a byte count that is not the one the quantity asks for while the
+data matches it, an FC21 sub-request that overruns the byte count, FC08 data
+of odd length) is answered and the connection kept. The Modbus Messaging on
+TCP/IP Implementation Guide was not available when this was decided, and no
+clause of it is claimed here.
 
 Two consequences for an application that models a device:
 
@@ -115,11 +129,52 @@ Two consequences for an application that models a device:
   quantity. The specification leaves this open; the five reference servers
   below answer 11 in that case.
 
-FC43/14: stream access from an object identifier the device does not have
-starts at object 0; individual access to such an object is exception 2. The
-conformity level, when the handler does not give one, is that of the highest
-category the device has objects for, with the bit for individual access
-(`0x81`, `0x82`, `0x83`).
+FC43/14: the conformity level, when the handler does not give one, is that
+of the highest category the device has objects for, with the bit for
+individual access (`0x81`, `0x82`, `0x83`). A stream request (ReadDevId
+1..3) is served at the lower of its category and the conformity level's, and
+the response keeps the request's ReadDevId code (section 6.21: "must respond
+in accordance with its actual conformity level"; "Same as request ReadDevId
+code"). Stream access from an object identifier that is not among the
+objects served at that category starts at object 0. Individual access
+(ReadDevId 4) to a device whose level has no `0x80` bit is exception 3 (the
+ReadDevId code is illegal for it); to an object it does not have, or above
+its level, exception 2. Handler objects with a duplicate identifier, or one
+longer than 244 bytes, are exception 4: the first would let a page name its
+own start as Next Object ID, the second cannot be sent (objects are
+indivisible). Number Of Objects counts the objects of the PDU; the
+two-transaction example of 6.21 gives the total on both pages, which
+contradicts the field's definition, and the client does not accept it.
+These server checks are covered by unit tests (`fc43_conformance_test.go`).
+
+The client side of the same decisions:
+
+- FC43/14: the response's ReadDevId code may not be above the request's; a
+  lower stream code for a stream request, which section 6.21 does not allow,
+  is tolerated (a device answering at its own level). For individual access
+  the code must be 04 and the response must carry exactly the requested
+  object.
+- FC20: the client refuses, before sending, a request whose response would
+  not fit in a response data length of 0xF5 (section 6.14). It accepts a file
+  response length below 0x07, as the specification's own worked example has
+  (0x05).
+- FC12: a byte count above 70 (6 + 64 event bytes) is a protocol error.
+- FC01/FC02: padding bits of the last byte are ignored (sections 6.1 and 6.2
+  ask for zero; a device that leaves them set is still read).
+- FC08: the typed wrappers send the data field of section 6.8.1 and check
+  the echo where the specification asks for one; the generic `Diagnostics`
+  passes the response data through.
+- `ProbeFunction` reports an exception only for a well-formed exception to
+  the probed function code.
+
+The worked examples of sections 6.1–6.6, 6.8.2, 6.10–6.12, 6.14, 6.16–6.18
+and 6.21 are replayed byte for byte (`spec_examples_test.go`,
+`client_file_conformance_test.go`, `server_commeventlog_test.go`,
+`client_diagnostics_conformance_test.go`, `fc43_conformance_test.go`); where
+an example contradicts its own field definitions (the Number Of Objects of
+the two-page example and the object lengths of the single-response example of
+6.21, the file response length of 6.14), the definition is followed. This is
+agreement with the examples, not a conformance claim.
 
 ## Verification status
 
@@ -209,7 +264,15 @@ RTU over TCP (above):
   sub-function, Report Server ID, file records with two sub-requests, to
   the last record and outside the files, a file write read back on a second
   connection, and every FIFO queue of the fixture, against the servers that
-  have them; Illegal Function from the others.
+  have them; Illegal Function from the others. Since v1.20.0 also: the
+  FC08 wrappers with their data field (`08 00 02 00 00`, `08 00 0B 00 00`,
+  `08 00 0A 00 00`, `08 00 14 00 00`, answered with exception 1 by the
+  fixture) and the loopback echo check against PyModbus and NModbus; the
+  FC17 run indicator (`RunIndicator`) against PyModbus; the FC43 Read Device
+  ID code and object id checks, and individual access to a missing object
+  (exception 2), against PyModbus, tokio-modbus and jsmodbus; FC20 responses
+  up to 244 bytes and 35 sub-requests against PyModbus, and the local
+  refusal of requests whose response would exceed 0xF5 bytes.
 - **reference clients → go-modbus server.** 120 operations per client (fewer
   where a client lacks an operation) against a go-modbus device that serves
   the same fixture by the same rules: every operation the client has,
@@ -221,7 +284,16 @@ RTU over TCP (above):
   specification prescribe, the
   values must be those of the fixture, a write must leave the device in
   exactly the expected state, and the client's result document must equal,
-  field by field, the one it gets from a reference server.
+  field by field, the one it gets from a reference server. Since v1.20.0
+  also, through raw PDUs from libmodbus, PyModbus, digitalpetri/modbus,
+  NModbus, tokio-modbus and modbus-esp8266: a request PDU with bytes beyond
+  its fields (FC03, FC06, FC17, FC20, FC24, FC43) and FC08 data of odd
+  length are answered with exception 3, as is an FC20 request whose
+  response would exceed 0xF5 bytes; FC20 with three sub-requests and with
+  120 registers; FC08 sub-functions 2, 10 and 11 answered with exception 1.
+  That the server closes the connection after exception 3 for a PDU length
+  error is checked by this repository's tests only: a reference client
+  opens a connection per operation.
 
 Exception 3 in the client direction is received from one stack only
 (libmodbus, for FC05 with an invalid value sent with `WriteCoilRaw`): the
@@ -236,6 +308,11 @@ In go-modbus, fixed in v1.3.0:
   byte count did not match its quantity. The specification (figures 21, 22
   and 27) asks for exception 3, which is what libmodbus, PyModbus and
   digitalpetri/modbus answer.
+
+The stricter response checks of v1.20.0 (FC08 echo, FC17 run indicator,
+FC43 Read Device ID code and object id, FC20 response length) reject none of
+the reference servers that serve these functions (PyModbus, NModbus,
+tokio-modbus, jsmodbus).
 
 In the reference stacks, as packaged by modbus-interop (none of these makes
 a test fail; the suite records them where it meets them):

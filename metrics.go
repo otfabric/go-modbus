@@ -168,13 +168,13 @@ const (
 	// ErrUnknownProtocolID.
 	CloseMalformedFrame
 	// CloseProtocolError is a connection closed because a request PDU was
-	// shorter than the fields of its function code or than its byte count
-	// announces (which on a TCP stream is what an MBAP length that undercounts
-	// the request looks like), or because a handler returned ErrProtocolError:
-	// err is ErrProtocolError. The request is reported to ServerMetrics as an
-	// OnError with an error that matches ErrProtocolError. Since v1.20.0 a
-	// complete request with bytes beyond its fields is answered with Illegal
-	// Data Value and does not close the connection.
+	// shorter or longer than the fields of its function code or than its byte
+	// count announces (which on a TCP stream is what a wrong MBAP length looks
+	// like), or because a handler returned ErrProtocolError: err is
+	// ErrProtocolError. The request is reported to ServerMetrics as an OnError
+	// with an error that matches ErrProtocolError. Since v1.20.0 a request PDU
+	// of the wrong length is answered with Illegal Data Value before the
+	// connection is closed.
 	CloseProtocolError
 	// CloseWriteFailed is a connection closed because a response could not be
 	// written in full within ServerConfig.Timeout: err is the write error.

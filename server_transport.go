@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"os"
 	"sync"
@@ -318,6 +317,13 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 // the one being served before the server stops reading from its socket.
 const serverPipelineDepth = 16
 
+// answeredCloseDrain bounds how long the server reads and discards what a
+// client still sends after the server answered a request whose PDU length it
+// rejected and half-closed the connection. Closing a socket with unread data
+// makes the system send a reset, which can discard the answer at the client
+// before it reads it.
+const answeredCloseDrain = 100 * time.Millisecond
+
 // serveConn serves one Modbus/TCP connection.
 //
 // Requests are read by a goroutine of their own and handed, in order, to the
@@ -345,7 +351,14 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		req      *adu.Request
 		txnID    uint16
 		received time.Time
+		// lengthErr: the transport rejected the request's MBAP length before
+		// reading its PDU (inttrans.RequestLengthError); req has no payload.
+		lengthErr *inttrans.RequestLengthError
 	}
+	// A request of a fixed-size function code whose MBAP length disagrees is
+	// rejected as soon as its function code is read (see
+	// malformedRequestError).
+	t.RequestPDULength = requestPDULength
 	queue := make(chan inbound, serverPipelineDepth)
 	quit := make(chan struct{})
 	readerDone := make(chan struct{})
@@ -374,9 +387,12 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	}()
 
 	// pending counts the requests read and not yet answered. It and the read
-	// deadline change together, under mu.
+	// deadline change together, under mu. draining: the connection is being
+	// closed after an answer, and the read deadline is that of the drain,
+	// which the reader must not lift.
 	var mu sync.Mutex
 	pending := 0
+	draining := false
 	_ = t.SetReadDeadline(time.Now().Add(ms.conf.Timeout))
 
 	go func() {
@@ -386,7 +402,8 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		defer ms.leave(run)
 		for {
 			req, txnID, err := t.ReadFrame()
-			if err != nil {
+			var lengthErr *inttrans.RequestLengthError
+			if err != nil && !errors.As(err, &lengthErr) {
 				// Disconnected, idle for too long, not speaking Modbus/TCP, or
 				// closed by the server.
 				cause.set(readCloseReason(run.ctx, err))
@@ -399,34 +416,52 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 			}
 			mu.Lock()
 			pending++
-			_ = t.SetReadDeadline(time.Time{})
+			if !draining {
+				_ = t.SetReadDeadline(time.Time{})
+			}
 			mu.Unlock()
 			select {
-			case queue <- inbound{req: req, txnID: txnID, received: received}:
+			case queue <- inbound{req: req, txnID: txnID, received: received, lengthErr: lengthErr}:
 			case <-quit:
+				return
+			}
+			if lengthErr != nil {
+				// The stream is out of step: nothing after this request is
+				// read. The loop below answers it and closes the connection.
 				return
 			}
 		}
 	}()
 
+	// drainAfterAnswer: the loop ended on a request it answered and must close
+	// the connection after (see answeredCloseDrain).
+	drainAfterAnswer := false
 	for in := range queue {
 		if share.released.Load() {
 			break
 		}
-		res, closeLink := ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
+		var res *adu.Response
+		var closeLink bool
+		if in.lengthErr != nil {
+			res = ms.serveLengthError(in.req, in.txnID, clientAddr, in.lengthErr)
+			closeLink = true
+		} else {
+			res, closeLink = ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
+		}
 		if !share.released.Load() {
 			ms.tapServerExchange(connCtx, in.req, res, clientAddr, clientRole, in.received)
 		}
 		if closeLink {
 			cause.set(CloseProtocolError, ErrProtocolError)
 		}
-		if closeLink || share.released.Load() {
+		if share.released.Load() {
 			break
 		}
 		// res is nil when the handler chose not to answer (ErrNoResponse).
 		// A response that could not be written, or only in part, leaves the
 		// stream out of step, and a client that does not read would hold the
-		// connection forever: close it.
+		// connection forever: close it. With closeLink the response is a best
+		// effort before the connection is closed.
 		if res != nil {
 			if writeErr := t.WriteFrame(in.txnID, res); writeErr != nil {
 				ms.logger.Warningf("failed to write response, closing link (client address: '%s'): %v", clientAddr, writeErr)
@@ -434,6 +469,10 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 				connCancel()
 				break
 			}
+		}
+		if closeLink {
+			drainAfterAnswer = res != nil
+			break
 		}
 		mu.Lock()
 		pending--
@@ -446,6 +485,22 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	// Closing the socket ends the reader if it is still reading; quit ends it if
 	// it is waiting to hand over a request.
 	close(quit)
+	if drainAfterAnswer && !share.released.Load() {
+		// The answer is written: half-close, so that it is followed by a FIN,
+		// and read and discard what the client still sends for a short while
+		// (the reader, until it stops at its next handover, then here), so
+		// that closing does not reset the connection under the answer. What
+		// is read is not served.
+		if hc, ok := t.Socket.(interface{ CloseWrite() error }); ok {
+			_ = hc.CloseWrite()
+		}
+		mu.Lock()
+		draining = true
+		_ = t.SetReadDeadline(time.Now().Add(answeredCloseDrain))
+		mu.Unlock()
+		<-readerDone
+		_, _ = io.Copy(io.Discard, t.Socket)
+	}
 	_ = t.Close()
 	<-readerDone
 }
@@ -520,24 +575,25 @@ func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, cl
 			return
 		}
 		res, closeLink := ms.serveRequest(connCtx, req, txnID, clientAddr, clientRole)
+		if res != nil {
+			if writeErr := t.WriteResponse(res); writeErr != nil {
+				ms.logger.Warningf("failed to write response: %v", writeErr)
+			}
+		}
 		if closeLink {
 			_ = t.Close()
 			return
-		}
-		if res == nil {
-			continue
-		}
-		if writeErr := t.WriteResponse(res); writeErr != nil {
-			ms.logger.Warningf("failed to write response: %v", writeErr)
 		}
 	}
 }
 
 // serveRequest dispatches one request and returns the response to send.
-// closeLink is true when a handler returned ErrProtocolError: nothing is sent
-// and the connection must be closed. A request whose PDU is malformed is
-// answered with Illegal Data Value and the connection kept (see
-// malformedRequestError). res is nil with closeLink false when the handler
+// closeLink is true when the connection must be closed after res, if any, is
+// written: when a handler returned ErrProtocolError (res is nil), or the
+// length of the request PDU disagrees with its function code or byte count
+// (res is the Illegal Data Value exception; see malformedRequestError). A
+// request that is otherwise malformed is answered with Illegal Data Value and
+// the connection kept. res is nil with closeLink false when the handler
 // returned ErrNoResponse, or the request carried an exception function code
 // (errExceptionFCRequest): nothing is sent and the connection is kept.
 func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (res *adu.Response, closeLink bool) {
@@ -564,14 +620,22 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 	if err != nil {
 		// The server's own errors are not wrapped: a type assertion, which
 		// calls none of the methods of a handler's error, finds them.
-		if malformed, ok := err.(*malformedRequestError); ok && malformed.truncated || err == ErrProtocolError {
-			// A truncated PDU (see malformedRequestError), or a handler that
-			// returned ErrProtocolError itself.
+		if err == ErrProtocolError {
+			// A handler that returned ErrProtocolError itself.
 			ms.logger.Warningf("protocol error, closing link (client address: '%s'): FC 0x%02x: %v", clientAddr, req.FunctionCode, err)
 			if ms.metrics != nil {
 				ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
 			}
 			return nil, true
+		}
+		if malformed, ok := err.(*malformedRequestError); ok && malformed.closeLink {
+			// A PDU whose length disagrees with its function code or byte
+			// count (see malformedRequestError): answered, then closed.
+			ms.logger.Warningf("protocol error, closing link (client address: '%s'): FC 0x%02x: %v: answering with Illegal Data Value", clientAddr, req.FunctionCode, err)
+			if ms.metrics != nil {
+				ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
+			}
+			return exceptionResponse(req, txnID, exIllegalDataValue), true
 		}
 
 		if ms.metrics != nil {
@@ -589,16 +653,49 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 		if silent {
 			return nil, false
 		}
-		res = &adu.Response{
-			UnitID:        req.UnitID,
-			FunctionCode:  req.FunctionCode | 0x80,
-			Payload:       []byte{byte(code)},
-			TransactionID: txnID,
-		}
+		res = exceptionResponse(req, txnID, code)
 	} else if ms.metrics != nil {
 		ms.reportMetrics(metricsOnResponse, req, clientAddr, time.Since(reqStart), nil)
 	}
 	return res, false
+}
+
+// exceptionResponse is the exception response with code to req.
+func exceptionResponse(req *adu.Request, txnID uint16, code ExceptionCode) *adu.Response {
+	return &adu.Response{
+		UnitID:        req.UnitID,
+		FunctionCode:  req.FunctionCode | 0x80,
+		Payload:       []byte{byte(code)},
+		TransactionID: txnID,
+	}
+}
+
+// serveLengthError answers a request whose MBAP length the transport rejected
+// for its fixed-size function code (inttrans.RequestLengthError) before
+// reading its PDU, and is followed by closing the connection. The handler is
+// not called. The answer is the one the full request would have had first:
+// Illegal Function when the server does not serve the function code, else
+// Illegal Data Value. ServerMetrics sees the request and an error.
+func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, clientAddr string, lengthErr *inttrans.RequestLengthError) *adu.Response {
+	var reqStart time.Time
+	if ms.metrics != nil {
+		ms.reportMetrics(metricsOnRequest, req, clientAddr, 0, nil)
+		reqStart = time.Now()
+	}
+	var err error = errPDUTrailing
+	if lengthErr.Have < lengthErr.Want {
+		err = errPDUTruncated
+	}
+	code := exIllegalDataValue
+	if !ms.servesFixedLength(FunctionCode(req.FunctionCode)) {
+		err, code = ErrIllegalFunction, exIllegalFunction
+	}
+	ms.logger.Warningf("protocol error, closing link (client address: '%s'): FC 0x%02x: %v: answering with exception %d",
+		clientAddr, req.FunctionCode, lengthErr, code)
+	if ms.metrics != nil {
+		ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
+	}
+	return exceptionResponse(req, txnID, code)
 }
 
 // metricsHook names one method of ServerMetrics.
@@ -904,11 +1001,13 @@ func (ms *Server) handleCommEventLog(ctx context.Context, req *adu.Request, txnI
 		ms.logger.Errorf("comm event log handler returned nil response")
 		return nil, ErrServerDeviceFailure
 	}
-	// Events the one-byte byte count cannot count cannot be sent. Fewer
-	// that still overflow the frame are caught by the response size check
-	// in serveRequest.
+	// The event field holds 0-64 bytes (V1.1b3 section 6.10). A handler that
+	// returns more breaks its contract: Server Device Failure, rather than a
+	// log the client would read as truncated history.
 	n := len(cl.Events)
-	if n > math.MaxUint8-6 {
+	if n > maxCommEvents {
+		ms.logger.Errorf("comm event log handler returned %d event bytes, at most %d fit: answering with Server Device Failure",
+			n, maxCommEvents)
 		return nil, ErrServerDeviceFailure
 	}
 	payload := []byte{byte(6 + n)}

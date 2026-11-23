@@ -138,6 +138,14 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 	writeQty := bytesToUint16(BigEndian, req.Payload[6:8])
 	byteCount := req.Payload[8]
 
+	// The PDU must hold the data its own byte count announces, no more and
+	// no less: otherwise its length is in doubt, and with it the framing of
+	// the stream (an Illegal Data Value, section 7, and the connection is
+	// closed; see malformedRequestError). Checked before the values.
+	if err := checkDataLength(len(req.Payload)-9, int(byteCount)); err != nil {
+		return nil, err
+	}
+
 	if readQty == 0 || readQty > maxRWReadRegs {
 		return nil, ErrIllegalDataValue
 	}
@@ -150,11 +158,6 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 	expectedLen := int(writeQty) * 2
 	if int(byteCount) != expectedLen {
 		return nil, ErrIllegalDataValue
-	}
-	// The frame carries more or less data than it announces: the implied
-	// length is incorrect, an Illegal Data Value too (section 7).
-	if err := checkDataLength(len(req.Payload)-9, expectedLen); err != nil {
-		return nil, err
 	}
 	if uint32(readAddr)+uint32(readQty)-1 > 0xffff {
 		return nil, ErrIllegalDataAddress
@@ -195,6 +198,14 @@ func (ms *Server) handleWriteMultipleRegisters(ctx context.Context, req *adu.Req
 		return nil, errPDUTruncated
 	}
 
+	// The PDU must hold the data its own byte count announces, no more and
+	// no less: otherwise its length is in doubt, and with it the framing of
+	// the stream (an Illegal Data Value, section 7, and the connection is
+	// closed; see malformedRequestError). Checked before the values.
+	if err := checkDataLength(len(req.Payload)-5, int(req.Payload[4])); err != nil {
+		return nil, err
+	}
+
 	addr := bytesToUint16(BigEndian, req.Payload[0:2])
 	quantity := bytesToUint16(BigEndian, req.Payload[2:4])
 
@@ -207,11 +218,6 @@ func (ms *Server) handleWriteMultipleRegisters(ctx context.Context, req *adu.Req
 	expectedLen := int(quantity) * 2
 	if req.Payload[4] != uint8(expectedLen) {
 		return nil, ErrIllegalDataValue
-	}
-	// The frame carries more or less data than it announces: the implied
-	// length is incorrect, an Illegal Data Value too (section 7).
-	if err := checkDataLength(len(req.Payload)-5, expectedLen); err != nil {
-		return nil, err
 	}
 
 	if uint32(addr)+uint32(quantity)-1 > 0xffff {

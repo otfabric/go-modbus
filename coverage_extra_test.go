@@ -342,8 +342,16 @@ func diagTestServer(t *testing.T) (addr string, close func()) {
 						_ = writeMBAPException(c, txid, unitID, fc, byte(exIllegalDataValue))
 						continue
 					}
+					// Like a device (V1.1b3 6.8.1): the echo sub-functions echo
+					// the request data, the others answer 0x0042.
 					subFunc := payload[0:2]
 					respData := []byte{0x00, 0x42} // example response value
+					switch DiagnosticSubFunction(bytesToUint16(BigEndian, subFunc)) {
+					case DiagReturnQueryData, DiagRestartCommunications, DiagChangeASCIIInputDelimiter,
+						DiagClearCountersAndDiagnosticReg, DiagClearOverrunCounterAndFlag:
+						respData = append([]byte(nil), payload[2:]...)
+					default:
+					}
 					_ = writeMBAPNormal(c, txid, unitID, fc, append(subFunc, respData...))
 				}
 			}(sock)
@@ -369,8 +377,8 @@ func TestDiagnosticLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiagnosticLoopback: %v", err)
 	}
-	if val != 0x0042 {
-		t.Errorf("value = 0x%04X, want 0x0042", val)
+	if val != 0x1234 {
+		t.Errorf("value = 0x%04X, want the echo 0x1234", val)
 	}
 }
 

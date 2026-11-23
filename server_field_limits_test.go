@@ -22,10 +22,16 @@ func TestServerFC0C_EventsBeyondByteCount(t *testing.T) {
 	}
 	req := &adu.Request{UnitID: 1, FunctionCode: byte(FCGetCommEventLog)}
 
-	h.events = make([]byte, 249) // byte count 6 + 249 = 255
+	// The event field holds 0-64 bytes (V1.1b3 6.10): since v1.20.0 more are
+	// not sent, rather than sent up to what the byte count can count.
+	h.events = make([]byte, 64) // byte count 6 + 64 = 70
 	res, err := ms.handleCommEventLog(context.Background(), req, 1, "", "")
-	if err != nil || res.Payload[0] != 255 {
-		t.Fatalf("249 events: res %v, err %v, want byte count 255", res, err)
+	if err != nil || res.Payload[0] != 70 {
+		t.Fatalf("64 events: res %v, err %v, want byte count 70", res, err)
+	}
+	h.events = make([]byte, 65)
+	if _, err := ms.handleCommEventLog(context.Background(), req, 1, "", ""); !errors.Is(err, ErrServerDeviceFailure) {
+		t.Errorf("65 events: err %v, want ErrServerDeviceFailure", err)
 	}
 
 	h.events = make([]byte, 250) // byte count 256 would wrap to 0

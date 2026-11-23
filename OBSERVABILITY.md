@@ -98,9 +98,9 @@ right after `OnConnectionClosed`, once for every connection the server served,
 with why it ended and the error that ended it: the client closed it
 (`CloseClientClosed`), no request within `ServerConfig.Timeout`
 (`CloseIdleTimeout`), bytes the server cannot frame (`CloseMalformedFrame`), a
-request PDU shorter than its fields or byte count, or a handler that returned
-`ErrProtocolError` (`CloseProtocolError`; since v1.20.0 a complete request with
-bytes beyond its fields is answered with exception 3 instead), a response that could
+request PDU of the wrong length for its fields or byte count (since v1.20.0 after
+answering it with exception 3), or a handler that returned `ErrProtocolError`
+(`CloseProtocolError`), a response that could
 not be written (`CloseWriteFailed`), another read error such as a reset
 (`CloseReadFailed`), or `Shutdown` (`CloseServerStopped`). These causes were
 only logged up to v1.18.0. A `tcp+tls` connection whose handshake failed was

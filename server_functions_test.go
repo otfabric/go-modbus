@@ -105,6 +105,7 @@ func TestServerFunctions_Success(t *testing.T) {
 // Device Failure.
 func TestServerFunctions_RequestValidation(t *testing.T) {
 	const wantOK ExceptionCode = 0xFF
+	const wantLengthErr ExceptionCode = 0xFE
 	dev := e2eNewDevice()
 	dev.setUnit(0x2A)
 	dev.setFIFO(0x0032, make([]uint16, 32)...)
@@ -121,28 +122,29 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 		fc      FunctionCode
 		payload []byte
 		// wantExc 0 means the link is dropped without a response, wantOK a
-		// normal response.
+		// normal response, wantLengthErr exception 3 after which the link is
+		// closed (a PDU length error).
 		wantExc ExceptionCode
 		wantErr error
 	}{
-		{"FC08 empty", dev, FCDiagnostics, nil, 0, ErrProtocolError},
-		{"FC08 half a sub-function", dev, FCDiagnostics, []byte{0x00}, 0, ErrProtocolError},
+		{"FC08 empty", dev, FCDiagnostics, nil, wantLengthErr, ErrProtocolError},
+		{"FC08 half a sub-function", dev, FCDiagnostics, []byte{0x00}, wantLengthErr, ErrProtocolError},
 		{"FC08 unknown sub-function", dev, FCDiagnostics, []byte{0x12, 0x34}, exIllegalFunction, ErrIllegalFunction},
 		{
 			"FC08 handler data too long",
 			&fnFunctions{diag: func(*DiagnosticsRequest) ([]byte, error) { return make([]byte, 251), nil }},
 			FCDiagnostics, []byte{0, 0}, exServerDeviceFailure, ErrServerDeviceFailure,
 		},
-		{"FC17 with a payload", dev, FCReportServerID, []byte{0x00}, exIllegalDataValue, ErrIllegalDataValue},
+		{"FC17 with a payload", dev, FCReportServerID, []byte{0x00}, wantLengthErr, ErrIllegalDataValue},
 		{
 			"FC17 handler data too long",
 			&fnFunctions{serverID: func(*ReportServerIDRequest) ([]byte, error) { return make([]byte, 252), nil }},
 			FCReportServerID, nil, exServerDeviceFailure, ErrServerDeviceFailure,
 		},
 
-		{"FC20 empty", dev, FCReadFileRecord, nil, 0, ErrProtocolError},
-		{"FC20 data beyond its byte count", dev, FCReadFileRecord, append(fileReadReq([3]uint16{4, 1, 1}), 0), exIllegalDataValue, ErrIllegalDataValue},
-		{"FC20 byte count too small", dev, FCReadFileRecord, fileReadReq([3]uint16{4, 1, 1})[:7], 0, ErrProtocolError},
+		{"FC20 empty", dev, FCReadFileRecord, nil, wantLengthErr, ErrProtocolError},
+		{"FC20 data beyond its byte count", dev, FCReadFileRecord, append(fileReadReq([3]uint16{4, 1, 1}), 0), wantLengthErr, ErrIllegalDataValue},
+		{"FC20 byte count too small", dev, FCReadFileRecord, fileReadReq([3]uint16{4, 1, 1})[:7], wantLengthErr, ErrProtocolError},
 		{"FC20 byte count zero", dev, FCReadFileRecord, []byte{0}, exIllegalDataValue, ErrIllegalDataValue},
 		{"FC20 byte count not a multiple of 7", dev, FCReadFileRecord, []byte{8, 6, 0, 4, 0, 1, 0, 1, 0}, exIllegalDataValue, ErrIllegalDataValue},
 		{"FC20 byte count above 0xF5", dev, FCReadFileRecord, fileReadReq(make([][3]uint16, 36)...), exIllegalDataValue, ErrIllegalDataValue},
@@ -162,9 +164,9 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 		},
 		{"FC20 largest response", &fnFunctions{readFile: readOK}, FCReadFileRecord, fileReadReq([3]uint16{4, 0, 121}), wantOK, nil},
 
-		{"FC21 empty", dev, FCWriteFileRecord, nil, 0, ErrProtocolError},
-		{"FC21 data beyond its byte count", dev, FCWriteFileRecord, append(fileWriteReq(4, 7, 1), 0), exIllegalDataValue, ErrIllegalDataValue},
-		{"FC21 shorter than its byte count", dev, FCWriteFileRecord, fileWriteReq(4, 7, 1)[:9], 0, ErrProtocolError},
+		{"FC21 empty", dev, FCWriteFileRecord, nil, wantLengthErr, ErrProtocolError},
+		{"FC21 data beyond its byte count", dev, FCWriteFileRecord, append(fileWriteReq(4, 7, 1), 0), wantLengthErr, ErrIllegalDataValue},
+		{"FC21 shorter than its byte count", dev, FCWriteFileRecord, fileWriteReq(4, 7, 1)[:9], wantLengthErr, ErrProtocolError},
 		{"FC21 byte count below 9", dev, FCWriteFileRecord, []byte{7, 6, 0, 4, 0, 7, 0, 0}, exIllegalDataValue, ErrIllegalDataValue},
 		{"FC21 byte count above 0xFB", dev, FCWriteFileRecord, fileWriteReq(4, 0, make([]uint16, 123)...), exIllegalDataValue, ErrIllegalDataValue},
 		{"FC21 data shorter than its length", dev, FCWriteFileRecord, []byte{9, 6, 0, 4, 0, 7, 0, 2, 0, 1}, exIllegalDataValue, ErrIllegalDataValue},
@@ -174,9 +176,9 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 		{"FC21 record length 0", dev, FCWriteFileRecord, []byte{9, 6, 0, 4, 0, 7, 0, 0, 0, 1}, exIllegalDataAddress, ErrIllegalDataAddress},
 		{"FC21 missing file", dev, FCWriteFileRecord, fileWriteReq(5, 0, 1), exIllegalDataAddress, ErrIllegalDataAddress},
 
-		{"FC24 empty", dev, FCReadFIFOQueue, nil, 0, ErrProtocolError},
-		{"FC24 one byte", dev, FCReadFIFOQueue, []byte{0x04}, 0, ErrProtocolError},
-		{"FC24 three bytes", dev, FCReadFIFOQueue, []byte{0x04, 0xDE, 0x00}, exIllegalDataValue, ErrIllegalDataValue},
+		{"FC24 empty", dev, FCReadFIFOQueue, nil, wantLengthErr, ErrProtocolError},
+		{"FC24 one byte", dev, FCReadFIFOQueue, []byte{0x04}, wantLengthErr, ErrProtocolError},
+		{"FC24 three bytes", dev, FCReadFIFOQueue, []byte{0x04, 0xDE, 0x00}, wantLengthErr, ErrIllegalDataValue},
 		{"FC24 more than 31 values", dev, FCReadFIFOQueue, u16(0x0032), exIllegalDataValue, ErrIllegalDataValue},
 		{"FC24 unknown queue", dev, FCReadFIFOQueue, u16(0x0999), exIllegalDataAddress, ErrIllegalDataAddress},
 
@@ -202,6 +204,11 @@ func TestServerFunctions_RequestValidation(t *testing.T) {
 				}
 				if !tr.closed {
 					t.Fatal("link was not closed after a protocol error")
+				}
+			case wantLengthErr:
+				want := &adu.Response{UnitID: 0x2A, FunctionCode: byte(tc.fc) | 0x80, Payload: []byte{byte(exIllegalDataValue)}, TransactionID: 0x0101}
+				if !tr.closed || len(tr.responses) != 1 || !reflect.DeepEqual(tr.responses[0], want) {
+					t.Fatalf("responses = %+v, closed %v; want one %+v and the link closed", tr.responses, tr.closed, want)
 				}
 			default:
 				if tr.closed {

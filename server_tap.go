@@ -22,16 +22,17 @@ type ServerPDUExchange struct {
 	ClientRole string
 	// UnitID is the unit id the request was addressed to.
 	UnitID uint8
-	// Request is the request PDU as received.
+	// Request is the request PDU as received. For a request whose MBAP
+	// length the server rejected as soon as it read the function code (a
+	// fixed-size function code), it is the function code alone.
 	Request []byte
 	// Response is the response PDU the server answers with: an exception
 	// response has the function code with bit 0x80 set, the server's own
 	// exceptions (Illegal Function for a function code no handler serves, for
 	// example) included. It is nil when the server sends no response: a handler
 	// that returned ErrNoResponse, a request whose function code has the
-	// exception bit set (0x80-0xFF; the connection is kept), or a request PDU
-	// shorter than its fields or byte count and a handler that returned
-	// ErrProtocolError, on which the server closes the connection.
+	// exception bit set (0x80-0xFF; the connection is kept), or a handler that
+	// returned ErrProtocolError, on which the server closes the connection.
 	Response []byte
 	// Received is the time the server read the request from the connection,
 	// Answered the time its answer was decided, before the response is

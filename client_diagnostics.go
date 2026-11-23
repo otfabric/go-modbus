@@ -3,6 +3,7 @@
 package modbus
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -79,18 +80,38 @@ type DiagnosticResponse struct {
 }
 
 // ReportServerIDResponse is the response from Report Server ID (FC 0x11).
-// Data contains the raw device-specific payload (server ID bytes, run indicator,
-// and any optional additional data).
+// Data contains the raw device-specific payload after the byte count: the
+// Server ID, the Run Indicator Status byte (0x00 OFF, 0xFF ON) and any
+// Additional Data (MODBUS Application Protocol V1.1b3, section 6.13). The
+// length of the Server ID is device specific, so where the run indicator is
+// cannot be told from the response alone.
 //
-// RunIndicatorStatus is a heuristic parse: when the payload contains at least
-// 2 bytes, the last byte is interpreted as the run indicator (0xFF = ON,
-// 0x00 = OFF). This follows the common convention but may misinterpret
-// vendor-specific data on devices that pack additional information into the
-// payload. When the heuristic does not apply (fewer than 2 bytes), the field
-// is nil. Callers that need strict parsing should inspect Data directly.
+// RunIndicatorStatus is a guess from the last byte of Data, not a parse: it
+// is set whenever Data has at least 2 bytes, true when that byte is 0xFF and
+// false otherwise. That byte is the run indicator only on a device that sends
+// no Additional Data. When the length of the device's Server ID is known, use
+// RunIndicator instead, which also tells a byte that is neither 0x00 nor 0xFF.
 type ReportServerIDResponse struct {
 	Data               []byte
 	RunIndicatorStatus *bool
+}
+
+// RunIndicator returns the Run Indicator Status of a device whose Server ID
+// is serverIDLen bytes long: the byte of Data at that offset. ok is false
+// when Data is too short for it or the byte is neither 0x00 (OFF) nor 0xFF
+// (ON).
+func (rs *ReportServerIDResponse) RunIndicator(serverIDLen int) (on, ok bool) {
+	if serverIDLen < 0 || serverIDLen >= len(rs.Data) {
+		return false, false
+	}
+	switch rs.Data[serverIDLen] {
+	case 0xFF:
+		return true, true
+	case 0x00:
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // CommEventCounterResponse holds the parsed response from GetCommEventCounter (FC 0x0B).
@@ -224,6 +245,12 @@ func (mc *Client) GetCommEventLog(ctx context.Context, unitID uint8) (cl *CommEv
 			fmt.Sprintf("byte count %d too small, need at least 6 (Status + EventCount + MessageCount)", byteCount))
 		return
 	}
+	// The event field holds 0-64 bytes (section 6.10).
+	if byteCount > 6+maxCommEvents {
+		err = newProtocolError("GetCommEventLog",
+			fmt.Sprintf("byte count %d too large: at most %d (64 events)", byteCount, 6+maxCommEvents))
+		return
+	}
 	cl = &CommEventLogResponse{
 		Status:       bytesToUint16(BigEndian, res.Payload[1:3]),
 		EventCount:   bytesToUint16(BigEndian, res.Payload[3:5]),
@@ -234,9 +261,14 @@ func (mc *Client) GetCommEventLog(ctx context.Context, unitID uint8) (cl *CommEv
 }
 
 // Diagnostics sends a Diagnostics request (FC 0x08). subFunction selects the
-// diagnostic (use DiagnosticSubFunction constants). data is optional request
-// data (sub-function-specific; use nil or empty for none). The response echoes
-// the sub-function and returns sub-function-specific data.
+// diagnostic (use DiagnosticSubFunction constants; vendor sub-functions are
+// sent as they are). data is the request data (sub-function-specific; nil or
+// empty for none), a whole number of 16-bit items (section 6.8): an odd length
+// is a *ParameterError (Param "data") and nothing is sent. The response must
+// echo the sub-function; its data is returned as received, whatever its
+// length, so that vendor sub-functions can be read. The typed wrappers below
+// check the data of the sub-functions they send, and send the data field
+// 00 00 where the specification gives it (section 6.8.1).
 //
 // At most 250 bytes of data fit a request. With more, Diagnostics returns a
 // *ParameterError (Param "data") and sends nothing, on every transport. That
@@ -270,6 +302,15 @@ func (mc *Client) Diagnostics(ctx context.Context, unitID uint8, subFunction Dia
 		}
 		return
 	}
+	// The data field is N x 2 bytes (section 6.8), for vendor sub-functions
+	// too: an odd length cannot be a valid request.
+	if len(data)%2 != 0 {
+		if _, err = mc.requestEngine(req); err == nil {
+			err = newParameterError("Diagnostics", "data",
+				fmt.Sprintf("%d bytes: the data field is a whole number of 16-bit items", len(data)))
+		}
+		return
+	}
 	req.Payload = append(req.Payload, data...)
 
 	res, err := mc.executeRequest(ctx, req)
@@ -300,170 +341,121 @@ func (mc *Client) Diagnostics(ctx context.Context, unitID uint8, subFunction Dia
 	return
 }
 
-// DiagnosticLoopback sends a Return Query Data (sub-function 0x0000) request and
-// returns the echoed value. Useful for verifying communication with a remote device.
-func (mc *Client) DiagnosticLoopback(ctx context.Context, unitID uint8, value uint16) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnQueryData, uint16ToBytes(BigEndian, value))
+// diagNoData is the data field of the sub-functions whose request carries
+// no information: "00 00" (MODBUS Application Protocol V1.1b3, section 6.8.1).
+var diagNoData = []byte{0x00, 0x00}
+
+// diagCounter sends sub-function sub with the data field 00 00 and returns the
+// 16-bit value of the response's data field (a counter, or the diagnostic
+// register), which must be exactly two bytes.
+func (mc *Client) diagCounter(ctx context.Context, unitID uint8, sub DiagnosticSubFunction, op string) (uint16, error) {
+	dr, err := mc.Diagnostics(ctx, unitID, sub, diagNoData)
 	if err != nil {
 		return 0, err
 	}
 	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticLoopback",
+		return 0, newProtocolError(op,
 			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
 	}
 	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
 }
 
-// DiagnosticRegister reads the diagnostic register (sub-function 0x0002).
-func (mc *Client) DiagnosticRegister(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnDiagnosticRegister, nil)
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticRegister",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
-}
-
-// BusMessageCount reads the bus message count (sub-function 0x000B).
-func (mc *Client) BusMessageCount(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnBusMessageCount, nil)
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("BusMessageCount",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
-}
-
-// DiagnosticForceListenOnlyMode sends Force Listen Only Mode (sub-function 0x0004).
-// Per the spec, no response is returned by serial-line devices (the device silently
-// enters listen-only mode). Over TCP/TLS through a gateway, behavior depends on the
-// gateway implementation — it may return a normal echo or time out.
-func (mc *Client) DiagnosticForceListenOnlyMode(ctx context.Context, unitID uint8) error {
-	_, err := mc.Diagnostics(ctx, unitID, DiagForceListenOnlyMode, uint16ToBytes(BigEndian, 0x0000))
-	return err
-}
-
-// DiagnosticClearCounters clears all counters and the diagnostic register (sub-function 0x000A).
-func (mc *Client) DiagnosticClearCounters(ctx context.Context, unitID uint8) error {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagClearCountersAndDiagnosticReg, uint16ToBytes(BigEndian, 0x0000))
+// diagEcho sends sub-function sub with data and checks that the response
+// echoes it, as section 6.8.1 defines for the sub-functions whose response is
+// "Echo Request Data".
+func (mc *Client) diagEcho(ctx context.Context, unitID uint8, sub DiagnosticSubFunction, data []byte, op string) error {
+	dr, err := mc.Diagnostics(ctx, unitID, sub, data)
 	if err != nil {
 		return err
 	}
-	if len(dr.Data) != 2 {
-		return newProtocolError("DiagnosticClearCounters",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
+	if !bytes.Equal(dr.Data, data) {
+		return newProtocolError(op,
+			fmt.Sprintf("response data % X is not the echo of the request data % X", dr.Data, data))
 	}
 	return nil
+}
+
+// DiagnosticLoopback sends a Return Query Data (sub-function 0x0000) request
+// with value as its data and checks that the device echoes it. Useful for
+// verifying communication with a remote device. It returns the echoed value;
+// a response whose data is not the two bytes sent is a *ProtocolError (up to
+// v1.19.0 a different value was returned without an error).
+func (mc *Client) DiagnosticLoopback(ctx context.Context, unitID uint8, value uint16) (uint16, error) {
+	if err := mc.diagEcho(ctx, unitID, DiagReturnQueryData, uint16ToBytes(BigEndian, value), "DiagnosticLoopback"); err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+// DiagnosticRegister reads the diagnostic register (sub-function 0x0002). The
+// request carries the data field 00 00 (up to v1.19.0 it carried none).
+func (mc *Client) DiagnosticRegister(ctx context.Context, unitID uint8) (uint16, error) {
+	return mc.diagCounter(ctx, unitID, DiagReturnDiagnosticRegister, "DiagnosticRegister")
+}
+
+// BusMessageCount reads the bus message count (sub-function 0x000B). The
+// request carries the data field 00 00 (up to v1.19.0 it carried none).
+func (mc *Client) BusMessageCount(ctx context.Context, unitID uint8) (uint16, error) {
+	return mc.diagCounter(ctx, unitID, DiagReturnBusMessageCount, "BusMessageCount")
+}
+
+// DiagnosticForceListenOnlyMode sends Force Listen Only Mode (sub-function
+// 0x0004, data 00 00). The specification defines no response: a serial-line
+// device silently enters listen-only mode, and the call then fails with
+// ErrRequestTimedOut. Over TCP/TLS through a gateway, behavior depends on the
+// gateway implementation: it may return a normal response, which is accepted
+// whatever its data, or time out. This library's server has no listen-only
+// state of its own; a DiagnosticsHandler may implement one.
+func (mc *Client) DiagnosticForceListenOnlyMode(ctx context.Context, unitID uint8) error {
+	_, err := mc.Diagnostics(ctx, unitID, DiagForceListenOnlyMode, diagNoData)
+	return err
+}
+
+// DiagnosticClearCounters clears all counters and the diagnostic register
+// (sub-function 0x000A). The response must echo the request data 00 00.
+func (mc *Client) DiagnosticClearCounters(ctx context.Context, unitID uint8) error {
+	return mc.diagEcho(ctx, unitID, DiagClearCountersAndDiagnosticReg, diagNoData, "DiagnosticClearCounters")
 }
 
 // DiagnosticBusCommunicationErrorCount reads the bus communication error count (sub-function 0x000C).
 func (mc *Client) DiagnosticBusCommunicationErrorCount(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnBusCommunicationErrorCount, uint16ToBytes(BigEndian, 0x0000))
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticBusCommunicationErrorCount",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
+	return mc.diagCounter(ctx, unitID, DiagReturnBusCommunicationErrorCount, "DiagnosticBusCommunicationErrorCount")
 }
 
 // DiagnosticBusExceptionErrorCount reads the bus exception error count (sub-function 0x000D).
 func (mc *Client) DiagnosticBusExceptionErrorCount(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnBusExceptionErrorCount, uint16ToBytes(BigEndian, 0x0000))
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticBusExceptionErrorCount",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
+	return mc.diagCounter(ctx, unitID, DiagReturnBusExceptionErrorCount, "DiagnosticBusExceptionErrorCount")
 }
 
 // DiagnosticServerMessageCount reads the server message count (sub-function 0x000E).
 func (mc *Client) DiagnosticServerMessageCount(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnServerMessageCount, uint16ToBytes(BigEndian, 0x0000))
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticServerMessageCount",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
+	return mc.diagCounter(ctx, unitID, DiagReturnServerMessageCount, "DiagnosticServerMessageCount")
 }
 
 // DiagnosticServerNoResponseCount reads the server no-response count (sub-function 0x000F).
 func (mc *Client) DiagnosticServerNoResponseCount(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnServerNoResponseCount, uint16ToBytes(BigEndian, 0x0000))
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticServerNoResponseCount",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
+	return mc.diagCounter(ctx, unitID, DiagReturnServerNoResponseCount, "DiagnosticServerNoResponseCount")
 }
 
 // DiagnosticServerNAKCount reads the server NAK count (sub-function 0x0010).
 func (mc *Client) DiagnosticServerNAKCount(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnServerNAKCount, uint16ToBytes(BigEndian, 0x0000))
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticServerNAKCount",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
+	return mc.diagCounter(ctx, unitID, DiagReturnServerNAKCount, "DiagnosticServerNAKCount")
 }
 
 // DiagnosticServerBusyCount reads the server busy count (sub-function 0x0011).
 func (mc *Client) DiagnosticServerBusyCount(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnServerBusyCount, uint16ToBytes(BigEndian, 0x0000))
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticServerBusyCount",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
+	return mc.diagCounter(ctx, unitID, DiagReturnServerBusyCount, "DiagnosticServerBusyCount")
 }
 
 // DiagnosticBusCharacterOverrunCount reads the bus character overrun count (sub-function 0x0012).
 func (mc *Client) DiagnosticBusCharacterOverrunCount(ctx context.Context, unitID uint8) (uint16, error) {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagReturnBusCharacterOverrunCount, uint16ToBytes(BigEndian, 0x0000))
-	if err != nil {
-		return 0, err
-	}
-	if len(dr.Data) != 2 {
-		return 0, newProtocolError("DiagnosticBusCharacterOverrunCount",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return bytesToUint16(BigEndian, dr.Data[0:2]), nil
+	return mc.diagCounter(ctx, unitID, DiagReturnBusCharacterOverrunCount, "DiagnosticBusCharacterOverrunCount")
 }
 
-// DiagnosticClearOverrunCounterAndFlag clears the overrun counter and error flag (sub-function 0x0014).
+// DiagnosticClearOverrunCounterAndFlag clears the overrun counter and error
+// flag (sub-function 0x0014). The response must echo the request data 00 00.
 func (mc *Client) DiagnosticClearOverrunCounterAndFlag(ctx context.Context, unitID uint8) error {
-	dr, err := mc.Diagnostics(ctx, unitID, DiagClearOverrunCounterAndFlag, uint16ToBytes(BigEndian, 0x0000))
-	if err != nil {
-		return err
-	}
-	if len(dr.Data) != 2 {
-		return newProtocolError("DiagnosticClearOverrunCounterAndFlag",
-			fmt.Sprintf("expected exactly 2 data bytes, got %d", len(dr.Data)))
-	}
-	return nil
+	return mc.diagEcho(ctx, unitID, DiagClearOverrunCounterAndFlag, diagNoData, "DiagnosticClearOverrunCounterAndFlag")
 }
 
 // ReportServerID requests the Report Server ID (FC 0x11). The response contains
@@ -505,6 +497,8 @@ func (mc *Client) ReportServerID(ctx context.Context, unitID uint8) (rs *ReportS
 	rs = &ReportServerIDResponse{
 		Data: data,
 	}
+	// A response with Byte Count 0 has no run indicator, which the
+	// specification makes mandatory; it is passed on as received (Data empty).
 	if len(data) >= 2 {
 		status := data[len(data)-1] == 0xFF
 		rs.RunIndicatorStatus = &status

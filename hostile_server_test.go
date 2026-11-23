@@ -422,9 +422,13 @@ type hostileCase struct {
 	name    string
 	fc      byte
 	payload []byte
-	// close: the server drops the link; exc != 0: it answers with that
-	// exception; otherwise it answers with success, checked by ok when set.
+	// close: a PDU length error, answered with exception 3 after which the
+	// server closes the link; drop: a framing error, the server closes the
+	// link without an answer; exc != 0: it answers with that exception and
+	// keeps the link; otherwise it answers with success, checked by ok when
+	// set.
 	close bool
+	drop  bool
 	exc   ExceptionCode
 	ok    func(payload []byte) error
 }
@@ -446,8 +450,12 @@ func hostileRunCases(t *testing.T, hs *hostileServer, cases []hostileCase) {
 			if _, err := conn.Write(rawRequestFrame(0x0102, 0x21, tc.fc, tc.payload)); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			frame, err := hostileReadFrame(t, conn)
 			if tc.close {
+				wantAnsweredThenClosed(t, conn, rawRequestFrame(0x0102, 0x21, tc.fc|0x80, []byte{byte(exIllegalDataValue)}))
+				return
+			}
+			frame, err := hostileReadFrame(t, conn)
+			if tc.drop {
 				if err == nil {
 					t.Fatalf("got % X, want the link closed", frame)
 				}
@@ -479,6 +487,28 @@ func hostileRunCases(t *testing.T, hs *hostileServer, cases []hostileCase) {
 			hostileFollowUpFC03(t, conn, 9)
 		})
 	}
+}
+
+// hostileFollowUpOrClosed is hostileFollowUpFC03 on a link the server may
+// have closed: it reports false when it finds the link closed, and fails the
+// test when the follow-up is answered out of step or not at all.
+func hostileFollowUpOrClosed(t *testing.T, conn net.Conn, txn uint16) bool {
+	t.Helper()
+	if _, err := conn.Write(rawRequestFrame(txn, 0x21, 0x03, []byte{0, 0, 0, 1})); err != nil {
+		return false
+	}
+	frame, err := hostileReadFrame(t, conn)
+	if err != nil {
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			t.Fatalf("follow-up FC03: no answer and no close")
+		}
+		return false
+	}
+	if binary.BigEndian.Uint16(frame) != txn || frame[7] != 0x03 || len(frame) != 11 {
+		t.Fatalf("follow-up FC03: got % X", frame)
+	}
+	return true
 }
 
 // hostileFollowUpFC03 sends a valid FC03 request for one register under txn
@@ -531,7 +561,7 @@ func TestHostileServer_QuantityAndAddressBoundaries(t *testing.T) {
 			hostileCase{name: fmt.Sprintf("FC%02d qty 0xFFFF", r.fc), fc: r.fc, payload: hostileU16(0, 0xFFFF), exc: exIllegalDataValue},
 			hostileCase{name: fmt.Sprintf("FC%02d ends at 0xFFFF", r.fc), fc: r.fc, payload: hostileU16(0xFFFF-9, 10), ok: hostileLen(r.bytes(10))},
 			hostileCase{name: fmt.Sprintf("FC%02d ends past 0xFFFF", r.fc), fc: r.fc, payload: hostileU16(0xFFFF-8, 10), exc: exIllegalDataAddress},
-			hostileCase{name: fmt.Sprintf("FC%02d 5 bytes", r.fc), fc: r.fc, payload: hostileU16(0, 1, 0)[:5], exc: exIllegalDataValue},
+			hostileCase{name: fmt.Sprintf("FC%02d 5 bytes", r.fc), fc: r.fc, payload: hostileU16(0, 1, 0)[:5], close: true},
 		)
 	}
 	coils := func(q int) []byte {
@@ -546,23 +576,25 @@ func TestHostileServer_QuantityAndAddressBoundaries(t *testing.T) {
 		hostileCase{name: "FC15 qty 1 ends past 0xFFFF", fc: 0x0F, payload: append(hostileU16(0xFFFF, 2), 1, 0), exc: exIllegalDataAddress},
 		hostileCase{name: "FC16 qty 123", fc: 0x10, payload: regs(123), ok: hostileLen(4)},
 		// 124 registers do not fit a request PDU: byte count 248 + 6 = 254 > 253.
-		hostileCase{name: "FC16 qty 124 byte count 248 no data", fc: 0x10, payload: append(hostileU16(0, 124), 248), exc: exIllegalDataValue},
+		// The PDU does not hold the data its byte count announces: a length
+		// error, checked before the quantity.
+		hostileCase{name: "FC16 qty 124 byte count 248 no data", fc: 0x10, payload: append(hostileU16(0, 124), 248), close: true},
 		hostileCase{name: "FC16 byte count 0 qty 1", fc: 0x10, payload: append(hostileU16(0, 1), 0), exc: exIllegalDataValue},
 		hostileCase{name: "FC16 last register", fc: 0x10, payload: append(hostileU16(0xFFFF, 1), 2, 0, 0), ok: hostileLen(4)},
 		hostileCase{name: "FC23 read 125 write 121", fc: 0x17,
 			payload: append(hostileU16(0, 125, 0, 121), append([]byte{242}, make([]byte, 242)...)...), ok: hostileLen(251)},
 		hostileCase{name: "FC23 read 126", fc: 0x17, payload: append(hostileU16(0, 126, 0, 1), 2, 0, 0), exc: exIllegalDataValue},
-		hostileCase{name: "FC23 write 122", fc: 0x17, payload: append(hostileU16(0, 1, 0, 122), 244), exc: exIllegalDataValue},
+		hostileCase{name: "FC23 write 122", fc: 0x17, payload: append(hostileU16(0, 1, 0, 122), 244), close: true},
 		hostileCase{name: "FC23 write ends past 0xFFFF", fc: 0x17, payload: append(hostileU16(0, 1, 0xFFFF, 2), 4, 0, 0, 0, 0), exc: exIllegalDataAddress},
 		hostileCase{name: "FC23 read ends past 0xFFFF", fc: 0x17, payload: append(hostileU16(0xFFFF, 2, 0, 1), 2, 0, 0), exc: exIllegalDataAddress},
-		hostileCase{name: "FC23 data longer than byte count", fc: 0x17, payload: append(hostileU16(0, 1, 0, 1), 2, 0, 0, 0), exc: exIllegalDataValue},
+		hostileCase{name: "FC23 data longer than byte count", fc: 0x17, payload: append(hostileU16(0, 1, 0, 1), 2, 0, 0, 0), close: true},
 		hostileCase{name: "FC05 0xFF01", fc: 0x05, payload: hostileU16(0, 0xFF01), exc: exIllegalDataValue},
 		hostileCase{name: "FC05 0x00FF", fc: 0x05, payload: hostileU16(0, 0x00FF), exc: exIllegalDataValue},
 		hostileCase{name: "FC05 at 0xFFFF on", fc: 0x05, payload: hostileU16(0xFFFF, 0xFF00), ok: hostileLen(4)},
 		hostileCase{name: "FC06 at 0xFFFF", fc: 0x06, payload: hostileU16(0xFFFF, 0xBEEF), ok: hostileLen(4)},
-		hostileCase{name: "FC06 5 bytes", fc: 0x06, payload: []byte{0, 0, 0, 0, 0}, exc: exIllegalDataValue},
+		hostileCase{name: "FC06 5 bytes", fc: 0x06, payload: []byte{0, 0, 0, 0, 0}, close: true},
 		hostileCase{name: "FC06 3 bytes", fc: 0x06, payload: []byte{0, 0, 0}, close: true},
-		hostileCase{name: "FC22 7 bytes", fc: 0x16, payload: make([]byte, 7), exc: exIllegalDataValue},
+		hostileCase{name: "FC22 7 bytes", fc: 0x16, payload: make([]byte, 7), close: true},
 		hostileCase{name: "FC22 5 bytes", fc: 0x16, payload: make([]byte, 5), close: true},
 		hostileCase{name: "FC22 at 0xFFFF", fc: 0x16, payload: hostileU16(0xFFFF, 0xFFFF, 0), ok: hostileLen(6)},
 	)
@@ -591,10 +623,10 @@ func TestHostileServer_OtherFunctionCodes(t *testing.T) {
 		{name: "FC11", fc: 0x0B, ok: hostileLen(4)},
 		{name: "FC12", fc: 0x0C, ok: hostileLen(9)},
 		{name: "FC17", fc: 0x11, ok: hostileLen(3)},
-		{name: "FC17 with data", fc: 0x11, payload: []byte{0}, exc: exIllegalDataValue},
-		{name: "FC07 with data", fc: 0x07, payload: []byte{0}, exc: exIllegalDataValue},
-		{name: "FC11 with data", fc: 0x0B, payload: []byte{0, 0}, exc: exIllegalDataValue},
-		{name: "FC12 with data", fc: 0x0C, payload: []byte{1}, exc: exIllegalDataValue},
+		{name: "FC17 with data", fc: 0x11, payload: []byte{0}, close: true},
+		{name: "FC07 with data", fc: 0x07, payload: []byte{0}, close: true},
+		{name: "FC11 with data", fc: 0x0B, payload: []byte{0, 0}, close: true},
+		{name: "FC12 with data", fc: 0x0C, payload: []byte{1}, close: true},
 
 		{name: "FC08 empty", fc: 0x08, close: true},
 		{name: "FC08 one byte", fc: 0x08, payload: []byte{0}, close: true},
@@ -624,7 +656,7 @@ func TestHostileServer_OtherFunctionCodes(t *testing.T) {
 			}
 			return s
 		}()...), ok: hostileLen(1 + 35*4)},
-		{name: "FC20 byte count 0xFC", fc: 0x14, payload: append([]byte{0xFC}, make([]byte, 0xFC)...), close: true},
+		{name: "FC20 byte count 0xFC", fc: 0x14, payload: append([]byte{0xFC}, make([]byte, 0xFC)...), drop: true},
 
 		{name: "FC21 empty", fc: 0x15, close: true},
 		{name: "FC21 byte count 8", fc: 0x15, payload: append([]byte{8}, make([]byte, 8)...), exc: exIllegalDataValue},
@@ -637,13 +669,13 @@ func TestHostileServer_OtherFunctionCodes(t *testing.T) {
 
 		{name: "FC24 empty", fc: 0x18, close: true},
 		{name: "FC24 one byte", fc: 0x18, payload: []byte{0}, close: true},
-		{name: "FC24 three bytes", fc: 0x18, payload: []byte{0, 0, 0}, exc: exIllegalDataValue},
+		{name: "FC24 three bytes", fc: 0x18, payload: []byte{0, 0, 0}, close: true},
 		{name: "FC24 31 values", fc: 0x18, payload: hostileU16(31), ok: hostileLen(4 + 62)},
 		{name: "FC24 empty queue", fc: 0x18, payload: hostileU16(32), ok: hostileLen(4)},
 
 		{name: "FC43 empty", fc: 0x2B, close: true},
 		{name: "FC43 MEI only", fc: 0x2B, payload: []byte{0x0E}, close: true},
-		{name: "FC43 trailing byte", fc: 0x2B, payload: []byte{0x0E, 1, 0, 0}, exc: exIllegalDataValue},
+		{name: "FC43 trailing byte", fc: 0x2B, payload: []byte{0x0E, 1, 0, 0}, close: true},
 		{name: "FC43 MEI 0x0D", fc: 0x2B, payload: []byte{0x0D, 1, 0}, exc: exIllegalFunction},
 		{name: "FC43 MEI 0x0D alone", fc: 0x2B, payload: []byte{0x0D}, exc: exIllegalFunction},
 		{name: "FC43 category 0", fc: 0x2B, payload: []byte{0x0E, 0, 0}, exc: exIllegalDataValue},
@@ -835,6 +867,12 @@ func TestHostileServer_RandomPDUSweep(t *testing.T) {
 				}
 				if res[0] == byte(exServerDeviceFailure) {
 					t.Errorf("round %d: FC 0x%02x payload % X: Server Device Failure from a well-behaved handler", i, fc, payload)
+				}
+				// After a PDU length error the server closes the link: a
+				// follow-up FC03 is either served in step or finds it closed.
+				if res[0] == byte(exIllegalDataValue) && !hostileFollowUpOrClosed(t, conn, 0xE000|txn) {
+					closes++
+					redial()
 				}
 				break
 			}

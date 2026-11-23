@@ -104,7 +104,7 @@ func TestOwnership_ClientResultsAreTheCallers(t *testing.T) {
 			return slices.Clone(v.Events), func() { scribbleBytes(v.Events) }, nil
 		}},
 		{"Diagnostics", func() (any, func(), error) {
-			v, err := c.Diagnostics(ctx, e2eUnit, DiagReturnQueryData, []byte{0xA5, 0x37, 0x01})
+			v, err := c.Diagnostics(ctx, e2eUnit, DiagReturnQueryData, []byte{0xA5, 0x37, 0x01, 0x02})
 			if err != nil {
 				return nil, nil, err
 			}
@@ -230,7 +230,7 @@ func TestOwnership_RequestSlicesAreTheHandlers(t *testing.T) {
 			if _, err := c.ReadWriteMultipleRegisters(ctx, e2eUnit, 0, 1, 8, []uint16{v + 3, v + 4}); err != nil {
 				t.Fatalf("ReadWriteMultipleRegisters: %v", err)
 			}
-			if _, err := c.Diagnostics(ctx, e2eUnit, DiagReturnQueryData, []byte{byte(v), byte(v >> 8), 0x55}); err != nil {
+			if _, err := c.Diagnostics(ctx, e2eUnit, DiagReturnQueryData, []byte{byte(v), byte(v >> 8), 0x55, 0x66}); err != nil {
 				t.Fatalf("Diagnostics: %v", err)
 			}
 			if err := c.WriteFileRecords(ctx, e2eUnit, []FileRecord{{FileNumber: 4, RecordNumber: 7, Data: []uint16{v + 5, v + 6}}}); err != nil {
@@ -252,7 +252,7 @@ func TestOwnership_RequestSlicesAreTheHandlers(t *testing.T) {
 		if want := [][]uint16{{0x1114, 0x1115}, {0xEEF1, 0xEEF2}}; !reflect.DeepEqual(h.rwWrites, want) {
 			t.Errorf("kept FC23 write values %#04x, want %#04x", h.rwWrites, want)
 		}
-		if want := [][]byte{{0x11, 0x11, 0x55}, {0xEE, 0xEE, 0x55}}; !reflect.DeepEqual(h.diag, want) {
+		if want := [][]byte{{0x11, 0x11, 0x55, 0x66}, {0xEE, 0xEE, 0x55, 0x66}}; !reflect.DeepEqual(h.diag, want) {
 			t.Errorf("kept diagnostics data % X, want % X", h.diag, want)
 		}
 		wantRecs := [][]FileRecord{
