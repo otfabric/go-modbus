@@ -181,7 +181,7 @@ agreement with the examples, not a conformance claim.
 Besides its own tests the library is run against eight independent
 implementations, as client and as server, on every pull request. The reference
 builds are the images of
-[otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.4.1.
+[otfabric/modbus-interop](https://github.com/otfabric/modbus-interop) v0.4.2.
 A ninth, modbus4j, is GPL-3.0 and its image is not published. It is run
 when `MODBUS_INTEROP_MODBUS4J_IMAGE` names a local build (`make
 image-modbus4j` in modbus-interop), not in CI:
@@ -346,7 +346,7 @@ a test fail; the suite records them where it meets them):
   probe reads one register, is not checked against it.
 
 Further findings on these stacks are in modbus-interop's
-[COMPATIBILITY.md](https://github.com/otfabric/modbus-interop/blob/v0.4.1/docs/COMPATIBILITY.md).
+[COMPATIBILITY.md](https://github.com/otfabric/modbus-interop/blob/v0.4.2/docs/COMPATIBILITY.md).
 
 It has **not** been run against certified test equipment. Reports from the
 field are welcome.

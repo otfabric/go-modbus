@@ -1,5 +1,26 @@
 # go-modbus Releases
 
+## v1.23.1
+
+**Date:** 2026-11-23
+**Previous release:** v1.23.0
+
+Moves the interop reference images to otfabric/modbus-interop v0.4.2 and builds the bundled `modbus-cli` on v1.23.0. The library is unchanged from v1.23.0.
+
+### Changed
+
+- The bundled `modbus-cli` is built on v1.23.0 (was v1.22.0).
+
+### Tests
+
+- Interop runs against modbus-interop v0.4.2 (was v0.4.1), pinned by the multi-arch index digests of its release manifest in `interop/harness.go`, the Makefile and the Interop workflow. The images are built from the same upstream versions as v0.4.1 (libmodbus v3.2.0, PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus 0.17.0, j2mod 3.4.0, jsmodbus 5.0.0, modbus-esp8266 4.1.1) and the container contract is still 1.2; v0.4.2 changes only how modbus-interop checks and publishes its pins.
+
+### Documentation
+
+- README and INTEROPERABILITY.md name modbus-interop v0.4.2, and INTEROPERABILITY.md links its COMPATIBILITY.md at v0.4.2.
+
+---
+
 ## v1.23.0
 
 **Date:** 2026-11-23
