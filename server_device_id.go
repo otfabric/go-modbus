@@ -256,10 +256,9 @@ func (ms *Server) buildStreamDeviceIDResponse(req *adu.Request, txnID uint16, ca
 
 	payload := deviceIDResponseHeader(category, conformity, moreFollows, nextObjID, adu.Uint8(endIdx-startIdx))
 	for i := startIdx; i < endIdx; i++ {
-		var err error
-		if payload, err = appendDeviceIDObject(payload, objects[i]); err != nil {
-			return nil, err
-		}
+		// The page budget above bounds every object of the page to
+		// maxDeviceIDObjectsBytes, so its length fits its byte.
+		payload = putDeviceIDObject(payload, objects[i])
 	}
 	return newSuccessResponse(req, txnID, payload), nil
 }
@@ -282,12 +281,17 @@ func deviceIDResponseHeader(category DeviceIDCategory, conformity, moreFollows, 
 // Server Device Failure. (checkDeviceIDObjects already refuses any object
 // that does not fit a response; this keeps the builders safe on their own.)
 func appendDeviceIDObject(payload []byte, obj DeviceIdentificationObject) ([]byte, error) {
-	n := len(obj.Value)
-	if n > math.MaxUint8 {
+	if len(obj.Value) > math.MaxUint8 {
 		return nil, ErrServerDeviceFailure
 	}
-	payload = append(payload, byte(obj.ID), byte(n))
-	return append(payload, obj.Value...), nil
+	return putDeviceIDObject(payload, obj), nil
+}
+
+// putDeviceIDObject appends one object (ID, length, value) to payload. The
+// caller has bounded the value's length to 255.
+func putDeviceIDObject(payload []byte, obj DeviceIdentificationObject) []byte {
+	payload = append(payload, byte(obj.ID), adu.Uint8(len(obj.Value)))
+	return append(payload, obj.Value...)
 }
 
 // filterDeviceIDObjectsByCategory returns, in a new slice, the objects visible

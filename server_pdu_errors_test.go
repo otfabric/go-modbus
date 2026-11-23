@@ -106,6 +106,13 @@ func TestServerPDUErrors_ErrorIdentity(t *testing.T) {
 		if errors.Is(tc.err, ErrIllegalFunction) || errors.Is(tc.err, ErrIllegalDataAddress) {
 			t.Errorf("%v matches a second exception", tc.err)
 		}
+		prefix := "malformed request PDU: "
+		if tc.err.truncated {
+			prefix = "truncated request PDU: "
+		}
+		if msg := tc.err.Error(); msg != prefix+tc.err.reason {
+			t.Errorf("message %q, want %q", msg, prefix+tc.err.reason)
+		}
 		if code := mapErrorToExceptionCode(tc.err); code != exIllegalDataValue {
 			t.Errorf("%v maps to exception %v, want Illegal Data Value", tc.err, code)
 		}
@@ -159,7 +166,8 @@ func TestServerPDUErrors_FixedLengthTable(t *testing.T) {
 	}
 	if !(&Server{handler: hostileDevice{}}).servesFixedLength(FCReportServerID) ||
 		(&Server{handler: holdingOne()}).servesFixedLength(FCReportServerID) ||
-		!(&Server{handler: holdingOne()}).servesFixedLength(FCReadHoldingRegisters) {
+		!(&Server{handler: holdingOne()}).servesFixedLength(FCReadHoldingRegisters) ||
+		(&Server{handler: hostileDevice{}}).servesFixedLength(FCWriteMultipleRegisters) {
 		t.Error("servesFixedLength")
 	}
 }
@@ -581,5 +589,18 @@ func TestServerPDUErrors_RequestDuringDrain(t *testing.T) {
 			t.Fatalf("round %d: the server still holds the connection the client keeps open", i)
 		}
 		_ = conn.Close()
+	}
+}
+
+// TestServerPDUErrors_ExceptionFCRequestError: the error of a request whose
+// function code has the exception bit set matches ErrIllegalFunction, as up
+// to v1.19.0, and no other exception, and says why it is not answered.
+func TestServerPDUErrors_ExceptionFCRequestError(t *testing.T) {
+	var err error = exceptionFCRequestError{}
+	if !errors.Is(err, ErrIllegalFunction) || errors.Is(err, ErrIllegalDataValue) || errors.Is(err, ErrProtocolError) {
+		t.Errorf("%v: want Is(ErrIllegalFunction) only", err)
+	}
+	if msg := err.Error(); msg != "request function code has the exception bit (0x80) set: not answered" {
+		t.Errorf("message %q", msg)
 	}
 }

@@ -123,6 +123,9 @@ func (ms *Server) servesFixedLength(fc FunctionCode) bool {
 	case FCReadFIFOQueue:
 		_, ok = ms.handler.(FIFOQueueHandler)
 	default:
+		// Not a fixed-size function code: requestPDULength gives no length
+		// for it, and the transport never rejects it early.
+		return false
 	}
 	return ok
 }
