@@ -335,11 +335,15 @@ type Server struct {
 	tlsMetrics       TLSHandshakeMetrics
 	acceptMetrics    AcceptErrorMetrics
 	violationMetrics ProtocolViolationMetrics
+	connMetrics      ServerConnectionMetrics
 	// tcpClients holds the sockets of the connected clients.
 	tcpClients []net.Conn
 	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
 	// handshake has not completed (tcp+tls only).
-	tlsPending    []net.Conn
+	tlsPending []net.Conn
+	// pendingIDs holds the ConnectionID of every socket in tlsPending, for
+	// the report of one that is evicted.
+	pendingIDs    map[net.Conn]ConnectionID
 	transportType transportType
 
 	// run is what the last Start created. The fields below it are copies of its
@@ -435,6 +439,7 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 	ms.tlsMetrics, _ = conf.Metrics.(TLSHandshakeMetrics)
 	ms.acceptMetrics, _ = conf.Metrics.(AcceptErrorMetrics)
 	ms.violationMetrics, _ = conf.Metrics.(ProtocolViolationMetrics)
+	ms.connMetrics, _ = conf.Metrics.(ServerConnectionMetrics)
 
 	splitURL = strings.SplitN(ms.conf.URL, "://", 2)
 	if len(splitURL) == 2 {

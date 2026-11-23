@@ -631,8 +631,8 @@ modbus-cli completion powershell | Out-String | Invoke-Expression
 | [examples/tcp_server/tcp_server.go](examples/tcp_server/tcp_server.go) | Modbus TCP server with an in-memory `RequestHandler` |
 | [examples/tls_server/tls_server.go](examples/tls_server/tls_server.go) | MBAPS (Modbus over TLS) server with client certificate authentication |
 | [examples/tls_client/tls_client.go](examples/tls_client/tls_client.go) | MBAPS client with mutual TLS |
-| [examples/client_metrics/client_metrics.go](examples/client_metrics/client_metrics.go) | Client observation hooks: `ClientMetrics`, `AttemptMetrics`, `ResponseAnomalyMetrics`, `TLSHandshakeMetrics` and `PDUTap`, as non-blocking counters |
-| [examples/server_metrics/server_metrics.go](examples/server_metrics/server_metrics.go) | Server observation hooks: `ServerMetrics`, `ConnectionMetrics`, `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics` and `ServerConfig.PDUTap` |
+| [examples/client_metrics/client_metrics.go](examples/client_metrics/client_metrics.go) | Client observation hooks: `ClientMetrics`, `AttemptMetrics`, `ResponseAnomalyMetrics`, `TLSHandshakeMetrics`, `ClientConnectionMetrics` and `PDUTap`, as non-blocking counters |
+| [examples/server_metrics/server_metrics.go](examples/server_metrics/server_metrics.go) | Server observation hooks: `ServerMetrics`, `ConnectionMetrics`, `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics`, `ServerConnectionMetrics` and `ServerConfig.PDUTap` |
 | [examples/security_hooks/security_hooks.go](examples/security_hooks/security_hooks.go) | Server security hooks (`TLSHandshakeMetrics`, `AcceptErrorMetrics`, `ProtocolViolationMetrics`, refusals) forwarded to an application channel, an authorizer that refuses writes and state-changing diagnostics, and opt-in connection limits |
 
 For the full public API reference — all types, method signatures, configuration

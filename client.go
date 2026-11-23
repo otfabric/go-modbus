@@ -566,6 +566,7 @@ func (mc *Client) open(ctx context.Context) error {
 		Suspect:  mc.suspectResponse(),
 
 		ResyncSuspect: mc.resyncSuspect(),
+		Connections:   mc.connectionObserver(),
 	})
 
 	if err := eng.Open(ctx); err != nil {
@@ -803,7 +804,7 @@ func (mc *Client) dialTLS(ctx context.Context) (*tls.Conn, error) {
 	// the application's own crypto.Signer.
 	start := time.Now()
 	err = mc.call("TLS handshake", func() error { return sock.HandshakeContext(ctx) })
-	mc.reportTLSHandshake(sock, time.Since(start), err)
+	mc.reportTLSHandshake(connIDFrom(ctx), sock, time.Since(start), err)
 	if err != nil {
 		_ = sock.Close()
 		return nil, &dialError{op: "tls handshake", network: "tcp", addr: mc.endpoint, err: err}
@@ -847,7 +848,7 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 		rt := inttrans.NewRTU(
 			spw, mc.endpoint, mc.conf.Speed, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("rtu-transport(%s)", mc.endpoint), mc.conf.Logger))
-		rt.OnAnomaly = mc.anomalyFunc()
+		rt.OnAnomaly = mc.anomalyFunc(connIDFrom(ctx))
 		return rt, nil
 
 	case modbusRTUOverTCP:
@@ -858,7 +859,7 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 		rt := inttrans.NewRTU(
 			sock, mc.endpoint, mc.conf.Speed, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("rtu-transport(%s)", mc.endpoint), mc.conf.Logger))
-		rt.OnAnomaly = mc.anomalyFunc()
+		rt.OnAnomaly = mc.anomalyFunc(connIDFrom(ctx))
 		return rt, nil
 
 	case modbusRTUOverUDP:
@@ -870,7 +871,7 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 		rt := inttrans.NewRTU(
 			usw, mc.endpoint, mc.conf.Speed, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("rtu-transport(%s)", mc.endpoint), mc.conf.Logger))
-		rt.OnAnomaly = mc.anomalyFunc()
+		rt.OnAnomaly = mc.anomalyFunc(connIDFrom(ctx))
 		return rt, nil
 
 	case modbusASCII:
@@ -890,7 +891,7 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 		at := inttrans.NewASCII(
 			spw, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("ascii-transport(%s)", mc.endpoint), mc.conf.Logger))
-		at.OnAnomaly = mc.anomalyFunc()
+		at.OnAnomaly = mc.anomalyFunc(connIDFrom(ctx))
 		return at, nil
 
 	case modbusASCIIOverTCP:
@@ -901,7 +902,7 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 		at := inttrans.NewASCII(
 			sock, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("ascii-transport(%s)", mc.endpoint), mc.conf.Logger))
-		at.OnAnomaly = mc.anomalyFunc()
+		at.OnAnomaly = mc.anomalyFunc(connIDFrom(ctx))
 		return at, nil
 
 	case modbusTCP:
@@ -912,7 +913,7 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 		tt := inttrans.NewTCP(
 			sock, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("tcp-transport(%s)", sock.RemoteAddr()), mc.conf.Logger))
-		tt.OnAnomaly = mc.anomalyFunc()
+		tt.OnAnomaly = mc.anomalyFunc(connIDFrom(ctx))
 		return tt, nil
 
 	case modbusTCPOverTLS:
@@ -923,7 +924,7 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 		tt := inttrans.NewTCP(
 			newTLSSockWrapper(sock), mc.conf.Timeout,
 			newLogger(fmt.Sprintf("tcp-transport(%s)", sock.RemoteAddr()), mc.conf.Logger))
-		tt.OnAnomaly = mc.anomalyFunc()
+		tt.OnAnomaly = mc.anomalyFunc(connIDFrom(ctx))
 		return tt, nil
 
 	case modbusTCPOverUDP:
@@ -935,7 +936,7 @@ func (mc *Client) dialSessionTransport(ctx context.Context) (session.Transport[*
 		tt := inttrans.NewTCP(
 			usw, mc.conf.Timeout,
 			newLogger(fmt.Sprintf("tcp-transport(%s)", sock.RemoteAddr()), mc.conf.Logger))
-		tt.OnAnomaly = mc.anomalyFunc()
+		tt.OnAnomaly = mc.anomalyFunc(connIDFrom(ctx))
 		return tt, nil
 
 	default:

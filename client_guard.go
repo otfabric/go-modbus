@@ -17,7 +17,8 @@ import (
 //
 //   - the methods of Config.Metrics: ClientMetrics (guardedMetrics),
 //     AttemptMetrics (attemptBridge), TLSHandshakeMetrics
-//     (reportTLSHandshake) and ResponseAnomalyMetrics (anomalyFunc);
+//     (reportTLSHandshake), ResponseAnomalyMetrics (anomalyFunc) and
+//     ClientConnectionMetrics (connectionObserver);
 //   - Config.PDUTap (tapExchange);
 //   - Config.RetryPolicy (guardedRetry);
 //   - Config.Dialer (dialConn) and the methods of the connections it returns
@@ -184,19 +185,21 @@ func (c *appConn) SetWriteDeadline(t time.Time) error {
 // reportTLSHandshake calls TLSHandshakeMetrics.OnTLSHandshake, when
 // Config.Metrics implements it, through call, for the handshake on sock that
 // took d and ended with err.
-func (mc *Client) reportTLSHandshake(sock *tls.Conn, d time.Duration, err error) {
+func (mc *Client) reportTLSHandshake(id ConnectionID, sock *tls.Conn, d time.Duration, err error) {
 	tm := mc.tlsMetrics
 	if tm == nil {
 		return
 	}
 	info := newTLSHandshakeInfo(sock, d, err)
+	info.ConnectionID = id
 	_ = mc.call("TLSHandshakeMetrics.OnTLSHandshake", func() error { tm.OnTLSHandshake(info); return nil })
 }
 
 // anomalyFunc returns the function a transport reports what it tolerated to
 // (see ResponseAnomalyMetrics): ResponseAnomalyMetrics.OnResponseAnomaly
-// called through call, nil when Config.Metrics does not implement it.
-func (mc *Client) anomalyFunc() inttrans.AnomalyFunc {
+// called through call, nil when Config.Metrics does not implement it. id is
+// the connection of the transport the function is for.
+func (mc *Client) anomalyFunc(id ConnectionID) inttrans.AnomalyFunc {
 	am := mc.anomalyMetrics
 	if am == nil {
 		return nil
@@ -204,6 +207,7 @@ func (mc *Client) anomalyFunc() inttrans.AnomalyFunc {
 	return func(req *adu.Request, a inttrans.Anomaly) {
 		ra := ResponseAnomaly{
 			Kind:                  ResponseAnomalyKind(a.Kind),
+			ConnectionID:          id,
 			UnitID:                req.UnitID,
 			FunctionCode:          FunctionCode(req.FunctionCode),
 			ExpectedTransactionID: a.Expected,

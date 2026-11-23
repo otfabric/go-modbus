@@ -16,6 +16,9 @@ import (
 // Request and Response are copies owned by the receiver of the exchange; they
 // may be kept and modified.
 type ServerPDUExchange struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// ClientAddr is the client's remote host:port, ClientRole its role (tcp+tls;
 	// empty on tcp), as the handlers receive them.
 	ClientAddr string
@@ -82,12 +85,13 @@ func (ms *Server) tapServerExchange(ctx context.Context, req *adu.Request, res *
 		return
 	}
 	ex := ServerPDUExchange{
-		ClientAddr: clientAddr,
-		ClientRole: clientRole,
-		UnitID:     req.UnitID,
-		Request:    pduBytes(req.FunctionCode, req.Payload),
-		Received:   received,
-		Answered:   time.Now(),
+		ConnectionID: connFrom(ctx).id,
+		ClientAddr:   clientAddr,
+		ClientRole:   clientRole,
+		UnitID:       req.UnitID,
+		Request:      pduBytes(req.FunctionCode, req.Payload),
+		Received:     received,
+		Answered:     time.Now(),
 	}
 	if res != nil {
 		ex.Response = pduBytes(res.FunctionCode, res.Payload)

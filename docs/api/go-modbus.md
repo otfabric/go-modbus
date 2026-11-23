@@ -225,6 +225,9 @@ AttemptMetrics is an optional extension of ClientMetrics that provides per-attem
 
 ```go
 type AuthorizationRequest struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// ClientAddr and ClientRole identify the client, as the handlers receive
 	// them: its remote host:port, and on tcp+tls the role of its verified
 	// certificate (empty on tcp, and for a certificate without a usable
@@ -796,6 +799,86 @@ func (mc *Client) WriteRegisters(ctx context.Context, unitID uint8, addr uint16,
 
 Writes multiple 16-bit registers (function code 16).
 
+### type ClientConnectionEvent
+
+```go
+type ClientConnectionEvent struct {
+	Kind ClientConnectionEventKind
+	// ConnectionID is the connection's identifier, the same as in the
+	// TLSHandshakeInfo, ResponseAnomaly and PDUExchange of the connection.
+	ConnectionID ConnectionID
+	// Target is the endpoint of the client's URL: host:port, or the serial
+	// device.
+	Target string
+	// Pooled is true for a connection of the client's pool (Config.MaxConns > 1
+	// on tcp or tcp+tls).
+	Pooled bool
+	// Origin is set for ClientConnectionDialed.
+	Origin ConnectionOrigin
+	// DiscardReason is set for ClientConnectionDiscarded.
+	DiscardReason DiscardReason
+	// Duration is how long the dial took, TLS handshake included (Dialed).
+	Duration time.Duration
+	// Age is the time since the connection was dialled (Discarded, Closed).
+	Age time.Duration
+	// Err is the error of the dial (Dialed: nil when it succeeded), or the one
+	// the connection was discarded for (Discarded; see DiscardReason).
+	Err error
+}
+```
+
+ClientConnectionEvent is one step of the lifecycle of a client connection (see ClientConnectionMetrics).
+
+### type ClientConnectionEventKind
+
+```go
+type ClientConnectionEventKind uint8
+```
+
+ClientConnectionEventKind is what happened to a client connection, as reported in a ClientConnectionEvent.
+
+```go
+const (
+	// ClientConnectionDialed is a dial that ended: Err is nil when it opened a
+	// connection.
+	ClientConnectionDialed ClientConnectionEventKind = iota + 1
+	// ClientConnectionDiscarded is a connection the client closed because of a
+	// failure (see DiscardReason).
+	ClientConnectionDiscarded
+	// ClientConnectionClosed is a connection the client closed because it was
+	// shut down: a normal end.
+	ClientConnectionClosed
+)
+```
+
+#### func (ClientConnectionEventKind) String
+
+```go
+func (k ClientConnectionEventKind) String() string
+```
+
+String returns the name of the kind ("dialed", "discarded", "closed"), or "ClientConnectionEventKind(n)" for a value without one.
+
+### type ClientConnectionMetrics
+
+```go
+type ClientConnectionMetrics interface {
+	OnClientConnection(ev ClientConnectionEvent)
+}
+```
+
+ClientConnectionMetrics is an optional extension of ClientMetrics: the lifecycle of the transport connections of a client, single or pooled, with their ConnectionID. A Config.Metrics that implements it is told:
+
+  - ClientConnectionDialed for every dial, whether or not it succeeded, with Origin (Open, including the pre-warmed MinConns of a pool; a pool dial on demand; a re-dial of the single connection), the dial's Duration and its Err;
+  - ClientConnectionDiscarded for a connection closed because of a failure, with DiscardReason and the error;
+  - ClientConnectionClosed for a connection closed by the shutdown of the client (Close, a failed Open, a request or dial that ended after Close): a normal end, never a failure.
+
+Every connection that was dialled successfully is reported once more, as Discarded or as Closed, unless the client is never closed. A failed dial is reported only as Dialed.
+
+There are no replacement pairs: when a pool dials after a discard, the new connection is not reported as the replacement of the old one, because a pool does not dial for a given connection (any waiting request may take the freed slot, or none). Correlate by time and Target if you need to.
+
+OnClientConnection runs synchronously, on the goroutine of the Open, request or Close that caused the event, with none of the client's locks held. It must be non-blocking and must not make requests on the same client. One that does not return normally is logged at error level with the stack, and the client goes on as if it had returned.
+
 ### type ClientFilter
 
 ```go
@@ -1177,6 +1260,26 @@ type ConnectionCloseMetrics interface {
 
 ConnectionCloseMetrics is an optional extension of ServerMetrics. A ServerConfig.Metrics that implements it is told why the server stopped serving a tcp or tcp+tls connection: OnConnectionCloseReason is called once for every connection reported to ConnectionLifecycleMetrics.OnConnectionOpened (whether or not the value implements that interface), right after OnConnectionClosed, with the same exception: a connection a Shutdown called from one of its own callbacks stopped is not reported. err is the error that ended the connection; it is never nil. It runs on the connection's goroutine and must not block; one that does not return normally is logged, and the server goes on as if it had returned.
 
+### type ConnectionID
+
+```go
+type ConnectionID uint64
+```
+
+ConnectionID identifies one transport connection of a client or a server: a TCP, TLS, UDP or serial link. It is allocated once per connection, before the connection is dialled or as soon as it is accepted, and stays the same for its whole life. A failed dial, a rejected connection and a failed TLS handshake have one too, so that their reports can be told apart.
+
+Identifiers come from one counter shared by every client and server of the process, starting at 1: an identifier is unique within the process for as long as it runs and is never reused, but it means nothing across processes or restarts, and its value carries no other information (ordering between identifiers reflects allocation order, nothing more). 0 means no connection: the field of a report that is not tied to one.
+
+It is meant for correlating the reports of one connection (in logs, traces, audit records). Do not use it as a metric label (a Prometheus label, for example): every connection has a new one, so the number of series grows without bound.
+
+#### func (ConnectionID) String
+
+```go
+func (id ConnectionID) String() string
+```
+
+String returns the identifier in decimal.
+
 ### type ConnectionLifecycleMetrics
 
 ```go
@@ -1206,6 +1309,38 @@ It is also called for a connection ServerConfig.AllowClient refused (RejectNotAl
 Connections accepted while the server is stopping, and connections that close for any other reason, are not reported.
 
 addr is the remote address of the connection (host:port). The method is called on the server's accept loop, after the connection was closed and with no lock held, so it delays the next Accept: it must be non-blocking. Like the ServerMetrics methods, a method that does not return normally is logged at error level with the stack, and the server goes on as if it had returned. It may call Stop or Shutdown (see RequestHandler).
+
+### type ConnectionOrigin
+
+```go
+type ConnectionOrigin uint8
+```
+
+ConnectionOrigin says why a client dialled a connection.
+
+```go
+const (
+	// ConnectionOriginOpen is a dial made by Open: the single connection, or
+	// one of the MinConns connections of a pool, pre-warmed.
+	ConnectionOriginOpen ConnectionOrigin = iota + 1
+	// ConnectionOriginOnDemand is a pool dial made by a request that found no
+	// idle connection.
+	ConnectionOriginOnDemand
+	// ConnectionOriginRedial is a dial of the single connection made by a
+	// request that found the client without one: after the previous one was
+	// discarded, before a retry for example. AttemptMetrics.OnRetryDial reports
+	// the same dials.
+	ConnectionOriginRedial
+)
+```
+
+#### func (ConnectionOrigin) String
+
+```go
+func (o ConnectionOrigin) String() string
+```
+
+String returns the name of the origin ("open", "on demand", "redial"), or "ConnectionOrigin(n)" for a value without one.
 
 ### type ContextLogger
 
@@ -1425,6 +1560,43 @@ Like net.Dialer.DialContext, a Dialer returns a connection exactly when the erro
 For udp and rtuoverudp, each Read of the connection must return one datagram and each Write must send one, as a connected \*net.UDPConn does.
 
 A Dialer, or a method of a connection it returned, that does not return normally is stopped there and logged at error level with its stack, through Config.Logger, and fails as if it had returned an error that describes it: the dial fails, or the request using the connection does and the connection is not used again. The errors a Dialer or its connections return are not guarded: errors.Is and errors.As call their methods on the goroutine that called the client.
+
+### type DiscardReason
+
+```go
+type DiscardReason uint8
+```
+
+DiscardReason says why a client discarded a connection.
+
+```go
+const (
+	// DiscardTransportError is a connection whose exchange failed (a timeout,
+	// a read or write error, a frame that could not be read, a cancelled
+	// request): Err is that error. A single serial connection (rtu, ascii)
+	// is kept after an error that leaves it usable, and is not reported.
+	DiscardTransportError DiscardReason = iota + 1
+	// DiscardSuspectResponse is a connection that returned a response showing
+	// that requests and responses are no longer aligned on it (see
+	// ResponseAnomalyMetrics): the response is still returned to the caller.
+	// Err is nil.
+	DiscardSuspectResponse
+	// DiscardRetry is the single connection, closed before a retry so that
+	// the retry runs on a new one: Err is the error of the attempt.
+	DiscardRetry
+	// DiscardOpenFailed is a pre-warmed pool connection closed because a
+	// later pre-warm dial of the same Open failed: Err is that dial's error.
+	DiscardOpenFailed
+)
+```
+
+#### func (DiscardReason) String
+
+```go
+func (r DiscardReason) String() string
+```
+
+String returns the name of the reason ("transport error", "suspect response", "retry", "open failed"), or "DiscardReason(n)" for a value without one.
 
 ### type DiscreteInputsRequest
 
@@ -1722,6 +1894,9 @@ ObservabilityConfig groups logging and metrics settings. Use with NewConfig for 
 
 ```go
 type PDUExchange struct {
+	// ConnectionID is the connection the response came from (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// UnitID is the unit id the request was addressed to (and the response
 	// carried).
 	UnitID uint8
@@ -1859,6 +2034,9 @@ type ProtocolError = protocol.ProtocolError
 
 ```go
 type ProtocolViolation struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// ClientAddr and ClientRole identify the connection, as the handlers
 	// receive them (ClientRole is empty on tcp).
 	ClientAddr string
@@ -2163,6 +2341,9 @@ When the call returns, the listener and the client sockets are closed and every 
 ```go
 type ResponseAnomaly struct {
 	Kind ResponseAnomalyKind
+	// ConnectionID is the connection the exchange ran on (see ConnectionID).
+	// Since v1.22.0.
+	ConnectionID ConnectionID
 	// UnitID and FunctionCode are those of the request in flight.
 	UnitID       uint8
 	FunctionCode FunctionCode
@@ -2369,6 +2550,9 @@ type Server struct {
 	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
 	// handshake has not completed (tcp+tls only).
 
+	// pendingIDs holds the ConnectionID of every socket in tlsPending, for
+	// the report of one that is evicted.
+
 	// run is what the last Start created. The fields below it are copies of its
 	// members, written by Start under lock and kept after the server has stopped.
 
@@ -2498,6 +2682,87 @@ type ServerConfig struct {
 
 Server configuration object.
 
+### type ServerConnectionEvent
+
+```go
+type ServerConnectionEvent struct {
+	Kind ServerConnectionEventKind
+	// ConnectionID is the connection's identifier, the same as in the
+	// TLSHandshakeInfo, ProtocolViolation, AuthorizationRequest and
+	// ServerPDUExchange of the connection.
+	ConnectionID ConnectionID
+	// RemoteAddr and LocalAddr are the addresses of the connection (host:port),
+	// empty when the socket does not have one.
+	RemoteAddr string
+	LocalAddr  string
+	// Role and RoleErr are the client's role and the error of an unusable
+	// Modbus Role extension, as in TLSHandshakeInfo (tcp+tls; Opened and
+	// Closed only).
+	Role    string
+	RoleErr error
+	// RejectReason is set for ServerConnectionRejected.
+	RejectReason RejectReason
+	// CloseReason and Err are set for ServerConnectionClosed: why the server
+	// stopped serving the connection, and the error that ended it (never nil),
+	// as reported to ConnectionCloseMetrics.
+	CloseReason CloseReason
+	Err         error
+	// Age is how long the server served the connection (Closed only): the time
+	// since it was opened.
+	Age time.Duration
+}
+```
+
+ServerConnectionEvent is one step of the lifecycle of a server connection (see ServerConnectionMetrics).
+
+### type ServerConnectionEventKind
+
+```go
+type ServerConnectionEventKind uint8
+```
+
+ServerConnectionEventKind is what happened to a server connection, as reported in a ServerConnectionEvent.
+
+```go
+const (
+	// ServerConnectionRejected is a connection the server closed as soon as
+	// it was accepted, or (RejectTLSHandshakeEvicted) during its TLS
+	// handshake. RejectReason says why.
+	ServerConnectionRejected ServerConnectionEventKind = iota + 1
+	// ServerConnectionOpened is a connection the server starts serving.
+	ServerConnectionOpened
+	// ServerConnectionClosed is a connection the server stopped serving.
+	// CloseReason and Err say why.
+	ServerConnectionClosed
+)
+```
+
+#### func (ServerConnectionEventKind) String
+
+```go
+func (k ServerConnectionEventKind) String() string
+```
+
+String returns the name of the kind ("rejected", "opened", "closed"), or "ServerConnectionEventKind(n)" for a value without one.
+
+### type ServerConnectionMetrics
+
+```go
+type ServerConnectionMetrics interface {
+	OnServerConnection(ev ServerConnectionEvent)
+}
+```
+
+ServerConnectionMetrics is an optional extension of ServerMetrics: the detailed lifecycle of the tcp and tcp+tls connections of a server, with their ConnectionID. A ServerConfig.Metrics that implements it is called at the same points as ConnectionMetrics.OnConnectionRejected, ConnectionLifecycleMetrics and ConnectionCloseMetrics, whether or not it implements those, which keep their signatures and are still called:
+
+  - ServerConnectionRejected for every connection reported to OnConnectionRejected, right after it;
+  - ServerConnectionOpened for every connection reported to OnConnectionOpened (on tcp+tls, once its TLS handshake completed), right after it;
+  - ServerConnectionClosed once for every opened connection, after OnConnectionCloseReason, with the same exception: a connection that a Shutdown called from one of its own callbacks stopped is not reported.
+
+A tcp+tls connection whose TLS handshake fails is neither opened nor closed here; TLSHandshakeMetrics reports it, with the same ConnectionID. A Shutdown or Stop called from a callback of a connection (this one included) ends that connection's callbacks: nothing more is reported for it.
+
+OnServerConnection runs on the accept loop (Rejected) or on the connection's goroutine, with no lock held, and must not block. One that does not return normally is logged at error level with the stack, and the server goes on as if it had returned. It may call Stop or Shutdown (see RequestHandler).
+
 ### type ServerMetrics
 
 ```go
@@ -2530,6 +2795,9 @@ A method may call Stop or Shutdown on the server that calls it; see RequestHandl
 
 ```go
 type ServerPDUExchange struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// ClientAddr is the client's remote host:port, ClientRole its role (tcp+tls;
 	// empty on tcp), as the handlers receive them.
 	ClientAddr string
@@ -2596,6 +2864,9 @@ OnServerPDU calls f(ctx, ex).
 
 ```go
 type TLSHandshakeInfo struct {
+	// ConnectionID is the connection the handshake ran on (see ConnectionID):
+	// the same in the other reports of that connection. Since v1.22.0.
+	ConnectionID ConnectionID
 	// LocalAddr and RemoteAddr are the addresses of the connection
 	// (host:port); empty when the connection does not report one.
 	LocalAddr  string

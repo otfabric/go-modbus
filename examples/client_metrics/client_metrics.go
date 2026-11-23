@@ -2,8 +2,9 @@
 
 // Command client_metrics shows the client's observation hooks: ClientMetrics
 // for the outcome of each call, AttemptMetrics for each attempt and re-dial,
-// the security extensions ResponseAnomalyMetrics and TLSHandshakeMetrics, and
-// Config.PDUTap for the raw request and response PDUs. One value implements
+// the security extensions ResponseAnomalyMetrics and TLSHandshakeMetrics,
+// ClientConnectionMetrics for the dials, discards and closes of the client's
+// connections, and Config.PDUTap for the raw request and response PDUs. One value implements
 // all the interfaces; the client finds the optional ones by type assertion.
 //
 // It starts a small server of its own on the loopback interface, so it needs
@@ -16,8 +17,10 @@
 // expvar, OpenTelemetry, a log line) instead of printing them.
 //
 // What the run triggers, on loopback tcp with a healthy server: OnRequest,
-// OnResponse and OnError (one exception), OnAttempt and OnPDU. Implemented
-// but not triggered here: OnTimeout and OnRetryDial (a slow or lost link),
+// OnResponse and OnError (one exception), OnAttempt, OnPDU, and
+// OnClientConnection for the dial of Open and, once Close ran, the close.
+// Implemented but not triggered here: OnTimeout and OnRetryDial (a slow or
+// lost link; OnClientConnection then also reports discards and re-dials),
 // OnResponseAnomaly (a peer that sends late or foreign frames, or stale
 // serial bytes) and OnTLSHandshake (tcp+tls only).
 package main
@@ -36,8 +39,8 @@ import (
 )
 
 // clientCounters implements modbus.ClientMetrics, modbus.AttemptMetrics,
-// modbus.ResponseAnomalyMetrics, modbus.TLSHandshakeMetrics and
-// modbus.PDUTap. The arrays have room for all 256 function codes.
+// modbus.ResponseAnomalyMetrics, modbus.TLSHandshakeMetrics,
+// modbus.ClientConnectionMetrics and modbus.PDUTap. The arrays have room for all 256 function codes.
 type clientCounters struct {
 	requests, responses, errs, timeouts [256]atomic.Uint64
 	exceptions                          atomic.Uint64
@@ -46,6 +49,9 @@ type clientCounters struct {
 	handshakes, failedHandshakes        atomic.Uint64
 	pdus                                atomic.Uint64
 	lastLatency                         atomic.Int64 // nanoseconds
+	dials, failedDials, closes          atomic.Uint64
+	discards                            [8]atomic.Uint64 // by DiscardReason
+	lastConnection                      atomic.Uint64    // a ConnectionID, for a log line
 }
 
 // ClientMetrics: one call per client method, whatever its retries.
@@ -94,6 +100,29 @@ func (c *clientCounters) OnTLSHandshake(info modbus.TLSHandshakeInfo) {
 	}
 }
 
+// ClientConnectionMetrics: every dial (Open, a pool's pre-warm and on-demand
+// dials, a re-dial), every connection discarded after a failure, and every
+// connection closed by Close. Count by Kind and reason; keep the ConnectionID
+// for logs (it also is in OnPDU, OnTLSHandshake and OnResponseAnomaly), never
+// as a metric label: it is new for every connection.
+func (c *clientCounters) OnClientConnection(ev modbus.ClientConnectionEvent) {
+	switch ev.Kind {
+	case modbus.ClientConnectionDialed:
+		c.dials.Add(1)
+		if ev.Err != nil {
+			c.failedDials.Add(1)
+		} else {
+			c.lastConnection.Store(uint64(ev.ConnectionID))
+		}
+	case modbus.ClientConnectionDiscarded:
+		if int(ev.DiscardReason) < len(c.discards) {
+			c.discards[ev.DiscardReason].Add(1)
+		}
+	case modbus.ClientConnectionClosed:
+		c.closes.Add(1)
+	}
+}
+
 // PDUTap (Config.PDUTap): the raw PDUs of every answered request. The slices
 // are the tap's own copies.
 func (c *clientCounters) OnPDU(_ context.Context, _ modbus.PDUExchange) { c.pdus.Add(1) }
@@ -112,6 +141,9 @@ func (c *clientCounters) print(w io.Writer) error {
 	fmt.Fprintf(&b, "skipped transaction ids %d, protocol ids %d, discarded %d; tls handshakes %d (failed %d); pdus %d\n",
 		c.anomalies[modbus.AnomalyTransactionID].Load(), c.anomalies[modbus.AnomalyProtocolID].Load(),
 		c.anomalies[modbus.AnomalyDiscarded].Load(), c.handshakes.Load(), c.failedHandshakes.Load(), c.pdus.Load())
+	fmt.Fprintf(&b, "dials %d (failed %d), transport-error discards %d, closes %d; last connection %s\n",
+		c.dials.Load(), c.failedDials.Load(), c.discards[modbus.DiscardTransportError].Load(), c.closes.Load(),
+		modbus.ConnectionID(c.lastConnection.Load()))
 	_, err := io.WriteString(w, b.String())
 	return err
 }

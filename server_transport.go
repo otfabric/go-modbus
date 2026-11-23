@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/connid"
 	inttrans "github.com/otfabric/go-modbus/internal/transport"
 )
 
@@ -75,6 +76,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			continue
 		}
 		backoff = 0
+		id := ConnectionID(connid.Next())
 
 		allowed := ms.allowClient(sock)
 		if share.released.Load() {
@@ -86,7 +88,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			addr := sock.RemoteAddr().String()
 			ms.logger.Warningf("rejecting %v: not allowed", addr)
 			_ = sock.Close()
-			ms.reportRejected(addr, RejectNotAllowed)
+			ms.reportRejected(share, sock, id, RejectNotAllowed)
 			if share.released.Load() {
 				return
 			}
@@ -95,6 +97,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 
 		accepted, refused, perHost := false, false, false
 		var evicted net.Conn
+		var evictedID ConnectionID
 		ms.lock.Lock()
 		// ms.run != run once the server has been stopped (and maybe started again).
 		if ms.started && ms.run == run {
@@ -103,7 +106,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				// Refused before MaxClients is looked at: it evicts nobody.
 				perHost = true
 			} else if uint(len(ms.tcpClients)) >= ms.conf.MaxClients && ms.transportType == modbusTCPOverTLS {
-				evicted = ms.evictPendingTLSLocked(host)
+				evicted, evictedID = ms.evictPendingTLSLocked(host)
 			}
 			if perHost {
 				refused = true
@@ -111,6 +114,10 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				ms.tcpClients = append(ms.tcpClients, sock)
 				if ms.transportType == modbusTCPOverTLS {
 					ms.tlsPending = append(ms.tlsPending, sock)
+					if ms.pendingIDs == nil {
+						ms.pendingIDs = make(map[net.Conn]ConnectionID)
+					}
+					ms.pendingIDs[sock] = id
 				}
 				accepted = true
 				// Registered under the lock: Shutdown clears started under the same lock before
@@ -123,7 +130,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		ms.lock.Unlock()
 
 		if accepted {
-			go ms.handleTCPClient(run, sock)
+			go ms.handleTCPClient(run, sock, id)
 		}
 		if evicted != nil {
 			// Its handshake fails and its goroutine ends.
@@ -132,7 +139,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				"closing %v (TLS handshake not completed) for %v",
 				addr, sock.RemoteAddr())
 			_ = evicted.Close()
-			ms.reportRejected(addr, RejectTLSHandshakeEvicted)
+			ms.reportRejected(share, evicted, evictedID, RejectTLSHandshakeEvicted)
 		}
 		if !accepted {
 			addr := sock.RemoteAddr().String()
@@ -147,7 +154,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			}
 			_ = sock.Close()
 			if refused {
-				ms.reportRejected(addr, reason)
+				ms.reportRejected(share, sock, id, reason)
 			}
 		}
 		if share.released.Load() {
@@ -194,16 +201,17 @@ func (ms *Server) hostClientsLocked(host string) uint {
 // mostly displace one another rather than clients from other hosts. A host
 // that already has as many pending connections as any other displaces its own
 // oldest one; a host with fewer displaces the oldest of a host with more.
-// ms.lock must be held.
-func (ms *Server) evictPendingTLSLocked(host string) net.Conn {
+// It also returns the victim's ConnectionID. ms.lock must be held.
+func (ms *Server) evictPendingTLSLocked(host string) (net.Conn, ConnectionID) {
 	i := pickPendingVictim(ms.tlsPending, host)
 	if i < 0 {
-		return nil
+		return nil, 0
 	}
 	victim := ms.tlsPending[i]
-	ms.tlsPending = append(ms.tlsPending[:i], ms.tlsPending[i+1:]...)
+	id := ms.pendingIDs[victim]
+	ms.dropPendingLocked(victim)
 	ms.removeTCPClientLocked(victim)
-	return victim
+	return victim, id
 }
 
 // pickPendingVictim returns the index in pending (oldest first) of the
@@ -275,26 +283,29 @@ func (ms *Server) dropPendingLocked(sock net.Conn) bool {
 	for i, c := range ms.tlsPending {
 		if c == sock {
 			ms.tlsPending = append(ms.tlsPending[:i], ms.tlsPending[i+1:]...)
+			delete(ms.pendingIDs, sock)
 			return true
 		}
 	}
 	return false
 }
 
-// handleTCPClient handles a single TCP client connection. A per-connection
-// context is derived from the run's stop context and cancelled when the client
-// disconnects, when the server stops, and when this function returns.
+// handleTCPClient handles a single TCP client connection, whose identifier is
+// id. A per-connection context is derived from the run's stop context and
+// cancelled when the client disconnects, when the server stops, and when this
+// function returns; it carries the connection's connState.
 //
 // The connection's goroutines (this one and the reader of serveConn) hold
 // one count of run.wg between them, which a Shutdown called on either gives
 // back (see runShare).
-func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
+func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, id ConnectionID) {
 	share := ms.join(run, nil)
 	defer share.done()
 	defer ms.leave(run)
 
 	connCtx, connCancel := context.WithCancel(run.ctx)
 	defer connCancel()
+	st := connState{id: id, localAddr: addrString(sock.LocalAddr())}
 
 	var err error
 	var clientRole string
@@ -304,7 +315,7 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 
 	switch ms.transportType {
 	case modbusTCP:
-		ms.serveConn(run, share, connCtx, connCancel,
+		ms.serveConn(run, share, withConn(connCtx, st), connCancel,
 			newTCPTransport(sock, ms.conf.Timeout, ms.conf.Logger),
 			sock.RemoteAddr().String(), "")
 
@@ -312,7 +323,7 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 		var roleErr error
 		start := time.Now()
 		tlsSock, clientRole, roleErr, err = ms.startTLS(sock)
-		ms.reportTLSHandshake(sock, tlsSock, time.Since(start), clientRole, roleErr, err)
+		ms.reportTLSHandshake(id, sock, tlsSock, time.Since(start), clientRole, roleErr, err)
 		admitted := false
 		if err == nil {
 			ms.lock.Lock()
@@ -333,7 +344,8 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 		default:
 			effectiveConn = tlsSock
 			// connCancel cancels the parent, and with it this context.
-			ms.serveConn(run, share, withRoleErr(connCtx, roleErr), connCancel,
+			st.roleErr = roleErr
+			ms.serveConn(run, share, withConn(connCtx, st), connCancel,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
 		}
@@ -403,7 +415,18 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	// Opened before the reader starts, closed once the socket is closed and
 	// the reader has ended. A Shutdown called from either callback, or from
 	// any callback of the connection in between, ends its callbacks.
+	st := connFrom(connCtx)
 	ms.reportOpened(clientAddr, clientRole)
+	if share.released.Load() {
+		_ = t.Close()
+		return
+	}
+	opened := time.Now()
+	ms.reportServerConn(ServerConnectionEvent{
+		Kind: ServerConnectionOpened, ConnectionID: st.id,
+		RemoteAddr: clientAddr, LocalAddr: st.localAddr,
+		Role: clientRole, RoleErr: st.roleErr,
+	})
 	if share.released.Load() {
 		_ = t.Close()
 		return
@@ -423,6 +446,7 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 			reason, err := cause.get()
 			if reason == CloseMalformedFrame {
 				ms.reportViolation(ProtocolViolation{
+					ConnectionID:  st.id,
 					ClientAddr:    clientAddr,
 					ClientRole:    clientRole,
 					TransactionID: adu.BytesToUint16(adu.BigEndian, badHeader[0:2]),
@@ -443,6 +467,15 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		}
 		reason, err := cause.get()
 		ms.reportCloseReason(clientAddr, reason, err)
+		if share.released.Load() {
+			return
+		}
+		ms.reportServerConn(ServerConnectionEvent{
+			Kind: ServerConnectionClosed, ConnectionID: st.id,
+			RemoteAddr: clientAddr, LocalAddr: st.localAddr,
+			Role: clientRole, RoleErr: st.roleErr,
+			CloseReason: reason, Err: err, Age: time.Since(opened),
+		})
 	}()
 
 	// pending counts the requests read and not yet answered. It and the read
@@ -547,7 +580,7 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		var res *adu.Response
 		var closeLink bool
 		if in.lengthErr != nil {
-			res = ms.serveLengthError(in.req, in.txnID, clientAddr, clientRole, in.lengthErr)
+			res = ms.serveLengthError(in.req, in.txnID, st.id, clientAddr, clientRole, in.lengthErr)
 			closeLink = true
 		} else {
 			res, closeLink = ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
@@ -740,7 +773,7 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 			if ms.metrics != nil {
 				ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
 			}
-			ms.reportRequestViolation(req, txnID, clientAddr, clientRole, err, exIllegalDataValue, true)
+			ms.reportRequestViolation(req, txnID, connFrom(ctx).id, clientAddr, clientRole, err, exIllegalDataValue, true)
 			return exceptionResponse(req, txnID, exIllegalDataValue), true
 		}
 
@@ -750,11 +783,11 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 		switch e := err.(type) {
 		case exceptionFCRequestError:
 			ms.logger.Warningf("request with exception function code 0x%02x from %s not answered", req.FunctionCode, clientAddr)
-			ms.reportRequestViolation(req, txnID, clientAddr, clientRole, err, 0, false)
+			ms.reportRequestViolation(req, txnID, connFrom(ctx).id, clientAddr, clientRole, err, 0, false)
 			return nil, false
 		case *malformedRequestError:
 			ms.logger.Warningf("malformed FC 0x%02x request from %s (%s): answering with Illegal Data Value", req.FunctionCode, clientAddr, e.reason)
-			ms.reportRequestViolation(req, txnID, clientAddr, clientRole, err, exIllegalDataValue, false)
+			ms.reportRequestViolation(req, txnID, connFrom(ctx).id, clientAddr, clientRole, err, exIllegalDataValue, false)
 		default:
 		}
 		silent, code := ms.answerFor(req, clientAddr, err)
@@ -784,7 +817,7 @@ func exceptionResponse(req *adu.Request, txnID uint16, code ExceptionCode) *adu.
 // not called. The answer is the one the full request would have had first:
 // Illegal Function when the server does not serve the function code, else
 // Illegal Data Value. ServerMetrics sees the request and an error.
-func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, clientAddr, clientRole string, lengthErr *inttrans.RequestLengthError) *adu.Response {
+func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, id ConnectionID, clientAddr, clientRole string, lengthErr *inttrans.RequestLengthError) *adu.Response {
 	var reqStart time.Time
 	if ms.metrics != nil {
 		ms.reportMetrics(metricsOnRequest, req, clientAddr, 0, nil)
@@ -805,7 +838,8 @@ func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, clientAddr, c
 	}
 	if ms.violationMetrics != nil {
 		ms.reportViolation(ProtocolViolation{
-			ClientAddr: clientAddr, ClientRole: clientRole,
+			ConnectionID: id,
+			ClientAddr:   clientAddr, ClientRole: clientRole,
 			TransactionID: txnID, Length: adu.Uint16(lengthErr.Have + 1), UnitID: req.UnitID,
 			FunctionCode: FunctionCode(req.FunctionCode), HasFunctionCode: true,
 			Err: err, Exception: code, Closed: true,

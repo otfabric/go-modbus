@@ -50,6 +50,8 @@ Pluggable synchronous callbacks via `Config.Metrics` / `ServerConfig.Metrics`:
 | `AcceptErrorMetrics` | Optional, on the `ServerMetrics` value; a failed `Accept` and the wait before the next one (`OnAcceptError`). Since v1.21.0 |
 | `ProtocolViolationMetrics` | Optional, on the `ServerMetrics` value; a request that breaks the framing or the structure of its function code, with its MBAP header and what the server did (`OnProtocolViolation`). Since v1.21.0 |
 | `ResponseAnomalyMetrics` | Optional, on the `ClientMetrics` value; what the client skipped or discarded while waiting for a response (`OnResponseAnomaly`). Since v1.21.0 |
+| `ServerConnectionMetrics` | Optional, on the `ServerMetrics` value; the lifecycle of each tcp / tcp+tls connection (rejected, opened, closed) as one typed event with its `ConnectionID` (`OnServerConnection`). Since v1.22.0 |
+| `ClientConnectionMetrics` | Optional, on the `ClientMetrics` value; every dial (with its origin, duration and error), discard (with its reason) and close of the client's connections, single or pooled, with their `ConnectionID` (`OnClientConnection`). Since v1.22.0 |
 
 `ClientMetrics` reflects what the calling method returns (including exception and
 protocol validation failures), **not** each internal retry. Implement
@@ -140,13 +142,45 @@ monitoring product it uses.
 **Correlation.** Every server callback about a connection carries its remote
 `host:port`, which identifies the connection while it is open; the client's role
 is in `OnConnectionOpened`, `TLSHandshakeInfo.Role`, `ProtocolViolation.ClientRole`
-and `ServerPDUTap`. There is no separate connection ID.
+and `ServerPDUTap`. Since v1.22.0 the structured reports also carry a
+`ConnectionID` (below), which stays unique after the connection closed and its
+address is reused.
 
 **Order on one connection (server).** `OnTLSHandshake` (tcp+tls), then
 `OnConnectionOpened`; per request `OnRequest`, then `OnResponse` or `OnError`,
 then `OnProtocolViolation` for a violation; then `OnConnectionClosed` and
 `OnConnectionCloseReason`. A malformed MBAP header, which never becomes a
 request, is reported to `OnProtocolViolation` right before the close.
+
+### Connection identity and lifecycle (since v1.22.0)
+
+Every transport connection of a client or a server has a `ConnectionID`,
+allocated before it is dialled or when it is accepted, and the same in every
+structured report about it: `TLSHandshakeInfo`, `ProtocolViolation`,
+`AuthorizationRequest`, `ServerPDUExchange` and `ServerConnectionEvent` on the
+server; `TLSHandshakeInfo`, `ResponseAnomaly`, `PDUExchange` and
+`ClientConnectionEvent` on the client. Identifiers come from one counter per
+process, starting at 1, and are never reused while the process runs; they mean
+nothing across processes or restarts. The positional callbacks
+(`OnConnectionOpened(addr, role)` and the others) are unchanged.
+
+`ServerConnectionMetrics` reports each server connection rejected, opened and
+closed as one event, with addresses, role, reject or close reason, error and
+age. `ClientConnectionMetrics` reports each client connection dialled (Open and
+pre-warm, on demand, re-dial; with the dial's duration and error), discarded
+after a failure (transport error, suspect response, before a retry, failed
+pre-warm) and closed by `Close`. A normal shutdown is `Closed`, never
+`Discarded`. No event links a discarded connection with the one dialled after
+it: the pool has no such relationship to report.
+
+**Do not use `ConnectionID` as a metric label.** It has a new value for every
+connection, so a label made from it creates series without bound. Use it in
+logs, traces and audit records; count by the event's kind and reason.
+
+| Fact | Where it is reported |
+|---|---|
+| Server connection rejected, opened, closed, with its ID | `ServerConnectionMetrics.OnServerConnection` |
+| Client dial (origin, duration, error), discard (reason, error), close, with its ID | `ClientConnectionMetrics.OnClientConnection` |
 
 **Cost.** The interfaces are found once, by type assertion, in `New` and
 `NewServer`. A value that implements none of them costs nothing more than
@@ -207,7 +241,8 @@ locks when it logs.
 | `ProtocolViolationMetrics.OnProtocolViolation` | `ProtocolViolationMetrics.OnProtocolViolation for <addr> did not return normally` | the server goes on as if it had returned |
 | `AcceptErrorMetrics.OnAcceptError` | `AcceptErrorMetrics.OnAcceptError did not return normally` | the accept loop goes on as if it had returned |
 | private key of `TLSServerCert` (a `crypto.Signer`) | `TLS handshake with <client> did not return normally` | the handshake fails and the connection is closed |
-| `ClientMetrics`, `AttemptMetrics`, `TLSHandshakeMetrics`, `ResponseAnomalyMetrics` method | `ClientMetrics.OnResponse did not return normally: …` | the request goes on as if it had returned; its result is unchanged |
+| `ServerConnectionMetrics.OnServerConnection` | `ServerConnectionMetrics.OnServerConnection (<kind>) for <addr> did not return normally` | the server goes on as if it had returned |
+| `ClientMetrics`, `AttemptMetrics`, `TLSHandshakeMetrics`, `ResponseAnomalyMetrics`, `ClientConnectionMetrics` method | `ClientMetrics.OnResponse did not return normally: …` | the request goes on as if it had returned; its result is unchanged |
 | `PDUTap.OnPDU` | `PDUTap.OnPDU did not return normally: …` | the call goes on as if it had returned; its result is unchanged |
 | `RetryPolicy.ShouldRetry` | `RetryPolicy.ShouldRetry did not return normally: …` | no retry: the call returns the error of its attempt |
 | `Config.Dialer` | `Config.Dialer did not return normally: …` | the dial fails with an error that says so (`Open` returns it, or the request that dialled) |

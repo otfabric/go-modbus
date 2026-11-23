@@ -70,6 +70,14 @@ type Config struct {
 	// so that the next request first discards what is pending on the link. It
 	// is meant for links that are not re-opened lightly (a serial port).
 	ResyncSuspect bool
+
+	// Connections, if set, is told what happens to every connection, single
+	// or pooled: each dial (Dial's ctx carries the connection's identifier,
+	// see internal/connid), each discard after a failure, and each close at
+	// shutdown. It is called outside the engine's and the pool's locks, on
+	// the goroutine of the request, Open or Close that caused the event, and
+	// must not block.
+	Connections func(ConnEvent)
 }
 
 // Engine owns the execute/retry/pool layer above transports.
@@ -96,9 +104,14 @@ type Engine struct {
 	// cancellation.
 	turn chan struct{}
 	pool *Pool[*adu.Request, *adu.Response]
-	// tr is the single connection, nil while there is none.
-	tr Transport[*adu.Request, *adu.Response]
+	// tr is the single connection, nil while there is none; trMeta is what
+	// the engine keeps about it.
+	tr     Transport[*adu.Request, *adu.Response]
+	trMeta connMeta
 }
+
+// observe returns Config.Connections as an observer.
+func (e *Engine) observe() observer { return observer(e.cfg.Connections) }
 
 // NewEngine creates a session engine from the given config.
 func NewEngine(cfg Config) *Engine {
@@ -133,18 +146,19 @@ func (e *Engine) Open(ctx context.Context) error {
 
 	var pool *Pool[*adu.Request, *adu.Response]
 	var tr Transport[*adu.Request, *adu.Response]
+	var meta connMeta
 	if e.cfg.UsePool && e.cfg.MaxConns > 1 {
-		p, err := NewPool[*adu.Request, *adu.Response](ctx, e.cfg.MinConns, e.cfg.MaxConns, e.cfg.Dial)
+		p, err := newPool[*adu.Request, *adu.Response](ctx, e.cfg.MinConns, e.cfg.MaxConns, e.cfg.Dial, e.observe())
 		if err != nil {
 			return err
 		}
 		pool = p
 	} else {
-		t, err := e.cfg.Dial(ctx)
+		t, m, err := dialConn(ctx, e.cfg.Dial, e.observe(), OriginOpen, false)
 		if err != nil {
 			return err
 		}
-		tr = t
+		tr, meta = t, m
 	}
 
 	e.mu.Lock()
@@ -156,13 +170,14 @@ func (e *Engine) Open(ctx context.Context) error {
 		}
 		if tr != nil {
 			_ = tr.Close()
+			e.observe().closed(meta, false)
 		}
 		if closed {
 			return protocol.ErrClientNotOpen
 		}
 		return nil
 	}
-	e.pool, e.tr = pool, tr
+	e.pool, e.tr, e.trMeta = pool, tr, meta
 	e.isOpen = true
 	e.mu.Unlock()
 	return nil
@@ -255,7 +270,7 @@ func (e *Engine) Execute(ctx context.Context, req *adu.Request) (*adu.Response, 
 		if pool == nil {
 			// A retry always runs on a fresh connection, whether or not the error
 			// was one that breaks the connection.
-			e.dropTransport(nil)
+			e.dropTransport(nil, DiscardRetry, err)
 		}
 
 		if delay > 0 {
@@ -288,31 +303,32 @@ func (e *Engine) isClosed() bool {
 // transport returns the single connection, dialling a new one if there is none.
 // Only the goroutine holding the turn calls it, so at most one dial runs at a
 // time; the lock is not held while dialling, so that Close does not have to wait.
-func (e *Engine) transport(ctx context.Context, attempt int) (Transport[*adu.Request, *adu.Response], error) {
+// It also returns the connection's identifier.
+func (e *Engine) transport(ctx context.Context, attempt int) (Transport[*adu.Request, *adu.Response], uint64, error) {
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
-		return nil, protocol.ErrClientNotOpen
+		return nil, 0, protocol.ErrClientNotOpen
 	}
 	if e.tr != nil {
-		tr := e.tr
+		tr, id := e.tr, e.trMeta.id
 		e.mu.Unlock()
-		return tr, nil
+		return tr, id, nil
 	}
 	e.mu.Unlock()
 
 	dialStart := time.Now()
-	t, err := e.cfg.Dial(ctx)
+	t, meta, err := dialConn(ctx, e.cfg.Dial, e.observe(), OriginRedial, false)
 	if obs := e.cfg.Attempts; obs != nil {
 		obs.OnRetryDial(attempt, time.Since(dialStart), err)
 	}
 	if err != nil {
 		e.logger.Errorf("reconnect failed (attempt %d): %v", attempt, err)
-		return nil, &redialError{err: mapDialTimeout(err)}
+		return nil, 0, &redialError{err: mapDialTimeout(err)}
 	}
 	if t == nil {
 		// A dial function that reports success without a transport.
-		return nil, protocol.ErrClientNotOpen
+		return nil, 0, protocol.ErrClientNotOpen
 	}
 
 	e.mu.Lock()
@@ -321,63 +337,77 @@ func (e *Engine) transport(ctx context.Context, attempt int) (Transport[*adu.Req
 		// Close ran while we were dialling: nobody else would close this one.
 		// (Without the lock: closing it may run the application's code.)
 		_ = t.Close()
-		return nil, protocol.ErrClientNotOpen
+		e.observe().closed(meta, false)
+		return nil, 0, protocol.ErrClientNotOpen
 	}
-	e.tr = t
+	e.tr, e.trMeta = t, meta
 	e.mu.Unlock()
-	return t, nil
+	return t, meta.id, nil
 }
 
 // dropTransport closes the single connection and forgets it; the next request
 // dials a new one. If tr is not nil, the connection is dropped only if it still
-// is tr.
-func (e *Engine) dropTransport(tr Transport[*adu.Request, *adu.Response]) {
+// is tr. A connection it drops is reported discarded for reason and err.
+func (e *Engine) dropTransport(tr Transport[*adu.Request, *adu.Response], reason DiscardReason, err error) {
 	e.mu.Lock()
-	cur := e.tr
+	cur, meta := e.tr, e.trMeta
 	if cur == nil || (tr != nil && cur != tr) {
 		e.mu.Unlock()
 		return
 	}
-	e.tr = nil
+	e.tr, e.trMeta = nil, connMeta{}
 	e.mu.Unlock()
 	_ = cur.Close()
+	e.observe().discarded(meta, false, reason, err)
 }
 
 // executeOnce runs one attempt of req on a connection of the pool, or on the
 // single connection.
 func (e *Engine) executeOnce(ctx context.Context, req *adu.Request, pool *Pool[*adu.Request, *adu.Response], attempt int) (*adu.Response, error) {
 	if pool != nil {
-		tr, err := pool.acquire(ctx)
+		tr, id, err := pool.acquireConn(ctx)
 		if err != nil {
 			return nil, mapTimeout(err)
 		}
 		res, err := e.exchange(ctx, tr, req)
-		if err != nil || e.suspect(req, res) {
-			pool.discard(tr)
-		} else {
+		setConnID(res, id)
+		switch {
+		case err != nil:
+			pool.discardFor(tr, DiscardTransportError, err)
+		case e.suspect(req, res):
+			pool.discardFor(tr, DiscardSuspectResponse, nil)
+		default:
 			pool.release(tr)
 		}
 		return res, mapTimeout(err)
 	}
 
-	tr, err := e.transport(ctx, attempt)
+	tr, id, err := e.transport(ctx, attempt)
 	if err != nil {
 		return nil, err
 	}
 	res, err := e.exchange(ctx, tr, req)
+	setConnID(res, id)
 	switch {
 	case err != nil:
 		if e.cfg.Broken == nil || e.cfg.Broken(err) {
-			e.dropTransport(tr)
+			e.dropTransport(tr, DiscardTransportError, err)
 		}
 	case e.suspect(req, res):
 		if r, ok := tr.(Resyncer); ok && e.cfg.ResyncSuspect {
 			r.Resync()
 		} else {
-			e.dropTransport(tr)
+			e.dropTransport(tr, DiscardSuspectResponse, nil)
 		}
 	}
 	return res, mapTimeout(err)
+}
+
+// setConnID records on res, when there is one, the connection it came from.
+func setConnID(res *adu.Response, id uint64) {
+	if res != nil {
+		res.ConnectionID = id
+	}
 }
 
 func (e *Engine) suspect(req *adu.Request, res *adu.Response) bool {
@@ -433,8 +463,8 @@ func (e *Engine) Close() error {
 		close(e.done)
 	}
 	e.isOpen = false
-	pool, tr := e.pool, e.tr
-	e.pool, e.tr = nil, nil
+	pool, tr, meta := e.pool, e.tr, e.trMeta
+	e.pool, e.tr, e.trMeta = nil, nil, connMeta{}
 	e.mu.Unlock()
 
 	var errs []error
@@ -447,6 +477,7 @@ func (e *Engine) Close() error {
 		if err := tr.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		e.observe().closed(meta, false)
 	}
 	return errors.Join(errs...)
 }

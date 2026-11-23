@@ -29,6 +29,11 @@ func TestRun(t *testing.T) {
 	if c.exceptions.Load() != 1 || c.attempts.Load() != 3 || c.pdus.Load() != 3 {
 		t.Errorf("exceptions %d, attempts %d, pdus %d; want 1, 3, 3", c.exceptions.Load(), c.attempts.Load(), c.pdus.Load())
 	}
+	// Open dialled once; the deferred Close in run closed that connection.
+	if c.dials.Load() != 1 || c.failedDials.Load() != 0 || c.closes.Load() != 1 || c.lastConnection.Load() == 0 {
+		t.Errorf("dials %d (failed %d), closes %d, last connection %d; want 1, 0, 1, non-zero",
+			c.dials.Load(), c.failedDials.Load(), c.closes.Load(), c.lastConnection.Load())
+	}
 	if c.handshakes.Load() != 0 {
 		t.Errorf("%d TLS handshakes on tcp", c.handshakes.Load())
 	}

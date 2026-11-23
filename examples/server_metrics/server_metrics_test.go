@@ -30,6 +30,10 @@ func TestRun(t *testing.T) {
 	if s.requests[fc06].Load() != 1 || s.responses[fc06].Load() != 1 {
 		t.Errorf("FC06: requests %d, responses %d; want 1, 1", s.requests[fc06].Load(), s.responses[fc06].Load())
 	}
+	if r, o, c := s.events[modbus.ServerConnectionRejected].Load(), s.events[modbus.ServerConnectionOpened].Load(),
+		s.events[modbus.ServerConnectionClosed].Load(); r != 1 || o != 1 || c != 1 {
+		t.Errorf("connection events: rejected %d, opened %d, closed %d; want 1 each", r, o, c)
+	}
 	if s.opened.Load() != 1 || s.open.Load() != 0 || s.closed[modbus.CloseClientClosed].Load() != 1 {
 		t.Errorf("opened %d, open %d, closed by the client %d; want 1, 0, 1",
 			s.opened.Load(), s.open.Load(), s.closed[modbus.CloseClientClosed].Load())

@@ -57,6 +57,9 @@ type TLSHandshakeMetrics interface {
 // TLSHandshakeMetrics. It is the receiver's: the certificates are parsed
 // afresh for each call and are not used by the library afterwards.
 type TLSHandshakeInfo struct {
+	// ConnectionID is the connection the handshake ran on (see ConnectionID):
+	// the same in the other reports of that connection. Since v1.22.0.
+	ConnectionID ConnectionID
 	// LocalAddr and RemoteAddr are the addresses of the connection
 	// (host:port); empty when the connection does not report one.
 	LocalAddr  string
@@ -186,6 +189,9 @@ type ProtocolViolationMetrics interface {
 // ProtocolViolation is a request that breaks the framing or the structure of
 // its function code, as reported to ProtocolViolationMetrics.
 type ProtocolViolation struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// ClientAddr and ClientRole identify the connection, as the handlers
 	// receive them (ClientRole is empty on tcp).
 	ClientAddr string
@@ -272,6 +278,9 @@ func (k ResponseAnomalyKind) String() string {
 // request, as reported to ResponseAnomalyMetrics.
 type ResponseAnomaly struct {
 	Kind ResponseAnomalyKind
+	// ConnectionID is the connection the exchange ran on (see ConnectionID).
+	// Since v1.22.0.
+	ConnectionID ConnectionID
 	// UnitID and FunctionCode are those of the request in flight.
 	UnitID       uint8
 	FunctionCode FunctionCode

@@ -390,8 +390,11 @@ func TestProtocolViolationMetrics(t *testing.T) {
 			if !errors.Is(got.Err, tc.match) {
 				t.Errorf("err = %v, want %v", got.Err, tc.match)
 			}
+			if got.ConnectionID == 0 {
+				t.Error("violation without a ConnectionID")
+			}
 			want := tc.want
-			want.ClientAddr, want.Err = conn.LocalAddr().String(), got.Err
+			want.ClientAddr, want.Err, want.ConnectionID = conn.LocalAddr().String(), got.Err, got.ConnectionID
 			if got != want {
 				t.Errorf("violation\n got %+v\nwant %+v", got, want)
 			}
@@ -568,12 +571,15 @@ func TestResponseAnomalyMetrics_MBAP(t *testing.T) {
 	if len(as) != 2 {
 		t.Fatalf("anomalies %+v, want 2", as)
 	}
-	want := ResponseAnomaly{Kind: AnomalyTransactionID, UnitID: 1, FunctionCode: FCReadHoldingRegisters,
+	if as[0].ConnectionID == 0 || as[1].ConnectionID != as[0].ConnectionID {
+		t.Errorf("anomaly connection ids %d, %d: want the same, not 0", as[0].ConnectionID, as[1].ConnectionID)
+	}
+	want := ResponseAnomaly{Kind: AnomalyTransactionID, ConnectionID: as[0].ConnectionID, UnitID: 1, FunctionCode: FCReadHoldingRegisters,
 		ExpectedTransactionID: as[0].ExpectedTransactionID, TransactionID: as[0].ExpectedTransactionID - 1}
 	if as[0] != want {
 		t.Errorf("first anomaly %+v, want %+v", as[0], want)
 	}
-	want = ResponseAnomaly{Kind: AnomalyProtocolID, UnitID: 1, FunctionCode: FCReadHoldingRegisters,
+	want = ResponseAnomaly{Kind: AnomalyProtocolID, ConnectionID: as[0].ConnectionID, UnitID: 1, FunctionCode: FCReadHoldingRegisters,
 		ExpectedTransactionID: as[0].ExpectedTransactionID, TransactionID: as[0].ExpectedTransactionID, ProtocolID: 5}
 	if as[1] != want {
 		t.Errorf("second anomaly %+v, want %+v", as[1], want)
@@ -597,14 +603,14 @@ func TestSecurityMetrics_AbsentInterfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ms.tlsMetrics != nil || ms.acceptMetrics != nil || ms.violationMetrics != nil {
+	if ms.tlsMetrics != nil || ms.acceptMetrics != nil || ms.violationMetrics != nil || ms.connMetrics != nil {
 		t.Error("optional interfaces found on a value that does not implement them")
 	}
 	c, err := New(Config{URL: "tcp://127.0.0.1:502", Metrics: &countingServerMetricsClient{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.tlsMetrics != nil || c.anomalyMetrics != nil || c.anomalyFunc() != nil {
+	if c.tlsMetrics != nil || c.anomalyMetrics != nil || c.anomalyFunc(0) != nil || c.connectionObserver() != nil {
 		t.Error("optional client interfaces found on a value that does not implement them")
 	}
 }
@@ -700,16 +706,16 @@ func TestReportTLSHandshake_NotStarted(t *testing.T) {
 	a, b := net.Pipe()
 	defer func() { _ = a.Close(); _ = b.Close() }()
 	startErr := errors.New("set deadline failed")
-	ms.reportTLSHandshake(a, nil, 0, "operator", nil, startErr) // no hook: nothing happens
+	ms.reportTLSHandshake(7, a, nil, 0, "operator", nil, startErr) // no hook: nothing happens
 	ms.tlsMetrics = m
-	ms.reportTLSHandshake(a, nil, time.Millisecond, "operator", nil, startErr)
+	ms.reportTLSHandshake(7, a, nil, time.Millisecond, "operator", nil, startErr)
 	_, hs, _, _ := m.snapshot()
 	if len(hs) != 1 {
 		t.Fatalf("%d handshakes reported, want 1", len(hs))
 	}
 	got := hs[0]
 	if got.Err != startErr || got.RemoteAddr != a.RemoteAddr().String() || got.LocalAddr != a.LocalAddr().String() ||
-		got.Duration != time.Millisecond || got.Role != "" || got.Verified || len(got.PeerCertificates) != 0 {
+		got.ConnectionID != 7 || got.Duration != time.Millisecond || got.Role != "" || got.Verified || len(got.PeerCertificates) != 0 {
 		t.Errorf("handshake %+v, want the socket's addresses, the error and no role", got)
 	}
 }
@@ -720,7 +726,7 @@ func TestReportRequestViolation_NoHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms.reportRequestViolation(&adu.Request{UnitID: 1, FunctionCode: 3}, 1, "addr", "", errors.New("bad"), 3, true)
+	ms.reportRequestViolation(&adu.Request{UnitID: 1, FunctionCode: 3}, 1, 0, "addr", "", errors.New("bad"), 3, true)
 }
 
 // The certificates handed to TLSHandshakeMetrics are new values parsed from

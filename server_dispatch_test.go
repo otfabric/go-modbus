@@ -597,7 +597,7 @@ func TestServerHandleTCPClient_UnknownTransportClosesConnection(t *testing.T) {
 	defer func() { _ = c2.Close() }()
 	ms.tcpClients = []net.Conn{c1}
 	run.wg.Add(1)
-	ms.handleTCPClient(run, c1)
+	ms.handleTCPClient(run, c1, 1)
 
 	if len(ms.tcpClients) != 0 {
 		t.Fatalf("client still tracked: %d", len(ms.tcpClients))

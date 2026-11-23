@@ -4,8 +4,9 @@
 // and connections: ServerMetrics for the outcome of each request,
 // ConnectionMetrics for connections refused at accept,
 // ConnectionLifecycleMetrics and ConnectionCloseMetrics for the connections
-// served and why they ended, and ServerConfig.PDUTap for the raw PDUs of every
-// request and its answer. One value implements the metrics interfaces; the
+// served and why they ended, ServerConnectionMetrics for the same lifecycle as
+// one typed event with the connection's ConnectionID, and ServerConfig.PDUTap
+// for the raw PDUs of every request and its answer. One value implements the metrics interfaces; the
 // server finds the optional ones by type assertion. The security extensions
 // (TLS handshakes, protocol violations, accept errors, the authorizer) are in
 // examples/security_hooks.
@@ -19,8 +20,9 @@
 //
 // The run triggers every interface it implements: requests, responses and
 // one exception; one connection served and closed by its client
-// (CloseClientClosed); one refused for MaxClients (RejectMaxClients); and
-// the PDUs of the three requests. The other reject and close reasons need
+// (CloseClientClosed); one refused for MaxClients (RejectMaxClients); the
+// same three steps as ServerConnectionMetrics events; and the PDUs of the
+// three requests. The other reject and close reasons need
 // other settings or failures (AllowClient, MaxClientsPerHost, timeouts, a
 // malformed frame, Stop).
 package main
@@ -40,8 +42,8 @@ import (
 )
 
 // serverCounters implements modbus.ServerMetrics, modbus.ConnectionMetrics,
-// modbus.ConnectionLifecycleMetrics and modbus.ConnectionCloseMetrics, and
-// modbus.ServerPDUTap. OnRequest sees the function code before the server
+// modbus.ConnectionLifecycleMetrics, modbus.ConnectionCloseMetrics and
+// modbus.ServerConnectionMetrics, and modbus.ServerPDUTap. OnRequest sees the function code before the server
 // checked it, so the arrays have room for all 256 values.
 type serverCounters struct {
 	requests, responses, errs [256]atomic.Uint64
@@ -49,9 +51,11 @@ type serverCounters struct {
 	closed                    [16]atomic.Uint64
 	opened, open              atomic.Int64
 	pdus                      atomic.Uint64
+	events                    [4]atomic.Uint64 // by ServerConnectionEventKind
 
-	mu   sync.Mutex
-	last string // the last exchange, for the audit-trail example
+	mu       sync.Mutex
+	last     string // the last exchange, for the audit-trail example
+	lastConn string // the last connection closed, for a log line
 }
 
 // ServerMetrics: one call per request, and its outcome.
@@ -83,12 +87,28 @@ func (s *serverCounters) OnConnectionCloseReason(_ string, reason modbus.CloseRe
 	}
 }
 
+// ServerConnectionMetrics: the same lifecycle as one typed event, with the
+// connection's ConnectionID. Count by Kind and reason; the ConnectionID goes
+// to logs and audit records, never into a metric label (it is new for every
+// connection, so a label made of it grows without bound).
+func (s *serverCounters) OnServerConnection(ev modbus.ServerConnectionEvent) {
+	if int(ev.Kind) < len(s.events) {
+		s.events[ev.Kind].Add(1)
+	}
+	if ev.Kind == modbus.ServerConnectionClosed {
+		s.mu.Lock()
+		s.lastConn = fmt.Sprintf("connection %s from %s closed (%s) after %v",
+			ev.ConnectionID, ev.RemoteAddr, ev.CloseReason, ev.Age.Round(time.Millisecond))
+		s.mu.Unlock()
+	}
+}
+
 // OnServerPDU (ServerConfig.PDUTap): the raw request and the answer decided
 // on, with the client's address and role, for an audit trail.
 func (s *serverCounters) OnServerPDU(_ context.Context, ex modbus.ServerPDUExchange) {
 	s.pdus.Add(1)
 	s.mu.Lock()
-	s.last = fmt.Sprintf("%s unit %d: % X -> % X", ex.ClientAddr, ex.UnitID, ex.Request, ex.Response)
+	s.last = fmt.Sprintf("connection %s (%s) unit %d: % X -> % X", ex.ConnectionID, ex.ClientAddr, ex.UnitID, ex.Request, ex.Response)
 	s.mu.Unlock()
 }
 
@@ -111,8 +131,11 @@ func (s *serverCounters) print(w io.Writer) error {
 			fmt.Fprintf(&b, "closed (%s): %d\n", modbus.CloseReason(r), n)
 		}
 	}
+	fmt.Fprintf(&b, "connection events: rejected %d, opened %d, closed %d\n",
+		s.events[modbus.ServerConnectionRejected].Load(), s.events[modbus.ServerConnectionOpened].Load(),
+		s.events[modbus.ServerConnectionClosed].Load())
 	s.mu.Lock()
-	fmt.Fprintf(&b, "pdus %d, last: %s\n", s.pdus.Load(), s.last)
+	fmt.Fprintf(&b, "pdus %d, last: %s\n%s\n", s.pdus.Load(), s.last, s.lastConn)
 	s.mu.Unlock()
 	_, err := io.WriteString(w, b.String())
 	return err

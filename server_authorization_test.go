@@ -181,7 +181,10 @@ func TestAuthorizer_RequestFields(t *testing.T) {
 		if got.ClientAddr == "" {
 			t.Errorf("%s: no client address", tc.name)
 		}
-		got.ClientAddr = ""
+		if got.ConnectionID == 0 {
+			t.Errorf("%s: no connection id", tc.name)
+		}
+		got.ClientAddr, got.ConnectionID = "", 0
 		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", tc.name, got, tc.want)
 		}
