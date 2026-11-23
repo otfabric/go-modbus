@@ -1047,6 +1047,12 @@ func (ms *Server) handleExceptionStatus(ctx context.Context, req *adu.Request, t
 	if err := checkPDULength(req.Payload, 0); err != nil {
 		return nil, err
 	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	status, err := h.HandleExceptionStatus(ctx, &ExceptionStatusRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -1067,6 +1073,12 @@ func (ms *Server) handleCommEventCounter(ctx context.Context, req *adu.Request, 
 	}
 	if err := checkPDULength(req.Payload, 0); err != nil {
 		return nil, err
+	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
 	}
 	cr, err := h.HandleCommEventCounter(ctx, &CommEventCounterRequest{
 		ClientAddr:   clientAddr,
@@ -1094,6 +1106,12 @@ func (ms *Server) handleCommEventLog(ctx context.Context, req *adu.Request, txnI
 	}
 	if err := checkPDULength(req.Payload, 0); err != nil {
 		return nil, err
+	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
 	}
 	cl, err := h.HandleCommEventLog(ctx, &CommEventLogRequest{
 		ClientAddr:   clientAddr,

@@ -23,8 +23,9 @@ import (
 //     (reportCloseReason), AcceptErrorMetrics (reportAcceptError),
 //     TLSHandshakeMetrics (reportTLSHandshake) and ProtocolViolationMetrics
 //     (reportViolation);
-//   - ServerConfig.AllowClient (allowClient) and ServerConfig.PDUTap
-//     (tapServerExchange);
+//   - ServerConfig.AllowClient (allowClient), ServerConfig.PDUTap
+//     (tapServerExchange) and ServerConfig.Authorizer (authorize), with the
+//     methods of the error it returns;
 //   - the TLS handshake of tcp+tls (startTLS), which runs the private key of
 //     ServerConfig.TLSServerCert, a crypto.Signer that may be the
 //     application's.

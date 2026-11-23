@@ -22,6 +22,13 @@ func (ms *Server) handleReadRegisters(ctx context.Context, req *adu.Request, txn
 		return nil, ErrIllegalDataAddress
 	}
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessRead)
+		ar.ReadAddr, ar.ReadQuantity = addr, quantity
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	var regs []uint16
 	fc := FunctionCode(req.FunctionCode)
 	if fc == FCReadHoldingRegisters {
@@ -68,6 +75,13 @@ func (ms *Server) handleWriteSingleRegister(ctx context.Context, req *adu.Reques
 	addr := bytesToUint16(BigEndian, req.Payload[0:2])
 	value := bytesToUint16(BigEndian, req.Payload[2:4])
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessWrite)
+		ar.WriteAddr, ar.WriteQuantity = addr, 1
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	_, err := ms.handler.HandleHoldingRegisters(ctx, &HoldingRegistersRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -103,6 +117,13 @@ func (ms *Server) handleMaskWriteRegister(ctx context.Context, req *adu.Request,
 	andMask := bytesToUint16(BigEndian, req.Payload[2:4])
 	orMask := bytesToUint16(BigEndian, req.Payload[4:6])
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessWrite)
+		ar.WriteAddr, ar.WriteQuantity = addr, 1
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	err := mwh.HandleMaskWrite(ctx, &MaskWriteRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -167,6 +188,14 @@ func (ms *Server) handleReadWriteMultipleRegisters(ctx context.Context, req *adu
 	}
 	writeValues := bytesToUint16s(BigEndian, req.Payload[9:])
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessReadWrite)
+		ar.ReadAddr, ar.ReadQuantity = readAddr, readQty
+		ar.WriteAddr, ar.WriteQuantity = writeAddr, writeQty
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	regs, err := rwh.HandleReadWriteRegisters(ctx, &ReadWriteRegistersRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -224,6 +253,13 @@ func (ms *Server) handleWriteMultipleRegisters(ctx context.Context, req *adu.Req
 		return nil, ErrIllegalDataAddress
 	}
 
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessWrite)
+		ar.WriteAddr, ar.WriteQuantity = addr, quantity
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	_, err := ms.handler.HandleHoldingRegisters(ctx, &HoldingRegistersRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
