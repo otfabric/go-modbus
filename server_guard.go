@@ -3,9 +3,12 @@
 package modbus
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
+	"time"
 
+	"github.com/otfabric/go-modbus/internal/adu"
 	"github.com/otfabric/go-modbus/internal/callback"
 )
 
@@ -16,10 +19,13 @@ import (
 //     handler returns, which choose the answer (answerFor);
 //   - the methods of ServerConfig.Metrics: ServerMetrics (reportMetrics),
 //     ConnectionMetrics (reportRejected), ConnectionLifecycleMetrics
-//     (reportOpened, reportClosed) and ConnectionCloseMetrics
-//     (reportCloseReason);
-//   - ServerConfig.AllowClient (allowClient) and ServerConfig.PDUTap
-//     (tapServerExchange);
+//     (reportOpened, reportClosed), ConnectionCloseMetrics
+//     (reportCloseReason), AcceptErrorMetrics (reportAcceptError),
+//     TLSHandshakeMetrics (reportTLSHandshake), ProtocolViolationMetrics
+//     (reportViolation) and ServerConnectionMetrics (reportServerConn);
+//   - ServerConfig.AllowClient (allowClient), ServerConfig.PDUTap
+//     (tapServerExchange) and ServerConfig.Authorizer (authorize), with the
+//     methods of the error it returns;
 //   - the TLS handshake of tcp+tls (startTLS), which runs the private key of
 //     ServerConfig.TLSServerCert, a crypto.Signer that may be the
 //     application's.
@@ -41,10 +47,27 @@ func (ms *Server) call(name string, line func() string, fn func() error) error {
 	return err
 }
 
-// reportRejected calls ConnectionMetrics.OnConnectionRejected, when
-// ServerConfig.Metrics implements it, through call: a method that does not
-// return normally is logged, and the server goes on as if it had returned.
-func (ms *Server) reportRejected(addr string, reason RejectReason) {
+// reportRejected reports sock, the connection id closed for reason, to
+// ConnectionMetrics.OnConnectionRejected and then, unless a Shutdown was
+// called from it, to ServerConnectionMetrics, when ServerConfig.Metrics
+// implements them, through call: a method that does not return normally is
+// logged, and the server goes on as if it had returned.
+func (ms *Server) reportRejected(share *runShare, sock net.Conn, id ConnectionID, reason RejectReason) {
+	addr := sock.RemoteAddr().String()
+	ms.reportRejectedAddr(addr, reason)
+	if share.released.Load() {
+		return
+	}
+	ms.reportServerConn(ServerConnectionEvent{
+		Kind: ServerConnectionRejected, ConnectionID: id,
+		RemoteAddr: addr, LocalAddr: addrString(sock.LocalAddr()),
+		RejectReason: reason,
+	})
+}
+
+// reportRejectedAddr calls ConnectionMetrics.OnConnectionRejected, when
+// ServerConfig.Metrics implements it, through call.
+func (ms *Server) reportRejectedAddr(addr string, reason RejectReason) {
 	cm, ok := ms.metrics.(ConnectionMetrics)
 	if !ok {
 		return
@@ -114,6 +137,101 @@ func (ms *Server) reportClosed(addr string) {
 		return fmt.Sprintf("ConnectionLifecycleMetrics.OnConnectionClosed for %s did not return normally", addr)
 	}, func() error {
 		lm.OnConnectionClosed(addr)
+		return nil
+	})
+}
+
+// reportServerConn calls ServerConnectionMetrics.OnServerConnection, when
+// ServerConfig.Metrics implements it, through call.
+func (ms *Server) reportServerConn(ev ServerConnectionEvent) {
+	cm := ms.connMetrics
+	if cm == nil {
+		return
+	}
+	_ = ms.call("ServerConnectionMetrics.OnServerConnection", func() string {
+		return fmt.Sprintf("ServerConnectionMetrics.OnServerConnection (%s) for %s did not return normally", ev.Kind, ev.RemoteAddr)
+	}, func() error {
+		cm.OnServerConnection(ev)
+		return nil
+	})
+}
+
+// reportAcceptError calls AcceptErrorMetrics.OnAcceptError, when
+// ServerConfig.Metrics implements it, through call.
+func (ms *Server) reportAcceptError(err error, retryIn time.Duration) {
+	am := ms.acceptMetrics
+	if am == nil {
+		return
+	}
+	_ = ms.call("AcceptErrorMetrics.OnAcceptError", func() string {
+		return "AcceptErrorMetrics.OnAcceptError did not return normally"
+	}, func() error {
+		am.OnAcceptError(err, retryIn)
+		return nil
+	})
+}
+
+// reportTLSHandshake calls TLSHandshakeMetrics.OnTLSHandshake, when
+// ServerConfig.Metrics implements it, through call, for the handshake on sock
+// that took d and ended with err. tlsSock is nil when the handshake could not
+// be started.
+func (ms *Server) reportTLSHandshake(id ConnectionID, sock net.Conn, tlsSock *tls.Conn, d time.Duration, role string, roleErr, err error) {
+	tm := ms.tlsMetrics
+	if tm == nil {
+		return
+	}
+	var info TLSHandshakeInfo
+	if tlsSock != nil {
+		info = newTLSHandshakeInfo(tlsSock, d, err)
+	} else {
+		info = TLSHandshakeInfo{
+			LocalAddr:  addrString(sock.LocalAddr()),
+			RemoteAddr: addrString(sock.RemoteAddr()),
+			Err:        err,
+			Duration:   d,
+		}
+	}
+	info.ConnectionID = id
+	if err == nil {
+		info.Role, info.RoleErr = role, roleErr
+	}
+	_ = ms.call("TLSHandshakeMetrics.OnTLSHandshake", func() string {
+		return fmt.Sprintf("TLSHandshakeMetrics.OnTLSHandshake for %s did not return normally", info.RemoteAddr)
+	}, func() error {
+		tm.OnTLSHandshake(info)
+		return nil
+	})
+}
+
+// reportRequestViolation reports req, a framed request that breaks the
+// structure of its function code, to ProtocolViolationMetrics (see
+// reportViolation). code is the exception answered (0: none).
+func (ms *Server) reportRequestViolation(req *adu.Request, txnID uint16, id ConnectionID, clientAddr, clientRole string, err error, code ExceptionCode, closed bool) {
+	if ms.violationMetrics == nil {
+		return
+	}
+	ms.reportViolation(ProtocolViolation{
+		ConnectionID:    id,
+		ClientAddr:      clientAddr,
+		ClientRole:      clientRole,
+		TransactionID:   txnID,
+		Length:          adu.Uint16(len(req.Payload) + 2),
+		UnitID:          req.UnitID,
+		FunctionCode:    FunctionCode(req.FunctionCode),
+		HasFunctionCode: true,
+		Err:             err,
+		Exception:       code,
+		Closed:          closed,
+	})
+}
+
+// reportViolation calls ProtocolViolationMetrics.OnProtocolViolation through
+// call. ms.violationMetrics must not be nil.
+func (ms *Server) reportViolation(v ProtocolViolation) {
+	_ = ms.call("ProtocolViolationMetrics.OnProtocolViolation", func() string {
+		return fmt.Sprintf("ProtocolViolationMetrics.OnProtocolViolation for %s did not return normally", v.ClientAddr)
+	}, func() error {
+		ms.violationMetrics.OnProtocolViolation(v)
 		return nil
 	})
 }

@@ -412,6 +412,23 @@ var scenarios = []scenario{
 	// (spec 6.21: exception 2).
 	{args: "raw --function 43 --data 0e0407", want: exception(43, illegalAddr), ref: specOnly},
 
+	// A complete request with bytes beyond the fields of its function code
+	// (v1.20.0): exception 3, the "PDU length" check of the figures of
+	// V1.1b3 section 6, and the connection is kept. The fixture rules do
+	// not cover these requests, so the outcome is checked against the
+	// specification alone.
+	{args: "raw --function 3 --data 0000000100", want: exception(3, illegalValue), ref: specOnly},
+	{args: "raw --function 6 --data 000a000100", want: exception(6, illegalValue), ref: specOnly},
+	{args: "raw --function 17 --data 00", want: exception(17, illegalValue), ref: specOnly},
+	{args: "raw --function 24 --data 04de00", want: exception(24, illegalValue), ref: specOnly},
+	{args: "raw --function 43 --data 0e010000", want: exception(43, illegalValue), ref: specOnly},
+	{args: "raw --function 20 --data 070600010000000200", want: exception(20, illegalValue), ref: specOnly},
+	// FC08 data of odd length (6.8: N x 2 bytes): exception 3.
+	{args: "raw --function 8 --data 000012", want: exception(8, illegalValue), ref: specOnly},
+	{args: "raw --function 8 --data 0002ab", want: exception(8, illegalValue), ref: specOnly},
+	// FC20 whose response would not fit (6.14): 4 + 244 bytes > 0xF5.
+	{args: "raw --function 20 --data 0e0600010000006406000100640016", want: exception(20, illegalValue), ref: specOnly},
+
 	// Where a go-modbus device cannot follow FIXTURES.md rule 1 (any request
 	// for another unit identifier is answered with exception 11): the
 	// server checks the function code and the quantity before it hands the
@@ -437,6 +454,13 @@ func moreFunctions(fx *fixture) []scenario {
 		{args: "raw --function 8 --data 00001234", want: ok(8, 0), ref: specOnly, check: rawIs("0000 1234")},
 		{args: "raw --function 8 --data 0000a5a5c3c3", want: ok(8, 0), ref: specOnly, check: rawIs("0000 a5a5 c3c3")},
 		{args: "raw --function 8 --data 00030000", want: exception(8, illegalFunc), ref: specOnly},
+		// The sub-functions the go-modbus client's wrappers send with the
+		// data field 00 00 (6.8.1); the fixture serves sub-function 0 only.
+		{args: "diagnostics --sub-function 2 --data 0000", ref: featServerDiagnostics, want: exception(8, illegalFunc)},
+		{args: "diagnostics --sub-function 10 --data 0000", ref: featServerDiagnostics, want: exception(8, illegalFunc)},
+		{args: "raw --function 8 --data 000b0000", want: exception(8, illegalFunc), ref: specOnly},
+		// Return Query Data with a 32-byte data field.
+		{args: "raw --function 8 --data 0000" + strings.Repeat("a55a", 16), want: ok(8, 0), ref: specOnly, check: rawIs("0000" + strings.Repeat("a55a", 16))},
 		// Byte count, server ID, run indicator (spec 6.13).
 		{args: "report-server-id", ref: featServerReportServerID, want: ok(17, 0), check: rawIs(id)},
 		// One sub-request: response data length, file response length,
@@ -449,6 +473,11 @@ func moreFunctions(fx *fixture) []scenario {
 		{args: "raw --function 20 --data 0706000100000002", want: ok(20, 0), ref: specOnly, check: rawIs("06 05 06 000b 01a4")},
 		{args: "raw --function 20 --data 0e0600010000000106000100020001", want: ok(20, 0), ref: specOnly,
 			check: rawIs("08 03 06 000b 03 06 033d")},
+		// Three sub-requests (6.14): records 0..1, 2 and 3..4 of file 1.
+		{args: "raw --function 20 --data 15060001000000020600010002000106000100030002", want: ok(20, 0), ref: specOnly,
+			check: rawIs("10 05 06 000b 01a4 03 06 033d 05 06 04d6 066f")},
+		// The largest response: 120 registers, 2 + 240 = 242 bytes of data.
+		{args: "raw --function 20 --data 0706000100000078", want: ok(20, 0), ref: specOnly},
 		{args: "raw --function 20 --data 0706000300000001", want: exception(20, illegalAddr), ref: specOnly},
 		{args: "raw --function 20 --data 0706000100c70002", want: exception(20, illegalAddr), ref: specOnly},
 		{args: "raw --function 20 --data 0707000100000001", want: exception(20, illegalAddr), ref: specOnly},

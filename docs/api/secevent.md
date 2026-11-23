@@ -53,7 +53,7 @@ NewContext returns a context that carries r, for Report and PeerFromContext.
 func NextConnID() uint64
 ```
 
-NextConnID returns a new connection identifier: 1, 2, 3, ... for the process, shared by every endpoint, so that the events of one connection can be put together.
+NextConnID returns a new connection identifier: 1, 2, 3, ... for the process, shared by every endpoint, so that the events of one connection can be put together. It is the counter of modbus.ConnectionID: a server's events carry the ConnectionID of their connection.
 
 ### func Report
 

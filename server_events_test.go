@@ -529,7 +529,7 @@ func TestServerEvents_CloseMapping(t *testing.T) {
 			}
 			a, b := net.Pipe()
 			defer func() { _ = a.Close(); _ = b.Close() }()
-			ce, _ := ms.newConnEvents(run, context.Background(), 5, a, "", nil)
+			ce, _ := ms.newConnEvents(run, context.Background(), 5, nil, a, "", nil)
 			ce.requests.Store(tc.requests)
 			ms.emitClosed(run, ce, tc.reason, deadline)
 			if err := run.events.Close(context.Background()); err != nil {
@@ -760,7 +760,7 @@ func TestServerEvents_WriteFailureIsAStallOnlyOnTimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 		a, b := net.Pipe()
-		ce, _ := ms.newConnEvents(run, context.Background(), 5, a, "", nil)
+		ce, _ := ms.newConnEvents(run, context.Background(), 5, nil, a, "", nil)
 		ce.requests.Store(2)
 		ms.emitClosed(run, ce, CloseWriteFailed, tc.err)
 		ms.emitClosed(run, ce, CloseWriteFailed, tc.err) // reported once
@@ -892,5 +892,64 @@ func TestServerEvents_StopWhileLoggingHandshakeFailure(t *testing.T) {
 	closed := wantAcceptedThenClosed(t, c, bad.LocalAddr())
 	if closed.Kind != secevent.KindConnClosed || closed.Action != secevent.ActionDisconnected {
 		t.Errorf("closed: %+v", closed)
+	}
+}
+
+// A connection over MaxClientsPerHost is reported as rejected for the limit.
+func TestServerEvents_PerHostLimit(t *testing.T) {
+	c := &evCollector{}
+	ms, first := startCallbackServer(t, holdingOne(), chain(eventsOn(c), func(conf *ServerConfig) { conf.MaxClientsPerHost = 1 }))
+	t.Cleanup(func() { _ = ms.Stop() })
+	sendReadRequest(t, first)
+	_ = first.SetReadDeadline(time.Now().Add(e2eWait))
+	if _, err := io.ReadFull(first, make([]byte, 11)); err != nil {
+		t.Fatal(err)
+	}
+	second := dialRaw(t, ms)
+	wantClosedUnanswered(t, second)
+	e := c.wait(t, secevent.KindConnRejectedLimit)
+	if e.Action != secevent.ActionRejected || !strings.Contains(e.Detail, "per host") || e.Peer.RemoteAddr != addrPortOf(second.LocalAddr()) {
+		t.Errorf("rejected_limit: %+v", e)
+	}
+}
+
+// A connection that sends nothing within FirstRequestTimeout is reported as
+// one that sent no request, closed by the server.
+func TestServerEvents_FirstRequestTimeout(t *testing.T) {
+	c := &evCollector{}
+	ms, conn := startCallbackServer(t, holdingOne(), chain(eventsOn(c), func(conf *ServerConfig) { conf.FirstRequestTimeout = 100 * time.Millisecond }))
+	t.Cleanup(func() { _ = ms.Stop() })
+	_ = conn
+	e := c.wait(t, secevent.KindConnNoRequest)
+	if e.Action != secevent.ActionDisconnected || !strings.Contains(e.Detail, "first-request") {
+		t.Errorf("no_request: %+v", e)
+	}
+	c.wait(t, secevent.KindConnClosed)
+}
+
+// The events of a connection carry its ConnectionID, the one the other
+// reports about it carry.
+func TestServerEvents_ConnIDIsTheConnectionID(t *testing.T) {
+	c := &evCollector{}
+	ids := make(chan ConnectionID, 1)
+	ms, conn := startCallbackServer(t, holdingOne(), chain(eventsOn(c), func(conf *ServerConfig) {
+		conf.Authorizer = RequestAuthorizerFunc(func(_ context.Context, ar *AuthorizationRequest) error {
+			select {
+			case ids <- ar.ConnectionID:
+			default:
+			}
+			return nil
+		})
+	}))
+	t.Cleanup(func() { _ = ms.Stop() })
+	sendReadRequest(t, conn)
+	_ = conn.SetReadDeadline(time.Now().Add(e2eWait))
+	if _, err := io.ReadFull(conn, make([]byte, 11)); err != nil {
+		t.Fatal(err)
+	}
+	id := <-ids
+	acc := c.wait(t, secevent.KindConnAccepted)
+	if id == 0 || acc.ConnID != uint64(id) {
+		t.Errorf("event id %d, ConnectionID %d", acc.ConnID, id)
 	}
 }

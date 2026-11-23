@@ -1,79 +1,156 @@
 # go-modbus Releases
 
-## v1.21.1
+## v1.23.0
 
-**Date:** 2026-11-21
-**Previous release:** v1.21.0
+**Date:** 2026-11-23
+**Previous release:** v1.22.0
 
-Fixes to the security events of v1.21.0. No exported identifier is added, removed or changed.
+A server can report what it observes about its connections as structured security events for a SIEM or an audit log: who connected, which connections it refused and why, how each one ended. The events carry the connection's `ConnectionID` (v1.22.0), so they line up with the metrics hooks. This work was first released in the `riclolsen/go-modbus` fork as v1.21.0 and v1.21.1 (not upstream releases) and is merged here on top of v1.22.0. No exported identifier is removed or changed, and no default changes: a server without `ServerConfig.Security` behaves as in v1.22.0, and with it the server only observes.
 
-### Fixed
+### Added
 
-- A `Stop` or `Shutdown` called from `AllowClient`, a handler, the `Logger` or another callback of a connection skipped the `conn.closed` of that connection, which the server had reported accepted. The callback's goroutine now reports it before the shutdown stops waiting for that goroutine.
-- `secevent.ConnReporter` shared the `TLSPeer` of the connection with the events, `Base`, `Peer` and `PeerFromContext`: a handler or a sink that changed it changed the certificate details of later events, and could race with them. Each now gets a copy.
-- `dos.write_stall` was reported for every response write that failed; it is now reported only for a write that ran out of `Timeout`. A reset or a broken pipe is reported by `conn.closed` alone.
-- `secevent.Stats.Delivered` did not count the `meta.sink_panic` event delivered to the sink.
+- Package `secevent`: `Event` (kind, category, severity, action, peer, connection id, protocol fields, detail, error, raw bytes, MITRE ATT&CK for ICS hint; `String` and a stable JSON form), the kind catalogue (`Kinds`, `Describe`, `KindInfo`), `Dispatcher` (non-blocking queue; merging of repeats inside a window, per peer host for the connection kinds, `KindInfo.MergeByPeer`, with a timer only while a window is open; counted drops announced by `meta.events_dropped`; a sink that panics reported once; `Close` that may be called from the sink), `Stats`, `Policy`, and the sinks `SinkFunc`, `NewChannelSink`, `NewJSONLinesSink`, `MultiSink`, `FilterSink` and `LoggerSink`. `secevent.Report` and `secevent.PeerFromContext` give a handler the peer of its connection and a way to report events of its own. `secevent.NextConnID` draws from the counter of `ConnectionID`.
+- `ServerConfig.Security` (a `*SecurityPolicy`, which embeds `secevent.Policy`) and `Server.SecurityStats`. Events: `conn.accepted`, `conn.unexpected` (`AllowClient`), `conn.rejected_limit` (`MaxClients`, `MaxClientsPerHost`), `tls.handshake_evicted`, `conn.no_request` (closed, reset, or idled out, `FirstRequestTimeout` included, without a request), `conn.idle_timeout`, `proto.bad_mbap`, `proto.bad_pdu`, `dos.write_stall` (a response write that ran out of `Timeout`), `conn.closed` and `conn.accept_error`. On `tcp+tls` the peer carries the client certificate (subject, issuer, serial, expiry, SHA-256 fingerprint, each event its own copy) and the Modbus role.
+- Every `conn.accepted` is followed by exactly one `conn.closed` or refusal event with its `ConnectionID`: a connection whose TLS handshake failed, one accepted while the server was stopping, and one whose callback (`AllowClient`, a handler, the `Logger`, a metrics hook) called `Stop` included.
+- `Stop` and `Shutdown` deliver the events queued so far before they return, waiting at most 5 s for a sink that does not return (then logged), and may be called from the sink.
+
+### Changed
+
+- CI of the fork: the `otfabric-policy` jobs and the private-module steps, which need `OTFABRIC_READ_TOKEN`, are off; `PLAN-*.md` is excluded from docsync (`.otfabric/docsync.json`).
 
 ### Documentation
 
-- API.md § 14: the pairing of `conn.accepted` with its end when a callback stops the server, the copied `TLSPeer`, `dos.write_stall`, `Stats.Delivered`.
+- API.md § 14, OBSERVABILITY.md ("Security events"), SECURITY.md, LIMITATIONS.md (what the events do not cover), ARCHITECTURE.md (the new package and its import rules), ERRORS.md (`secevent.ErrNoSink`), docs/api.
 
 ### Tests
 
-- `server_events_test.go`: `Stop` from `AllowClient` (allowing and refusing), from a handler and from the `Logger` during a failed TLS handshake; write failures with and without a timeout.
-- `secevent`: the reporter's own `TLSPeer`; `Delivered` with a panicking sink.
+- `secevent`: ordering and defaults, a slow sink never blocking `Emit` and the drops announced, merging and its bounds, per-host merging, the lazy timer, flush on close, a panicking sink (`SinkFailures`, `Delivered`), `Close` from the sink and with a context, the catalogue, the JSON form (golden), the sinks, the context reporter and its own `TLSPeer`, the policy.
+- `server_events_test.go`: each event from a real connection (served, no request, reset, refused, over the limit, idle, malformed MBAP, protocol error), a handler's context and reports, no reporter without a policy, the TLS peer, a TLS eviction keeping its connection id, a failed TLS handshake, a connection accepted while stopping, `Stop` from the sink, from `AllowClient`, from a handler and from the `Logger`, the flush and a sink that does not return, a shared dispatcher, invalid policies, the policy copied, `ServerConfig` still comparable, an accept error, the mapping of every close reason, write failures with and without a timeout.
+
+---
+
+## v1.22.0
+
+**Date:** 2026-11-23
+**Previous release:** v1.21.0
+
+Connection identity and connection lifecycle observability, completing the observability foundation of v1.21.0. Every transport connection of a client or a server has an opaque `ConnectionID` that is the same in every structured report about it, and two new optional interfaces report each connection's lifecycle as typed events: on the server, rejected, opened and closed; on the client, single or pooled, dialled, discarded after a failure and closed at shutdown. The callbacks are opt-in; the `ConnectionID` is always allocated and filled in on the existing report structs, whether or not a callback is implemented. No exported identifier is removed or changed, no method is added to an existing interface, and the positional callbacks (`ConnectionMetrics`, `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics`, `AttemptMetrics`) keep their signatures and are still called as before. Nothing changes on the wire. The library still reports facts only: no event dispatcher, schema, severities or exporter.
+
+### Added
+
+- `ConnectionID` (`String`): an identifier allocated once per transport connection (TCP, TLS, UDP socket, serial port) before a client dials it or when a server accepts it, kept for the connection's life. Failed dials, rejected connections and failed TLS handshakes have one too. Identifiers come from one counter per process, starting at 1, and are never reused while the process runs; 0 means no connection. They are not stable across restarts and not shared by the two ends of a connection. Not meant as a metric label: every connection has a new one.
+- `ConnectionID` fields on `TLSHandshakeInfo` (server and client), `ProtocolViolation`, `AuthorizationRequest`, `ServerPDUExchange`, `PDUExchange` and `ResponseAnomaly`.
+- `ServerConnectionMetrics` with `ServerConnectionEvent` and `ServerConnectionEventKind` (`ServerConnectionRejected`, `ServerConnectionOpened`, `ServerConnectionClosed`): the detailed lifecycle of a tcp or tcp+tls server connection, with its `ConnectionID`, addresses, role, `RoleErr`, reject or close reason, error and age. Called at the same points as `OnConnectionRejected`, `OnConnectionOpened` and `OnConnectionCloseReason`, right after them.
+- `ClientConnectionMetrics` with `ClientConnectionEvent`, `ClientConnectionEventKind` (`ClientConnectionDialed`, `ClientConnectionDiscarded`, `ClientConnectionClosed`), `ConnectionOrigin` (`ConnectionOriginOpen`, `ConnectionOriginOnDemand`, `ConnectionOriginRedial`) and `DiscardReason` (`DiscardTransportError`, `DiscardSuspectResponse`, `DiscardRetry`, `DiscardOpenFailed`). It reports every dial of the single connection and of the pool (Open and pre-warm, on demand, re-dial), with target, duration and error; every connection closed because of a failure, with the reason and error; and every connection closed by the client's shutdown as `Closed`, kept apart from failure-driven discards. Every successfully dialled connection ends with exactly one `Discarded` or `Closed` once the client is closed. No event pairs an old connection with its replacement: the pool has no such relationship to prove. The callback may call `Close`: the connections a `Close` closes are reported once it has closed them all, so a `Close` called from the callback returns at once instead of waiting for itself.
+- `String` methods for the new enums: `"rejected"`, `"opened"`, `"closed"`; `"dialed"`, `"discarded"`, `"closed"`; `"open"`, `"on demand"`, `"redial"`; `"transport error"`, `"suspect response"`, `"retry"`, `"open failed"`.
+- `examples/client_metrics` and `examples/server_metrics` implement the new interfaces, counting by kind and reason and keeping the `ConnectionID` for a log line.
+
+### Changed
+
+- None of the existing callbacks changes: same signatures, same points, same order. The new interfaces are found by type assertion once, in `New` and `NewServer`; the new events are emitted with none of the client's or server's locks held, are guarded like the other callbacks (a callback that does not return normally is logged and the library goes on) and, on the server, end with a `Shutdown` or `Stop` called from one of the connection's callbacks.
+
+### Documentation
+
+- API.md (§ 6 "Connection identity and lifecycle", the new fields in the struct listings and the callback table), OBSERVABILITY.md (the interfaces, the uniqueness scope of `ConnectionID`, why it is not a metric label), LIMITATIONS.md ("Connection IDs are per process", "No replacement pairs"; the "No connection ID" item is gone), docs/api.
+
+### Tests
+
+- `internal/session/conn_test.go`: the event stream of the single connection (Open, discard after a transport error, re-dial, close) and the identifier the dial's context carries; `DiscardRetry` and `DiscardSuspectResponse`; a failed re-dial; pre-warming, and a pre-warm failure discarding the connections already made; pool exhaustion (no dial while every connection is in use, the waiter reusing the released one, a discard replaced on demand); cancelled dials, single and pooled; concurrent failures and retries with `Close` racing in-flight requests, each dialled connection ending exactly once; a dial completing after `Close`, and an `Open` losing to `Close`, both reported closed; `Pool.Execute`. Run with `-race`.
+- `connection_metrics_test.go`: one tcp+tls connection carrying the same `ConnectionID` through the server's handshake, open, authorizations, PDU tap and close, and the client's dial, handshake, PDU tap and close, the two ends with different identifiers; rejected connections (MaxClients, an eviction whose identifier is that of its failed handshake, AllowClient); panicking callbacks on both sides; `Stop` from `OnServerConnection`; a pooled client's pre-warm and on-demand dials and closes, and a failed dial; the enum names. `internal/connid`: uniqueness under concurrency.
+- Existing payload tests compare the new `ConnectionID` fields instead of ignoring them.
 
 ---
 
 ## v1.21.0
 
-**Date:** 2026-11-21
+**Date:** 2026-11-23
 **Previous release:** v1.20.0
 
-A server can report what it observes about its connections as structured security events for a SIEM or an audit log: who connected, which connections it refused and why, how each one ended. It is the first part of the security-events work; requests, the classification of TLS failures and peer MAC addresses follow. No exported identifier is removed or changed, and no default changes: a server without `ServerConfig.Security` behaves as in v1.20.0, and with it the server only observes.
+Provider-agnostic security observability and opt-in server hardening. Optional interfaces on the existing `Metrics` values report TLS handshakes, accept errors, protocol violations and client-side response anomalies; new `ServerConfig` fields bound connections per host, the wait for a first request and the time a request takes to arrive, and an optional authorizer decides which requests reach the handlers. All new observability hooks, authorization controls and hardening settings are opt-in and preserve existing behaviour when not used. The one unconditional behaviour change is stricter validation of malformed Modbus Role extensions on tcp+tls (bytes after the UTF8String now make the role invalid), listed under Changed. No exported identifier is removed or changed; no method is added to an existing interface. The library reports facts and enforces what the application configures; it has no detection rules, severities, event schema or monitoring-product dependency, and nothing here is a claim of conformance or certification.
 
 ### Added
 
-- Package `secevent`: `Event` (kind, category, severity, action, peer, connection id, protocol fields, detail, error, raw bytes, MITRE ATT&CK for ICS hint; `String` and a stable JSON form), the kind catalogue (`Kinds`, `Describe`), `Dispatcher` (non-blocking queue, merging of repeats inside a window — per peer host for the connection kinds, `KindInfo.MergeByPeer` — with a timer only while a window is open, counted drops announced by `meta.events_dropped`, a sink that panics reported once, `Close` that may be called from the sink), `Stats`, `Policy`, and the sinks `SinkFunc`, `NewChannelSink`, `NewJSONLinesSink`, `MultiSink`, `FilterSink` and `LoggerSink`. `secevent.Report` and `secevent.PeerFromContext` give a handler the peer of its connection and a way to report events of its own.
-- `ServerConfig.Security` (a `*SecurityPolicy`, which embeds `secevent.Policy`) and `Server.SecurityStats`. Events: `conn.accepted`, `conn.unexpected` (`AllowClient`), `conn.rejected_limit` (`MaxClients`), `tls.handshake_evicted`, `conn.no_request`, `conn.idle_timeout`, `proto.bad_mbap`, `proto.bad_pdu`, `dos.write_stall`, `conn.closed` and `conn.accept_error`. On `tcp+tls` the peer carries the client certificate (subject, issuer, serial, expiry, SHA-256 fingerprint) and the Modbus role.
-- Every `conn.accepted` is followed by exactly one `conn.closed` or refusal event with its connection id, including a connection whose TLS handshake failed and one accepted while the server was stopping. `conn.no_request` covers a peer that resets the connection without a request (observed) and one that idles out without a request (disconnected).
-- `Stop` and `Shutdown` deliver the events queued so far before they return, waiting at most 5 s for a sink that does not return (then logged), and may be called from the sink.
-- `modbus-cli devid`: the `deviceId` alias without arguments, and the object id of a `deviceIdObject` JSON record under `object` instead of `addr`.
+- `TLSHandshakeMetrics` (server and client) with `TLSHandshakeInfo`: the outcome of every `tcp+tls` handshake, failed, timed-out and evicted ones included, with addresses, duration, negotiated version and cipher suite, SNI, copies of the peer's certificates, whether they were verified, and on the server the client's role and `RoleErr`.
+- `ErrInvalidRole`: wrapped in `TLSHandshakeInfo.RoleErr` for a client certificate whose Modbus Role extension the server cannot use (more than one, or not exactly one DER UTF8String), so that it can be told from a certificate without a role. Such a client is served with no role.
+- `AcceptErrorMetrics` (server): every failed `Accept` and the wait before the next attempt, which was only logged.
+- `ProtocolViolationMetrics` (server) with `ProtocolViolation`: requests that break the framing or the structure of their function code (an MBAP length outside 2–254 or a protocol ID other than 0, a PDU of the wrong length, contradicting fields, an exception function code), with the MBAP header as received, the exception answered and whether the connection is closed. Ordinary refusals (unserved function code, value out of range, handler errors) are not violations.
+- `ResponseAnomalyMetrics` (client) with `ResponseAnomaly` and `ResponseAnomalyKind` (`AnomalyTransactionID`, `AnomalyProtocolID`, `AnomalyDiscarded`): MBAP frames the client skipped and stale bytes the serial framings discarded, which do not show in a request's outcome.
+- `ServerConfig.MaxClientsPerHost`: connections at once from one IP address, handshaking ones included; one beyond it is refused at accept and reported as `RejectPerHostLimit`.
+- `ServerConfig.FirstRequestTimeout`: the idle timeout until the first complete request; reported as `CloseFirstRequestTimeout`.
+- `ServerConfig.FrameTimeout`: the time a request may take from its first byte to its last; reported as `CloseFrameTimeout`.
+- `ServerConfig.Authorizer` (`RequestAuthorizer`, `RequestAuthorizerFunc`, `AuthorizationRequest`, `RequestAccess`): asked about every request right before a handler serves it, with the client's address, role and `ClientRoleErr` (an unusable role extension, as `TLSHandshakeInfo.RoleErr` reports it; nil without one), unit, function code, access kind and the addresses, quantities or file records touched. A refused request never reaches the handler and is answered with Illegal Function (01, V1.1b3 section 7, "not an allowable action for the server"), the exception error the authorizer returned, or nothing for `ErrNoResponse`; an authorizer that panics refuses with Server Device Failure. `ServerMetrics.OnError` receives an error matching the new `ErrNotAuthorized`.
+- `RejectPerHostLimit`, `CloseFirstRequestTimeout` and `CloseFrameTimeout`, with `String` names `"per-host limit"`, `"first request timeout"` and `"frame timeout"`.
+- `examples/security_hooks`: a server forwarding these facts to an application-owned channel without blocking, with a role-based authorizer that refuses writes and state-changing FC08 sub-functions, and the hardening settings.
+- `examples/client_metrics` and `examples/server_metrics`: every client and server observation interface, the ones that predate this release included, as non-blocking counters, with `Config.PDUTap` and `ServerConfig.PDUTap`. Each runs on loopback without a device and has a test.
+
+### Changed
+
+- Server, tcp+tls: a Modbus Role extension with bytes after its UTF8String is invalid: the client is served with no role, and `RoleErr` wraps `ErrInvalidRole`. Up to v1.20.0 the bytes were ignored and the role was served. The extension value is the DER encoding of one value (RFC 5280 section 4.1).
+- `AttemptMetrics.OnAttempt` documentation: `err` is the error of the exchange on the link, nil for any response frame received (an exception response included); the call's error goes to `ClientMetrics.OnError`. Behaviour unchanged.
+- The bundled `modbus-cli` is built on v1.20.0 (was v1.17.0).
+- None of the new settings has a default; the new interfaces are found by type assertion once, in `New` and `NewServer`. Without them nothing changes, on the wire or in the callbacks already reported, apart from the role validation above.
+- Server: `Stop` and `Shutdown` may be called from the new callbacks and from the authorizer, with the same guarantees as from the existing ones; no callback runs once they returned.
 
 ### Documentation
 
-- API.md § 14, OBSERVABILITY.md, SECURITY.md, LIMITATIONS.md (what the events do not cover), ARCHITECTURE.md (the new package and its import rules).
+- API.md (§ 3.1 `ServerConfig`, new § 3.6 "Request authorization", § 4 sentinels, § 6 the new interfaces and constants), ERRORS.md, OBSERVABILITY.md (new "Security-relevant facts": what is reported where, correlation by address, callback order, cost), SECURITY.md ("Opt-in Server Hardening", "Request Authorization", "What the Library Is Not"), LIMITATIONS.md, README.md examples.
 
 ### Tests
 
-- `secevent`: ordering and defaults, a slow sink never blocking `Emit` and the drops announced, merging and its bounds, flush on close, a panicking sink, `Close` from the sink and with a context, the catalogue, the JSON form (golden), the sinks, the context reporter, the policy.
-- `server_events_test.go`: each event from a real connection (served, no request, refused, over the limit, idle, malformed MBAP, protocol error), a handler's context and reports, no reporter without a policy, the TLS peer, `Stop` from the sink and its flush, a shared dispatcher, invalid policies, the policy copied, `ServerConfig` still comparable, an accept error, the mapping of every close reason, a reset without a request, a TLS eviction keeping its connection id, a failed TLS handshake, a connection accepted while stopping, a sink that does not return during `Stop`; per-host merging and the lazy timer in `secevent`; `TestServerFC43_ConformityLevelCapsCategory` on free ports.
+- `security_metrics_test.go`: TLS handshakes completed, failed, timed out, with an invalid role, from a client, with certificate copies, a panicking callback and `Stop` from one; protocol violations by kind and their absence for ordinary refusals; accept errors (`testing/synctest`) and `Stop` from that callback; skipped MBAP frames on a scripted connection, and a panicking anomaly hook that leaves the request's result unchanged; a panicking accept hook; a handshake that could not be started; certificate copies, an encoding that does not parse left out. `internal/transport/anomaly_test.go`: discarded serial bytes. `internal/transport/tcp_security_test.go`: the MBAP header read with a frame-start function (in one read, the first byte alone, after an empty read, a byte with an error), the connection closing or resetting before and inside the header, the last header that could not be framed, a skipped transaction ID reported for its request.
+- `server_authorization_test.go`: `ClientRoleErr` for plain tcp, a valid role, no role and an unusable role, the same for both requests of a connection, never refusing on its own, the handlers' `ClientRole` unchanged. `metrics_attempt_test.go`: an exception response, and a response for another unit, are one `OnAttempt` with `err` nil and one `OnError` with the call's error.
+- `server_dispatch_test.go`: a Modbus Role extension with bytes after its UTF8String, and with two values, is `ErrInvalidRole`.
+- `examples/security_hooks`: the example's policy, which refuses the FC08 sub-functions that change the device's state (0x01, 0x03, 0x04, 0x0A, 0x14), reserved ones and broadcast changes to clients without the operator role.
+- `server_hardening_test.go`: the per-host limit, also while handshaking and under churn; the first-request and frame timeouts, also while a request is served and against each other; defaults off; negative values rejected.
+- `server_authorization_test.go`: the authorizer asked once for every served request and never for those the server answers itself, the request fields per function code, a refusal never reaching the handler, the answers per error kind, a panicking authorizer, `Stop` from it, decisions by role.
+- `bench_security_test.go`: `BenchmarkSecurityHooks`, a loopback FC03 round trip with the hooks, the authorizer and the hardening settings absent and present.
 
 ---
 
 ## v1.20.0
 
-**Date:** 2026-11-21
+**Date:** 2026-11-23
 **Previous release:** v1.19.0
 
-Read Device Identification (FC43/14) gets a command-line operation, and the server answers it at the device's conformity level, as the specification requires. No exported identifier is removed or changed.
-
-### Changed
-
-- **Behaviour change, `Server` FC43/14.** A request for a higher category than the conformity level the handler declares (`DeviceIdentificationResponse.ConformityLevel`) is now answered according to that level: a handler that declares a basic level no longer sends its regular or private objects to a client that asks for the extended category. The response still carries the requested Read Device ID code. A handler that leaves `ConformityLevel` at 0 is not affected: the level is derived from its objects. Specification: Modbus Application Protocol V1.1b3, 6.21 ("it must respond in accordance with its actual conformity level").
+Conformance hardening against the MODBUS Application Protocol Specification V1.1b3: the server answers a request PDU of the wrong length with exception 3 before it closes the connection, rejects the wrong MBAP length of a fixed-size request as soon as it reads the function code, and answers a well-framed request with bad values without closing it; FC08, FC12, FC17, FC20 and FC43 send and accept what their clauses define. No exported identifier is removed or changed; one method is added. Behaviour changes are listed under Changed; each follows a clause of the specification named there. Agreement with the clauses and worked examples named here is not a claim of conformance or certification.
 
 ### Added
 
-- `modbus-cli devid[:basic|regular|extended|<object>]` reads the device identification of the unit (default: basic): the conformity level and one line per object, or JSON with `--json` (`deviceId`, `deviceIdObject`). A number reads that one object by individual access.
+- `ReportServerIDResponse.RunIndicator(serverIDLen int) (on, ok bool)`: reads the run indicator of an FC17 response at the offset after a Server ID whose length the caller knows from the device's documentation (V1.1b3 section 6.13). `ok` is false when `Data` is too short or the byte is neither `0x00` nor `0xFF`.
+- `modbus-cli devid[:basic|regular|extended|<object id>]` (alias `deviceId`): reads the device identification (FC43/14) and prints the conformity level and one line per object; with `--json`, one `deviceId` record and one `deviceIdObject` record per object, the object id under `object`.
+
+### Changed
+
+- Server: a request PDU whose length disagrees with its function code or byte count (FC01..06, FC22, FC24 and FC43/14 shorter or longer than their fixed length; FC07, FC11, FC12 and FC17 with any data; FC08 without a whole sub-function; FC15, FC16, FC23, FC20 and FC21 without their byte count, or with data shorter or longer than it) is answered with exception 3, Illegal Data Value (V1.1b3 section 7: "a fault in the structure of the remainder of a complex request, such as that the implied length is incorrect"), and the connection is then closed (`CloseProtocolError`): on Modbus TCP such a PDU cannot be told from a wrong MBAP length, so the stream may be out of step. Nothing read after it is served. The exception is a best effort: the server half-closes and discards what the client still sends for up to 100 ms before it closes. Up to v1.19.0 such a request closed the connection without an answer, and FC07, FC11 and FC12 ignored their data. `ServerMetrics.OnError` receives an error that matches both `ErrIllegalDataValue` and `ErrProtocolError`.
+- Server: for the function codes whose requests have a fixed size (FC01..07, FC11, FC12, FC17, FC22, FC24) the MBAP length is checked as soon as the function code is read: a request whose MBAP length disagrees is answered as above without waiting for, or taking from the next request, the bytes the length announces. A request whose framing is consistent but whose values are not (a quantity, a byte count that is not the one the quantity asks for while the data matches it, an FC21 sub-request that overruns the byte count, FC08 data of odd length) is answered with its exception and the connection kept. FC15, FC16 and FC23 check their data against their own byte count first, before the quantity and the address range.
+- Server: a request whose function code has the exception bit set (`0x80`..`0xFF`) is not answered, and the connection is kept. Up to v1.19.0 it was answered with exception 1 under the request's own function code (the code with `0x80` OR-ed in is the same code), which reads as an exception response to the function code `0x80` below it. `ServerMetrics.OnError` still receives an error that matches `ErrIllegalFunction`; `ServerPDUTap` reports `Response` nil.
+- A handler that returns `ErrProtocolError` itself still closes the connection, as before. The warning logged when the server closes a connection on a protocol error keeps the text `protocol error, closing link` and now names the function code and the reason.
+- Client, FC08: `DiagnosticRegister` and `BusMessageCount` send the data field `00 00` of section 6.8.1 (`08 00 02 00 00`, `08 00 0B 00 00`); up to v1.19.0 they sent `08 00 02` and `08 00 0B`, which a strict device rejects. `DiagnosticLoopback`, `DiagnosticClearCounters` and `DiagnosticClearOverrunCounterAndFlag` check that the response data is the echo of the request data and return a `*ProtocolError` otherwise; up to v1.19.0 any data was accepted. The generic `Diagnostics` still passes the response data through.
+- Client, FC08: `Diagnostics` with data of odd length is a `*ParameterError` and nothing is sent (section 6.8: "N x 2 Bytes").
+- Server, FC08: a request whose data has an odd length is answered with exception 3 without calling the handler; handler data of odd length is answered with exception 4 and logged.
+- Server, FC17: a `ReportServerIDHandler` that returns no data is answered with exception 4, since a response with Byte Count 0 has no room for the mandatory run indicator (section 6.13); up to v1.19.0 `11 00` was sent.
+- Client, FC12: a response byte count above 70 (6 + 64 event bytes, section 6.10) is a `*ProtocolError`.
+- Server, FC12: a `CommEventLogHandler` that returns more than 64 event bytes is answered with exception 4 (section 6.10: 0-64 bytes); up to v1.19.0 up to 249 were sent. The events are never truncated.
+- Client, FC20: `ReadFileRecords` refuses, with a `*ParameterError` and before anything is sent, sub-requests whose response would exceed the 0xF5-byte response data length (section 6.14): more than 121 registers for one sub-request (`Param` `"RecordLength"`), or a sum of 2 + 2*RecordLength over the sub-requests above 0xF5 (`Param` `"requests"`). Up to v1.19.0 they were sent and a conforming server answered with exception 3.
+- Server, FC43/14: only the conformity levels of section 6.21 are sent (0x01–0x03, 0x81–0x83); a handler `ConformityLevel` other than those and 0 (derive) is answered with exception 4. A stream request is served at the lower of its category and the device's level, under the request's ReadDevId code; up to v1.19.0 objects above the level were served. Individual access to a stream-only level is exception 3, and to an object above the level exception 2.
+- Server, FC43/14: handler objects with a duplicate object ID, or an object longer than 244 bytes, are answered with exception 4 for every request, before any page is built; up to v1.19.0 duplicates were sent, and could make a page name its own start as Next Object ID.
+- Client, FC43/14: a response whose ReadDevId code is above the request's, or not a stream code (1..3) for a stream request, is a `*ProtocolError`; for individual access the code must be 04 and the response must carry exactly the requested object (Number Of Objects 1). A lower stream code, which section 6.21 does not allow ("Same as request ReadDevId code") but a device answering at its own level may send, is still accepted and reported in `Category`, as up to v1.19.0.
+- Client: `ProbeFunction` reports `ProbeException` only for a well-formed exception to the probed function code (code plus 0x80, one byte, 0x01..0x0B); any other exception-shaped response is `ProbeValidationFailed`. Before, an exception to another function code was reported as an exception of the probed one.
 
 ### Documentation
 
-- API.md § 3.5 (conformity level), INTEROPERABILITY.md (FC43/14), `modbus-cli` README, help and shell completion.
+- INTEROPERABILITY.md "How the server treats a request" (the table and the reasoning for exception 3 and for closing on a truncated PDU; FC43 levels and categories; the client's response checks; the worked examples replayed), API.md (server handlers, `CloseProtocolError`, `ServerPDUTap`, FC08, FC12, FC17, FC20, FC43, `ProbeFunction`, FC01/FC02 padding bits), ERRORS.md, LIMITATIONS.md, OBSERVABILITY.md, the `CloseProtocolError` and `ServerPDUExchange.Response` comments.
 
 ### Tests
 
-- `TestServerFC43_ConformityLevelCapsCategory`: basic, regular and extended levels against each category, and a derived level.
-- `TestCLI_DeviceID`, `TestParseDeviceID`: the three categories, individual access, JSON, an unknown object and a failing device.
+- `server_pdu_errors_test.go`: how the server's request errors classify with `errors.Is`; the fixed-length table against the handlers; on one TCP connection, requests with value errors each followed by a valid FC03 that is served; PDU length errors of every function code answered with exception 3 and then closed with `CloseProtocolError`; MBAP lengths that overcount and undercount fixed-size requests, with and without a request behind them, answered at once, with Illegal Function first for an unserved function code, and nothing behind them served; a pipeline in which the requests before a bad one are served and none after it; full pipelines of `serverPipelineDepth` valid requests on one connection; no goroutine left after such closes; a request that arrives while the server drains such a connection, from a client that keeps it open, not keeping it open; MBAP lengths 0, 1, 255 and 0xFFFF, a bad protocol identifier and a frame cut short closing the connection without a wait; all 256 function codes, with and without data, never answered under a function code other than the request's or the request's plus `0x80`. `internal/transport`: the early length check of `ReadFrame`, which leaves the rest of the stream unread.
+- `hostile_server_test.go`, `conformance_adversarial_test.go`, `server_functions_test.go`, `server_dispatch_test.go`, `server_close_reason_test.go`, `server_tap_test.go`: PDU length errors expect exception 3 followed by the close; value errors expect the exception and a connection a following FC03 is served on; exception-bit function codes expect no answer and a usable connection. The chaos fault matrix expects exception 3 for a corrupted request length that still frames, and one failed request after it. `FuzzServerRequest` and `FuzzServerFunctions` accept an unanswered exception-bit request on an open connection, and only that.
+- `client_diagnostics_conformance_test.go`: the request PDU of every FC08 wrapper byte for byte; echo checks of the loopback and the two clear wrappers; odd request data refused before sending; server odd request and handler data; the section 6.8.2 example; FC17 server results (empty, 1, 251, 252 bytes) and client run indicator; FC12 client byte counts 0, 64, 65 and 180 event bytes.
+- `fc43_conformance_test.go`: all 256 handler conformity levels with every ReadDevId code; ReadDevId code × level × basic, regular and extended object sets, stream and individual; stream start beyond the served category restarting at 0; duplicate object IDs within a page, across a page boundary and outside the category; 244- and 245-byte objects; pagination followed from object 0 over empty, 256-object, large-value and unsorted sets; client request bytes; response ReadDevId code, object ID and count checks; the worked examples of section 6.21; a server–client round trip.
+- `client_file_conformance_test.go`: FC20 response sizes (121 ok; 122, 125, 65535 refused; sums of 244 ok and 246 refused), nothing on the wire for a refused request; record 0x270F accepted and 0x2710 and file 0 refused for FC20 and FC21; the section 6.14 example.
+- `server_commeventlog_test.go`: 0, 1, 63, 64 event bytes answered, 65, 249 and 1000 answered with exception 4; the section 6.10 example.
+- `client_probe_exception_test.go`: `ProbeFunction` for an exception to another FC, with two bytes, with none, with code 0x00 and 0xFF; FC01/FC02 padding bits set (ignored) and byte counts too large or too small.
+- `spec_examples_test.go`: the worked examples of sections 6.1–6.6, 6.11, 6.12, 6.16, 6.17 and 6.18, client request bytes and server response bytes.
 
 ---
 

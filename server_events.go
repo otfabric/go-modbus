@@ -61,9 +61,21 @@ type connEvents struct {
 	rep      *secevent.ConnReporter
 	started  time.Time
 	requests atomic.Int64
-	// ended makes the closing events of the connection reported once: by the
+	// end makes the closing events of the connection reported once: by the
 	// connection's goroutine, or by a Shutdown called on it (runShare.final).
-	ended sync.Once
+	end *connEnd
+}
+
+// connEnd reports the outcome of one accepted connection to the security
+// events once, whichever goroutine gets there first: the accept loop (a
+// refusal), the one that evicts its handshake, the connection's own, or a
+// Shutdown called on one of them. A nil connEnd reports nothing.
+type connEnd struct{ once sync.Once }
+
+func (e *connEnd) do(f func()) {
+	if e != nil {
+		e.once.Do(f)
+	}
 }
 
 // eventBase returns the event that carries what every event of a connection
@@ -89,7 +101,7 @@ func (ms *Server) eventBase(id uint64, sock net.Conn) secevent.Event {
 // newConnEvents returns the events of a connection that is about to be served,
 // and its context, which carries the reporter handlers reach through
 // secevent.Report. tlsState is nil on a plain connection.
-func (ms *Server) newConnEvents(run *serverRun, ctx context.Context, id uint64, sock net.Conn, role string, tlsState *tls.ConnectionState) (*connEvents, context.Context) {
+func (ms *Server) newConnEvents(run *serverRun, ctx context.Context, id uint64, end *connEnd, sock net.Conn, role string, tlsState *tls.ConnectionState) (*connEvents, context.Context) {
 	if run.events == nil {
 		return nil, ctx
 	}
@@ -98,7 +110,10 @@ func (ms *Server) newConnEvents(run *serverRun, ctx context.Context, id uint64, 
 	if tlsState != nil {
 		base.Peer.TLS = tlsPeerOf(tlsState)
 	}
-	ce := &connEvents{id: id, rep: secevent.NewConnReporter(run.events, base), started: time.Now()}
+	if end == nil {
+		end = &connEnd{}
+	}
+	ce := &connEvents{id: id, rep: secevent.NewConnReporter(run.events, base), started: time.Now(), end: end}
 	return ce, secevent.NewContext(ctx, ce.rep)
 }
 
@@ -121,6 +136,9 @@ func (ms *Server) emitRefused(run *serverRun, id uint64, sock net.Conn, reason R
 	case RejectMaxClients:
 		e.Kind = secevent.KindConnRejectedLimit
 		e.Detail = fmt.Sprintf("all %d client slots are taken", ms.conf.MaxClients)
+	case RejectPerHostLimit:
+		e.Kind = secevent.KindConnRejectedLimit
+		e.Detail = fmt.Sprintf("the host has %d connections, the limit per host", ms.conf.MaxClientsPerHost)
 	case RejectTLSHandshakeEvicted:
 		e.Kind = secevent.KindTLSHandshakeEvicted
 		e.Detail = "closed to make room for a newer connection before its TLS handshake completed"
@@ -154,7 +172,7 @@ func (ms *Server) emitClosed(run *serverRun, ce *connEvents, reason CloseReason,
 	if ce == nil {
 		return
 	}
-	ce.ended.Do(func() { ms.emitClosedOnce(run, ce, reason, err) })
+	ce.end.do(func() { ms.emitClosedOnce(run, ce, reason, err) })
 }
 
 func (ms *Server) emitClosedOnce(run *serverRun, ce *connEvents, reason CloseReason, err error) {
@@ -169,6 +187,8 @@ func (ms *Server) emitClosedOnce(run *serverRun, ce *connEvents, reason CloseRea
 	switch {
 	case n == 0 && reason == CloseIdleTimeout:
 		emit(secevent.KindConnNoRequest, secevent.ActionDisconnected, "no request within the idle timeout")
+	case n == 0 && reason == CloseFirstRequestTimeout:
+		emit(secevent.KindConnNoRequest, secevent.ActionDisconnected, "no request within the first-request timeout")
 	case n == 0 && (reason == CloseClientClosed || reason == CloseReadFailed):
 		// A read that fails is usually a reset: how connect scanners close.
 		emit(secevent.KindConnNoRequest, secevent.ActionObserved, "the connection ended without a request: "+reason.String())

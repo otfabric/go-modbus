@@ -27,6 +27,7 @@ defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
    - [RequestHandler interface](#33-requesthandler-interface)
    - [Request types](#34-request-types)
    - [Optional handler interfaces (FC07, FC08, FC0B, FC0C, FC17, FC20–FC24, FC43)](#35-optional-handler-interfaces)
+   - [Request authorization](#36-request-authorization)
 4. [Errors](#4-errors) — also [ERRORS.md](ERRORS.md)
 5. [Logging](#5-logging) — also [OBSERVABILITY.md](OBSERVABILITY.md)
 6. [Metrics](#6-metrics) — also [OBSERVABILITY.md](OBSERVABILITY.md)
@@ -464,6 +465,8 @@ coils, err := client.ReadCoils(ctx, 1, 0x0000, 8)
 // coils[0] = coil at address 0, coils[7] = coil at address 7
 ```
 
+The byte count of an FC01/FC02 response must be exactly ceil(quantity/8), else `*ProtocolError`. The unused high bits of the last byte are to be zero (V1.1b3 sections 6.1, 6.2); bits a device leaves set there are ignored, not reported.
+
 #### 16-bit registers
 
 ```go
@@ -687,6 +690,8 @@ fmt.Println("file 4 record 1:", results[0]) // e.g. [0x0DFE 0x0020]
 fmt.Println("file 3 record 9:", results[1]) // e.g. [0x33CD 0x0040]
 ```
 
+The response must fit too: each sub-request is answered with 2 + 2*RecordLength bytes, and their sum, the response data length, is at most 0xF5 (V1.1b3 section 6.14). That is at most 121 registers for one sub-request and fewer in all for several (every sub-response is even, so 244 bytes is the largest sum). Since v1.20.0, requests that ask for more are refused with a `*ParameterError` (`Param` `"RecordLength"` when one sub-request alone is too large, `"requests"` when the sum is) and nothing is sent; up to v1.19.0 they were sent and a conforming server answered with exception 3. The file response length of each sub-response is accepted from 1 upwards: the 0x07 minimum of the response table contradicts the worked example (0x05) and the layout, and is not enforced.
+
 #### Write File Records — FC21
 
 Writes one or more groups of registers to a file on the remote device.
@@ -781,7 +786,9 @@ Sends a FC43 / MEI 0x0E request for a specific category or one object. Pages thr
 | `modbus.DeviceIDExtended` | `0x03` | Extended (+ private objects 0x80–0xFF) |
 | `modbus.DeviceIDIndividual` | `0x04` | Single object (set `startObject` to desired ID) |
 
-For stream access (Basic/Regular/Extended), pass `startObject` as `0x00` to start from the first object. For Individual, pass the desired object ID. If you request a higher category than the device supports, it responds at its actual conformity level.
+For stream access (Basic/Regular/Extended), pass `startObject` as `0x00` to start from the first object. For Individual, pass the desired object ID. If you request a higher category than the device supports, it responds at its actual conformity level, with the objects of that level.
+
+The response's ReadDevId code is to be the request's (V1.1b3 section 6.21, "Same as request ReadDevId code"). For stream access a lower stream code is tolerated, from a device that answers a request above its conformity level with the code of its level, and `DeviceIdentification.Category` reports it; a higher code, or one outside 1..3, is a `*ProtocolError` (since v1.20.0). For individual access (`DeviceIDIndividual`) the code must be 04 and the response must carry exactly one object, the requested one. Number Of Objects is read as the number of objects in that PDU.
 
 **Response types:**
 
@@ -888,6 +895,12 @@ func (mc *Client) SupportsDeviceIdentification(ctx context.Context, unitID uint8
 it never returns a non-nil error for expected probe-negative outcomes — those are
 captured in the `ProbeResult`. Only context cancellation and unsupported probe FCs
 return a non-nil error.
+
+`ProbeException` is reported only for an exception to the probed function: function
+code plus 0x80, exactly one byte, a code 0x01..0x0B. Any other exception-shaped
+response (another function code, a missing or extra byte, code 0x00 or above 0x0B) is
+`ProbeValidationFailed` (since v1.20.0; before, any response with the high bit set and
+a payload was `ProbeException` with its first byte as the code).
 
 ```go
 func (mc *Client) ProbeFunction(ctx context.Context, unitID uint8, fc FunctionCode) (ProbeResult, error)
@@ -1021,11 +1034,13 @@ if err != nil {
 // cl.Events contains 0-64 event bytes (most recent first)
 ```
 
-#### Diagnostics (FC 0x08)
+The event field holds 0-64 bytes (V1.1b3 section 6.10): a response with a byte count above 70 (6 + 64) is a `*ProtocolError` (since v1.20.0).
 
 #### Diagnostics (FC 0x08)
 
 Sends a Diagnostics request with a sub-function code and optional data. The response echoes the sub-function and returns sub-function-specific data. Use **DiagnosticSubFunction** constants for well-known sub-functions.
+
+The data field is a whole number of 16-bit items in both directions (V1.1b3 section 6.8, "N x 2 Bytes"), for vendor sub-functions too. `data` of odd length is a `*ParameterError` (`Method` `"Diagnostics"`, `Param` `"data"`) and nothing is sent (since v1.20.0); like the too-long case below, `AllowedFunctionCodes` and a client that is not open are reported first, and `ClientMetrics` sees `OnRequest` and `OnError`. The response must echo the sub-function; its data is returned as received, whatever its length, so that vendor sub-functions stay readable. The typed wrappers (see "Convenience helpers") check the data of the sub-functions they send.
 
 ```go
 func (mc *Client) Diagnostics(
@@ -1084,7 +1099,7 @@ if err != nil {
 **Example — Return Diagnostic Register:**
 
 ```go
-dr, err := client.Diagnostics(ctx, 1, modbus.DiagReturnDiagnosticRegister, nil)
+dr, err := client.Diagnostics(ctx, 1, modbus.DiagReturnDiagnosticRegister, []byte{0x00, 0x00})
 if err != nil {
     log.Fatal(err)
 }
@@ -1102,9 +1117,14 @@ func (mc *Client) ReportServerID(ctx context.Context, unitID uint8) (*ReportServ
 ```go
 type ReportServerIDResponse struct {
     Data               []byte
-    RunIndicatorStatus *bool  // parsed from last byte: true=ON (0xFF), false=OFF (0x00); nil if not present
+    RunIndicatorStatus *bool  // a guess from the last byte when Data has 2 bytes or more: true for 0xFF, else false
 }
+
+// RunIndicator reads the run indicator of a device whose Server ID is serverIDLen bytes long.
+func (rs *ReportServerIDResponse) RunIndicator(serverIDLen int) (on, ok bool)
 ```
+
+The response is Byte Count, Server ID (device specific), Run Indicator Status and optional Additional Data (V1.1b3 section 6.13). Where the Server ID ends cannot be told from the response, so `Data` (everything after the byte count) is the reliable field. `RunIndicatorStatus` is set when `Data` has at least 2 bytes, true when its last byte is `0xFF` and false otherwise (unchanged from v1.19.0): that is the run indicator of a device without Additional Data, and may be a data byte on one with it. `RunIndicator(serverIDLen)` reads the byte at that offset and reports `ok` false when `Data` is too short or the byte is neither `0x00` nor `0xFF` (since v1.20.0). A response with Byte Count 0, which lacks the mandatory run indicator, is returned with empty `Data`.
 
 **Example:**
 
@@ -1113,23 +1133,29 @@ rs, err := client.ReportServerID(ctx, 1)
 if err != nil {
     log.Fatal(err)
 }
-// rs.Data contains server ID and optional additional data; rs.RunIndicatorStatus indicates ON/OFF when present
+// The device's documentation says its Server ID is 1 byte long.
+if on, ok := rs.RunIndicator(1); ok {
+    fmt.Println("running:", on)
+}
 ```
 
 #### Convenience helpers
 
 ```go
-// FC08 sub-function 0x0000 — loopback test; returns the echoed value.
+// FC08 sub-function 0x0000 — loopback test; the response must echo value.
 func (mc *Client) DiagnosticLoopback(ctx context.Context, unitID uint8, value uint16) (uint16, error)
 
 // FC08 sub-function 0x0002 — read the diagnostic register.
 func (mc *Client) DiagnosticRegister(ctx context.Context, unitID uint8) (uint16, error)
 
-// FC08 sub-function 0x0004 — force the device into listen-only mode (no responses).
-// No response is expected; the method returns nil on success.
+// FC08 sub-function 0x0004 — force the device into listen-only mode.
+// The specification defines no response: a serial device does not answer, and the
+// call fails with ErrRequestTimedOut. A gateway may answer; any normal response is
+// accepted.
 func (mc *Client) DiagnosticForceListenOnlyMode(ctx context.Context, unitID uint8) error
 
-// FC08 sub-function 0x000A — clear all counters and the diagnostic register.
+// FC08 sub-function 0x000A — clear all counters and the diagnostic register;
+// the response must echo 00 00.
 func (mc *Client) DiagnosticClearCounters(ctx context.Context, unitID uint8) error
 
 // FC08 sub-function 0x000B — read the bus message count.
@@ -1145,8 +1171,23 @@ func (mc *Client) DiagnosticServerBusyCount(ctx context.Context, unitID uint8) (
 func (mc *Client) DiagnosticBusCharacterOverrunCount(ctx context.Context, unitID uint8) (uint16, error)
 ```
 
+Every wrapper sends the data field section 6.8.1 gives its sub-function: the loopback its
+value, every other one `00 00`. Request PDUs, for example: `08 00 02 00 00`
+(`DiagnosticRegister`), `08 00 0B 00 00` (`BusMessageCount`), `08 00 0A 00 00`
+(`DiagnosticClearCounters`). Up to v1.19.0 `DiagnosticRegister` and `BusMessageCount` sent
+`08 00 02` and `08 00 0B`, without the data field.
+
 All counter wrappers validate that the response contains exactly 2 data bytes and return a
-`*ProtocolError` if the payload is malformed.
+`*ProtocolError` if the payload is malformed. `DiagnosticLoopback`,
+`DiagnosticClearCounters` and `DiagnosticClearOverrunCounterAndFlag` check that the response
+data is the echo of the request data ("Echo Request Data") and return a `*ProtocolError`
+otherwise; up to v1.19.0 the loopback returned whatever value came back, and the two clear
+wrappers accepted any two bytes. The generic `Diagnostics` checks none of this, for advanced
+and vendor use.
+
+`DiagnosticClearOverrunCounterAndFlag` (0x0014) also expects the echo of `00 00`. No wrapper
+is offered for Restart Communications Option (0x0001) or Change ASCII Input Delimiter
+(0x0003): use `Diagnostics`, which sends the data you give (`00 00` or `FF 00`; `CHAR 00`).
 
 ---
 
@@ -1181,6 +1222,34 @@ type ServerConfig struct {
     // panic refuses the connection. A function serves as one through
     // ClientFilterFunc.
     AllowClient ClientFilter
+
+    // MaxClientsPerHost, when set, limits the tcp and tcp+tls connections
+    // served at once from one remote IP address (port ignored), connections
+    // still in their TLS handshake included. A connection beyond it is closed
+    // as soon as accepted (RejectPerHostLimit); it takes no MaxClients slot
+    // and evicts nothing. Default: 0, no limit. Clients behind one NAT or
+    // proxy share a host. Since v1.21.0.
+    MaxClientsPerHost uint
+
+    // FirstRequestTimeout, when set, replaces Timeout as the idle timeout
+    // until the first complete request has been read (from the end of the
+    // TLS handshake on tcp+tls). A connection that sends nothing is closed
+    // after it (CloseFirstRequestTimeout). Default: 0, Timeout applies;
+    // negative is a configuration error. Since v1.21.0.
+    FirstRequestTimeout time.Duration
+
+    // FrameTimeout, when set, bounds the time from a request's first byte to
+    // its last; a request still incomplete then closes the connection
+    // (CloseFrameTimeout). It applies to every request, also while earlier
+    // ones are served, alongside the idle timeout (the earlier wins).
+    // Default: 0, off; negative is a configuration error. Since v1.21.0.
+    FrameTimeout time.Duration
+
+    // Authorizer, when set, is asked about every request before a handler
+    // method serves it, and can refuse it (§ 3.6). Nil (default) serves
+    // every request. A function serves as one through RequestAuthorizerFunc.
+    // Since v1.21.0.
+    Authorizer RequestAuthorizer
 
     // TLSServerCert is the server certificate and private key (tcp+tls only). Required.
     TLSServerCert *tls.Certificate
@@ -1222,6 +1291,11 @@ type ClientFilterFunc func(remote net.Addr) bool
 stays comparable with `==`, as it was up to v1.17.0. A `ServerConfig` holding a
 `ClientFilterFunc` compiles in a comparison but panics when compared, as two
 functions would.
+
+None of `MaxClientsPerHost`, `FirstRequestTimeout`, `FrameTimeout` and
+`Authorizer` has a default: left at zero, the server behaves exactly as before
+they existed. The library picks no thresholds; [SECURITY.md](SECURITY.md)
+discusses how to choose them.
 
 ### 3.2 Lifecycle
 
@@ -1508,9 +1582,15 @@ served this way. Vendor, user-defined and unknown function codes are not support
 are always answered with `Illegal Function`.
 
 In each case the server parses and validates the request before the handler sees it,
-and encodes the response; a handler only supplies data. A malformed request closes the
-connection; one that is well formed but out of range gets the exception the
-specification prescribes (see [INTEROPERABILITY.md](INTEROPERABILITY.md#how-the-server-treats-a-request)).
+and encodes the response; a handler only supplies data. A request whose PDU is shorter
+or longer than its function code's fields, or than its byte count, is answered with
+Illegal Data Value and the connection is then closed, since the stream may be out of
+step (since v1.20.0; up to v1.19.0 it was closed without an answer); the handler is not
+called, nor for anything pipelined behind it. A request that is well framed but out of
+range gets the exception the specification prescribes and the connection is kept. A
+request whose function code has the exception bit set (`0x80`..`0xFF`) is not answered
+and the connection is kept (see
+[INTEROPERABILITY.md](INTEROPERABILITY.md#how-the-server-treats-a-request)).
 
 #### Serial-line function codes (FC07, FC0B, FC0C)
 
@@ -1552,6 +1632,10 @@ type CommEventLogRequest struct {
 These handlers follow the same transport-neutral policy as the client: they are dispatched
 regardless of transport type, since gateways commonly forward these PDUs over TCP/UDP.
 
+At most 64 event bytes fit an FC12 response (V1.1b3 section 6.10). A `CommEventLogHandler`
+that returns more is answered with Server Device Failure and the failure logged (since
+v1.20.0; up to v1.19.0, up to 249 were sent); the events are never truncated.
+
 #### Diagnostics (FC08)
 
 ```go
@@ -1573,7 +1657,15 @@ The handler returns the response data; the server echoes the sub-function in fro
 For Return Query Data (0x0000) echo `req.Data`; for the counters return the counter as two
 big-endian bytes. Return `ErrIllegalFunction` for a sub-function the device does not have.
 A serial-line device does not answer Force Listen Only Mode (0x0004): return
-`ErrNoResponse` to behave like one. At most 250 data bytes fit in a response.
+`ErrNoResponse` to behave like one. The server keeps no listen-only state of its own; a
+handler that emulates one decides which later requests it answers. At most 250 data bytes
+fit in a response.
+
+The data field is N x 2 bytes in both directions (V1.1b3 section 6.8). Since v1.20.0 a
+request whose data has an odd length is answered with Illegal Data Value (exception 3,
+the "Data Value == OK" step of figure 18) without calling the handler, and data the handler
+returns with an odd length is not sent: the request is answered with Server Device Failure
+and the failure logged. Vendor sub-functions reach the handler like the others.
 
 #### Report Server ID (FC17, 0x11)
 
@@ -1584,9 +1676,14 @@ type ReportServerIDHandler interface {
 ```
 
 `ReportServerIDRequest` carries `ClientAddr`, `ClientRole`, `UnitID` and `FunctionCode`.
-The handler returns the device-specific payload, by convention the server ID, a run
-indicator byte (0xFF on, 0x00 off) and optional additional data; the server adds the byte
-count. At most 251 bytes fit.
+The handler returns everything after the byte count, in the order of V1.1b3 section 6.13:
+the Server ID (device specific; at least one byte is advisable), the Run Indicator Status
+byte (0x00 OFF, 0xFF ON) and optional Additional Data. The server adds the byte count. It
+cannot tell where the Server ID ends, so it does not check the run indicator; it does check
+that the mandatory run indicator can be there: since v1.20.0 an empty result is answered
+with Server Device Failure rather than a response with Byte Count 0. At most 251 bytes fit.
+A device with Additional Data should document the length of its Server ID, so that clients
+can read the run indicator with `ReportServerIDResponse.RunIndicator`.
 
 #### File records (FC20, FC21)
 
@@ -1705,6 +1802,112 @@ supported; other MEI types return `Illegal Function`, an
 out-of-range Read Device ID code returns `Illegal Data Value`, and individual access to an
 unknown object returns `Illegal Data Address`.
 
+Since v1.20.0: `ConformityLevel` must be 0x01–0x03 (stream access only) or 0x81–0x83
+(stream and individual access), or 0 to let the server derive one; any other value is
+answered with Server Device Failure and logged. The server serves a stream request at the
+lower of the requested category and the level's (a basic device asked for regular
+identification answers with its basic objects, under the request's ReadDevId code 02);
+objects above the level are not served. Individual access to a device whose level lacks
+0x80 is answered with Illegal Data Value (03); to an object the device does not have, or
+that lies above its level, with Illegal Data Address (02). `Objects` must not contain an
+object ID twice, and no object may be longer than 244 bytes (it must fit a response of its
+own); either is answered with Server Device Failure for every FC43 request and logged. The
+mandatory basic objects (0x00–0x02) are not checked.
+
+### 3.6 Request authorization
+
+Since v1.21.0. `ServerConfig.Authorizer` enforces an application's access rules
+at the server's boundary, for example by the role of a `tcp+tls` client,
+instead of in every handler method.
+
+```go
+type RequestAuthorizer interface {
+    AuthorizeRequest(ctx context.Context, req *AuthorizationRequest) error
+}
+
+type RequestAuthorizerFunc func(ctx context.Context, req *AuthorizationRequest) error
+
+type RequestAccess uint8
+
+const (
+    AccessRead      RequestAccess = iota + 1 // FC01, FC02, FC03, FC04, FC20, FC24
+    AccessWrite                              // FC05, FC06, FC15, FC16, FC21, FC22
+    AccessReadWrite                          // FC23
+    AccessDiagnostic                         // FC07, FC08, FC11, FC12, FC17, FC43
+)
+
+type AuthorizationRequest struct {
+    ConnectionID   ConnectionID // since v1.22.0; see § 6 "Connection identity"
+    ClientAddr     string // remote host:port
+    ClientRole     string // tcp+tls: role of the verified certificate; else empty
+    ClientRoleErr  error  // tcp+tls: wraps ErrInvalidRole for an unusable role extension; else nil
+    UnitID         uint8  // as sent; 0 (broadcast) gets no meaning of its own
+    FunctionCode   FunctionCode
+    Access         RequestAccess
+    SubFunction    uint16 // FC08 sub-function, FC43 MEI type
+    HasSubFunction bool
+    ReadAddr       uint16
+    ReadQuantity   uint16
+    WriteAddr      uint16
+    WriteQuantity  uint16
+    FileRecords    []FileRecordRequest // FC20, FC21
+}
+```
+
+| Function code | Fields set |
+|---|---|
+| FC01–FC04 | `ReadAddr`, `ReadQuantity` |
+| FC05, FC06, FC22 | `WriteAddr`, `WriteQuantity` (1) |
+| FC15, FC16 | `WriteAddr`, `WriteQuantity` |
+| FC23 | `ReadAddr`, `ReadQuantity`, `WriteAddr`, `WriteQuantity` |
+| FC24 | `ReadAddr` (FIFO pointer address) |
+| FC20, FC21 | `FileRecords` (for FC21, `RecordLength` is the registers written) |
+| FC08, FC43 | `SubFunction`, `HasSubFunction` |
+| FC07, FC11, FC12, FC17 | none |
+
+`AuthorizeRequest` is called once for every request the server would hand to a
+handler method: after framing, structure and value checks, and after the
+server checked that a handler serves the function code, right before the
+handler call, with the connection's context. Requests the server answers
+itself (an exception for a malformed request, Illegal Function for a function
+code no handler serves) do not reach it. `FC08` sub-functions are not
+classified further: the authorizer sees `SubFunction` and decides.
+
+`ClientRole` and `ClientRoleErr` together tell the four cases apart:
+
+| Client | `ClientRole` | `ClientRoleErr` |
+|---|---|---|
+| `tcp+tls`, certificate with a valid role | the role | nil |
+| `tcp+tls`, certificate without a role extension | `""` | nil |
+| `tcp+tls`, certificate with an unusable role extension | `""` | matches `ErrInvalidRole` (the connection's `TLSHandshakeInfo.RoleErr`) |
+| `tcp` | `""` | nil |
+
+`ClientRoleErr` is the same for every request of a connection. The server
+refuses nothing because of it, and the handlers' `ClientRole` is unchanged:
+whether to refuse a client with an unusable role, while serving one without a
+role, is the authorizer's decision.
+
+`nil` serves the request. Any other error refuses it: the handler is not
+called, so the request has no effect, and:
+
+| The authorizer returns | The client gets |
+|---|---|
+| an error matching an exception error (`ErrIllegalFunction` … `ErrGWTargetFailedToRespond`) | that exception |
+| an error matching `ErrNoResponse` | no answer; the connection is kept |
+| any other error | Illegal Function (01): "not an allowable action for the server", MODBUS Application Protocol V1.1b3 § 7 |
+| a panic | Server Device Failure (04); logged at error level with its stack |
+
+`ServerMetrics.OnError` receives an error that matches `ErrNotAuthorized` and
+the exception error answered, and wraps the authorizer's. `ServerConfig.PDUTap`
+sees the request and the exception. Refusals are logged at debug level.
+
+The authorizer runs on the connection's goroutine with no lock held: it must
+be safe for concurrent use and return quickly. It may call `Stop` or
+`Shutdown`; the request is then not answered. `RequestAccess` has a `String`
+method (`"read"`, `"write"`, `"read/write"`, `"diagnostic"`).
+
+Example: [examples/security_hooks/security_hooks.go](examples/security_hooks/security_hooks.go).
+
 ---
 
 ## 4. Errors
@@ -1743,6 +1946,8 @@ var (
     ErrSunSpecModelChainInvalid      // malformed SunSpec model chain: no progress, or a model that does not fit in the address space
     ErrSunSpecModelChainLimitExceeded // SunSpec model chain exceeded MaxAddressSpan
     ErrNoResponse                     // server handlers only: leave the request unanswered
+    ErrNotAuthorized                  // server: ServerConfig.Authorizer refused the request (ServerMetrics.OnError)
+    ErrInvalidRole                    // server: unusable Modbus Role extension (TLSHandshakeInfo.RoleErr)
 )
 ```
 
@@ -1987,7 +2192,10 @@ conf.Logger = &zapAdapter{l: zapLogger.Sugar()}
 
 ## 6. Metrics
 
-Short guide: **[OBSERVABILITY.md](OBSERVABILITY.md)**.
+Short guide: **[OBSERVABILITY.md](OBSERVABILITY.md)**. Runnable examples:
+[client_metrics](examples/client_metrics/client_metrics.go),
+[server_metrics](examples/server_metrics/server_metrics.go),
+[security_hooks](examples/security_hooks/security_hooks.go).
 
 Attach metric callbacks via the `Metrics` field of `Config` or
 `ServerConfig`. All methods fire at the **request level** (not per-attempt —
@@ -2001,6 +2209,11 @@ on a buffered channel).
 |---|---|---|
 | `ClientMetrics`, `AttemptMetrics` | the goroutine that called the client method | is stopped there and logged at error level with its stack, through `Config.Logger`. The request goes on as if the method had returned; its result is unchanged. Up to v1.15.3 it unwound into the caller |
 | `ServerMetrics`, `ConnectionMetrics` | the goroutine that serves the client's connection; the accept loop for `ConnectionMetrics` | is stopped there and logged at error level with its stack, as for a handler method. The request is served and answered as if the method had returned, and the other methods are still called for it |
+| `TLSHandshakeMetrics`, `ProtocolViolationMetrics` (server) | the connection's goroutine | is stopped there and logged; the server goes on as if it had returned |
+| `AcceptErrorMetrics` | the accept loop | is stopped there and logged; the server goes on as if it had returned |
+| `TLSHandshakeMetrics` (client), `ResponseAnomalyMetrics` | the goroutine that dials, or that runs the request | is stopped there and logged through `Config.Logger`; the dial or the request goes on unchanged |
+| `ServerConnectionMetrics` | the accept loop (rejected) or the connection's goroutine | is stopped there and logged; the server goes on as if it had returned |
+| `ClientConnectionMetrics` | the goroutine of the `Open`, request or `Close` that caused the event | is stopped there and logged through `Config.Logger`; the client goes on unchanged |
 
 `ServerMetrics` methods get the unit ID and the function code as the client sent
 them. `OnRequest` is called before the server has checked that it serves the
@@ -2010,7 +2223,13 @@ it without a bound.
 `ClientMetrics` methods may call the client, `Close` included; `AttemptMetrics`
 methods run while the request holds its connection and must not make requests on
 the same client. `ServerMetrics` and `ConnectionMetrics` methods may call `Stop`
-or `Shutdown` ([§ 3.2](#32-lifecycle)).
+or `Shutdown` ([§ 3.2](#32-lifecycle)); so may the server-side optional
+interfaces below. No callback runs once `Stop` or `Shutdown` has returned.
+
+The optional interfaces are found by a type assertion on the value assigned to
+`Metrics`, once, in `New` or `NewServer`. A value that implements none of them
+is called exactly as before; none of them adds a method to `ClientMetrics` or
+`ServerMetrics`.
 
 ### `ClientMetrics`
 
@@ -2045,7 +2264,9 @@ dial within a retried request.
 ```go
 type AttemptMetrics interface {
     // Called after each transport attempt (including the first).
-    // attempt is 0-based. err is nil on success.
+    // attempt is 0-based. err is the error of the exchange on the link
+    // (transport error, timeout, unreadable frame); nil when a response
+    // frame was received, an exception response included.
     OnAttempt(unitID uint8, functionCode FunctionCode, attempt int, duration time.Duration, err error)
 
     // Called when the engine re-dials the transport between retries.
@@ -2053,6 +2274,12 @@ type AttemptMetrics interface {
     OnRetryDial(attempt int, duration time.Duration, err error)
 }
 ```
+
+`OnAttempt` measures the link, `ClientMetrics` the outcome of the call: a
+request the device answers with an exception is one `OnAttempt` with `err` nil
+and one `OnError` with the `*ExceptionError`. The same holds for a response
+with another unit ID or one the method rejects (a wrong byte count or echo).
+Only an attempt that failed on the link, and so may be retried, has an error.
 
 ### `ServerMetrics`
 
@@ -2087,6 +2314,7 @@ const (
     RejectMaxClients          RejectReason = iota + 1 // closed as soon as accepted: every MaxClients slot taken
     RejectTLSHandshakeEvicted                         // tcp+tls: handshake not completed, closed to make room
     RejectNotAllowed                                  // closed as soon as accepted: ServerConfig.AllowClient refused it
+    RejectPerHostLimit                                // closed as soon as accepted: its host had MaxClientsPerHost connections (v1.21.0)
 )
 ```
 
@@ -2096,12 +2324,12 @@ connection it closes to keep within `MaxClients`: a connection it accepted when
 every slot was taken (on `tcp+tls`, by connections that completed their
 handshake), a `tcp+tls` connection whose handshake had not completed, closed
 to make room for a newer one, and a connection `ServerConfig.AllowClient`
-refused. `addr` is its remote `host:port`. Connections
+refused, or that `MaxClientsPerHost` refused. `addr` is its remote `host:port`. Connections
 accepted while the server is stopping, and connections closed for any other
 reason, are not reported. The method runs on the accept loop after the
 connection was closed, with no lock held, and delays the next `Accept`: it must
 not block. `RejectReason` has a `String` method (`"max clients"`, `"tls
-handshake evicted"`, `"not allowed"`).
+handshake evicted"`, `"not allowed"`, `"per-host limit"`).
 
 ### `ConnectionLifecycleMetrics` (optional, server)
 
@@ -2134,10 +2362,12 @@ const (
     CloseClientClosed   CloseReason = iota + 1 // read ended with io.EOF, or io.ErrUnexpectedEOF mid-request
     CloseIdleTimeout                           // no complete request within Timeout (err wraps os.ErrDeadlineExceeded)
     CloseMalformedFrame                        // MBAP header not framable: ErrInvalidMBAPLength, ErrUnknownProtocolID
-    CloseProtocolError                         // a request violated the protocol: ErrProtocolError
+    CloseProtocolError                         // a request PDU of the wrong length (after exception 3), or a handler that returned ErrProtocolError: ErrProtocolError
     CloseWriteFailed                           // a response could not be written within Timeout
     CloseReadFailed                            // any other read error, a connection reset for example
     CloseServerStopped                         // Shutdown or Stop (err: the closed socket's, typically net.ErrClosed)
+    CloseFirstRequestTimeout                   // no complete request within FirstRequestTimeout (err wraps os.ErrDeadlineExceeded; v1.21.0)
+    CloseFrameTimeout                          // a request not complete within FrameTimeout of its first byte (err wraps os.ErrDeadlineExceeded; v1.21.0)
 )
 ```
 
@@ -2152,7 +2382,241 @@ nil. When causes race (a client that leaves while its response is being
 written), the first one the server saw is reported. It runs on the connection's
 goroutine; a panic is logged and the server goes on. `CloseReason` has a
 `String` method (`"client closed"`, `"idle timeout"`, `"malformed frame"`,
-`"protocol error"`, `"write failed"`, `"read failed"`, `"server stopped"`).
+`"protocol error"`, `"write failed"`, `"read failed"`, `"server stopped"`,
+`"first request timeout"`, `"frame timeout"`). A response the client did not read
+in time is `CloseWriteFailed` with an `err` matching `os.ErrDeadlineExceeded`.
+
+### Connection identity and lifecycle (since v1.22.0)
+
+```go
+type ConnectionID uint64 // String(): decimal
+
+type ServerConnectionMetrics interface { // optional, on ServerConfig.Metrics
+    OnServerConnection(ev ServerConnectionEvent)
+}
+
+type ServerConnectionEvent struct {
+    Kind         ServerConnectionEventKind // ServerConnectionRejected, ServerConnectionOpened, ServerConnectionClosed
+    ConnectionID ConnectionID
+    RemoteAddr   string
+    LocalAddr    string
+    Role         string        // tcp+tls; Opened and Closed
+    RoleErr      error         // as TLSHandshakeInfo.RoleErr
+    RejectReason RejectReason  // Rejected
+    CloseReason  CloseReason   // Closed
+    Err          error         // Closed: the error that ended the connection, never nil
+    Age          time.Duration // Closed: time since Opened
+}
+
+type ClientConnectionMetrics interface { // optional, on Config.Metrics
+    OnClientConnection(ev ClientConnectionEvent)
+}
+
+type ClientConnectionEvent struct {
+    Kind          ClientConnectionEventKind // ClientConnectionDialed, ClientConnectionDiscarded, ClientConnectionClosed
+    ConnectionID  ConnectionID
+    Target        string           // endpoint of the URL: host:port or serial device
+    Pooled        bool             // a connection of the pool (MaxConns > 1 on tcp, rtuovertcp, rtuoverudp, udp or asciiovertcp)
+    Origin        ConnectionOrigin // Dialed: ConnectionOriginOpen, ConnectionOriginOnDemand, ConnectionOriginRedial
+    DiscardReason DiscardReason    // Discarded: DiscardTransportError, DiscardSuspectResponse, DiscardRetry, DiscardOpenFailed
+    Duration      time.Duration    // Dialed: the dial, TLS handshake included
+    Age           time.Duration    // Discarded, Closed: time since the dial
+    Err           error            // Dialed: nil on success; Discarded: the cause (nil for a suspect response)
+}
+```
+
+A `ConnectionID` is allocated once per transport connection (TCP, TLS, UDP
+socket or serial port), before a client dials it or as soon as a server accepts
+it, and stays the same for its life. Failed dials, rejected connections and
+failed TLS handshakes have one too. Identifiers come from one counter shared by
+every client and server of the process, starting at 1: unique within the
+process for as long as it runs, never reused, meaningless across processes and
+restarts. 0 means no connection. The same identifier is in every report of the
+connection:
+
+| Report | Field |
+|---|---|
+| server: `TLSHandshakeInfo`, `ProtocolViolation`, `AuthorizationRequest`, `ServerPDUExchange`, `ServerConnectionEvent` | `ConnectionID` |
+| client: `TLSHandshakeInfo`, `ResponseAnomaly`, `PDUExchange`, `ClientConnectionEvent` | `ConnectionID` |
+
+The two ends of one TCP connection have different identifiers (each process,
+or each side in one process, allocates its own); correlate them by address.
+
+**Do not use a `ConnectionID` as a metric label.** Every connection has a new
+one, so a Prometheus label (or any per-value series) grows without bound. It is
+for logs, traces and audit records; count events by `Kind`, `RejectReason`,
+`CloseReason`, `Origin` or `DiscardReason` instead.
+
+`ServerConnectionMetrics` is the detailed form of `ConnectionMetrics`,
+`ConnectionLifecycleMetrics` and `ConnectionCloseMetrics`, which keep their
+signatures and are still called: `Rejected` right after `OnConnectionRejected`,
+`Opened` right after `OnConnectionOpened`, `Closed` after
+`OnConnectionCloseReason`, for the same connections. A `tcp+tls` connection
+whose handshake fails is neither opened nor closed; `TLSHandshakeMetrics`
+reports it with its `ConnectionID`. A `Shutdown` or `Stop` called from one of
+the callbacks of a connection ends that connection's callbacks.
+
+`ClientConnectionMetrics` covers the single connection and the pool:
+
+- `Dialed` for every dial, failed ones included: `ConnectionOriginOpen` for
+  `Open` (the single connection, or each of a pool's `MinConns`, pre-warmed),
+  `ConnectionOriginOnDemand` for a pool dial by a request that found no idle
+  connection, `ConnectionOriginRedial` for a re-dial of the single connection
+  (the same dials as `AttemptMetrics.OnRetryDial`).
+- `Discarded` for a connection closed because of a failure: an exchange that
+  failed (`DiscardTransportError`; a serial single connection is kept after an
+  error that leaves it usable), a response showing that requests and responses
+  are out of step (`DiscardSuspectResponse`), the single connection dropped
+  before a retry (`DiscardRetry`), or a pre-warmed connection closed because a
+  later pre-warm dial failed (`DiscardOpenFailed`).
+- `Closed` for a connection closed by the shutdown of the client: `Close`, a
+  connection released into a pool that is closing, a dial that ended after
+  `Close`, an `Open` that lost a race with `Close`. A normal end, never a
+  failure.
+
+Every connection dialled successfully ends with exactly one `Discarded` or
+`Closed` once the client is closed; a failed dial has no end. No event pairs an
+old connection with its replacement: a pool does not dial for a given
+connection (any waiting request may take a freed slot, or none), so there is no
+relationship to report; correlate by time and `Target` if needed.
+
+The callbacks run synchronously with none of the client's or the server's
+locks held; they must not block, and a client callback must not make requests
+on the same client. A client callback may call `Close`: the connections a
+`Close` closes are reported once it has closed them all, so a `Close` called
+from the callback returns at once, and a `Close` called concurrently may
+return before they are reported.
+
+### `TLSHandshakeMetrics` (optional, server and client)
+
+Since v1.21.0.
+
+```go
+type TLSHandshakeMetrics interface {
+    OnTLSHandshake(info TLSHandshakeInfo)
+}
+
+type TLSHandshakeInfo struct {
+    ConnectionID            ConnectionID  // since v1.22.0
+    LocalAddr, RemoteAddr   string
+    Err                     error         // nil: completed and verified
+    Duration                time.Duration
+    Version, CipherSuite    uint16        // negotiated; 0 if not reached
+    ServerName              string        // SNI
+    PeerCertificates        []*x509.Certificate // the receiver's copies, leaf first
+    Verified                bool
+    Role                    string        // server only: as ClientRole
+    RoleErr                 error         // server only: wraps ErrInvalidRole for an unusable Role extension
+}
+```
+
+On a server, `OnTLSHandshake` is called once for every admitted `tcp+tls`
+connection (not refused through `AllowClient`, `MaxClients` or
+`MaxClientsPerHost`) when its handshake ends: completed, failed, timed out
+after `TLSHandshakeTimeout`, or cut short by eviction or by the server
+stopping. It runs before `OnConnectionOpened`. On a client it is called for
+every handshake of a dial (`Open`, a re-dial, a pool connection), before the
+connection is used; it must not make requests on the same client.
+`PeerCertificates` are parsed afresh for each call from copies of their DER
+encoding. `Role` empty with `RoleErr` nil is a certificate without a role;
+`RoleErr` set is one whose role extension the server could not use (more than
+one, or not exactly one DER UTF8String, bytes after it included) — the client
+is then served with no role, as before (except for bytes after the
+UTF8String, which v1.20.0 ignored).
+
+### `AcceptErrorMetrics` (optional, server)
+
+Since v1.21.0.
+
+```go
+type AcceptErrorMetrics interface {
+    OnAcceptError(err error, retryIn time.Duration)
+}
+```
+
+Called for every failed `Accept` while the server is not stopping (no file
+descriptors left, for example), with the wait before the next attempt. It runs
+on the accept loop and delays it.
+
+### `ProtocolViolationMetrics` (optional, server)
+
+Since v1.21.0.
+
+```go
+type ProtocolViolationMetrics interface {
+    OnProtocolViolation(v ProtocolViolation)
+}
+
+type ProtocolViolation struct {
+    ConnectionID           ConnectionID // since v1.22.0
+    ClientAddr, ClientRole string
+    TransactionID          uint16 // MBAP header as received
+    ProtocolID             uint16
+    Length                 uint16
+    UnitID                 uint8
+    FunctionCode           FunctionCode
+    HasFunctionCode        bool          // false: header not framable, nothing after it read
+    Err                    error
+    Exception              ExceptionCode // the answer decided; 0: none
+    Closed                 bool          // the server decided to close the connection because of it
+}
+```
+
+| Violation | `Err` | Answer | Connection |
+|---|---|---|---|
+| MBAP length outside 2–254, or protocol ID ≠ 0 | `ErrInvalidMBAPLength`, `ErrUnknownProtocolID` | none | closed |
+| PDU shorter or longer than its function code or byte count says | matches `ErrProtocolError` and `ErrIllegalDataValue` | exception 3 (1 for an unserved function code) | closed |
+| complete PDU whose fields contradict one another | matches `ErrProtocolError` and `ErrIllegalDataValue` | exception 3 | kept |
+| function code with the exception bit set (0x80–0xFF) | matches `ErrIllegalFunction` | none | kept |
+
+Not reported here: a function code the server does not serve, a value out of
+range, a refusal by the authorizer, and handler errors (`ErrProtocolError`
+included). Those are ordinary outcomes, reported to `ServerMetrics.OnError`.
+A framed request reported here is also reported to `OnError`, before this
+call; `ConnectionCloseMetrics` reports a close it caused. `Exception` and
+`Closed` are what the server decided: the call runs before the answer is
+written and the connection closed, so an answer that could not be delivered
+shows only in `ConnectionCloseMetrics` (`CloseWriteFailed`,
+`CloseClientClosed`). The server does not
+interpret violations: what counts as hostile is the receiver's decision.
+
+### `ResponseAnomalyMetrics` (optional, client)
+
+Since v1.21.0.
+
+```go
+type ResponseAnomalyMetrics interface {
+    OnResponseAnomaly(a ResponseAnomaly)
+}
+
+type ResponseAnomalyKind uint8
+
+const (
+    AnomalyTransactionID ResponseAnomalyKind = iota + 1 // MBAP frame with another transaction ID, skipped
+    AnomalyProtocolID                                   // MBAP frame with protocol ID ≠ 0, skipped
+    AnomalyDiscarded                                    // serial framings: stale bytes discarded before the request was written
+)
+
+type ResponseAnomaly struct {
+    Kind                  ResponseAnomalyKind
+    ConnectionID          ConnectionID // since v1.22.0
+    UnitID                uint8
+    FunctionCode          FunctionCode
+    ExpectedTransactionID uint16
+    TransactionID         uint16
+    ProtocolID            uint16
+    Discarded             int
+}
+```
+
+Reports what the client tolerated while waiting for a response and which
+therefore does not show in the request's outcome. Responses that fail a
+request (bad CRC or LRC, truncated frame, another unit ID, wrong echo, an
+exception) are reported through its error, not here. It runs while the
+request holds its connection: it must not block nor make requests on the same
+client. A transaction ID correlates a response with its request; it is not
+protection against replay. `ResponseAnomalyKind` has a `String` method
+(`"transaction id"`, `"protocol id"`, `"discarded"`).
 
 ### `ServerPDUTap` (server)
 
@@ -2163,6 +2627,7 @@ client asked and was answered; `ServerMetrics` stays the place for counting.
 
 ```go
 type ServerPDUExchange struct {
+    ConnectionID ConnectionID // since v1.22.0
     ClientAddr string    // remote host:port, as the handlers receive it
     ClientRole string    // tcp+tls role; empty on tcp
     UnitID     uint8
@@ -2189,8 +2654,14 @@ type ServerPDUTapFunc func(ctx context.Context, ex ServerPDUExchange)
 - The server's own answers are reported too: Illegal Function for a function
   code no handler serves, Server Device Failure for a handler that failed.
 - `Response` is nil when nothing is sent: a handler that returned
-  `ErrNoResponse`, or a request that violated the protocol (the connection is
-  then closed, reported as `CloseProtocolError`).
+  `ErrNoResponse`, a request whose function code has the exception bit set
+  (`0x80`..`0xFF`, the connection is kept), or a handler that returned
+  `ErrProtocolError` (the connection is then closed, reported as
+  `CloseProtocolError`). A request PDU of the wrong length is answered with
+  Illegal Data Value, which the tap reports, before the connection is closed.
+  When the server rejected its MBAP length as soon as it read the function
+  code (the fixed-size function codes), `Request` holds the function code
+  alone: the rest was not read.
 - Not reported: bytes the server cannot frame as a request
   (`CloseMalformedFrame`), and anything after a `Shutdown` called from one of
   the connection's own callbacks (the request whose handler called it included).
@@ -2214,6 +2685,7 @@ it again later; `ClientMetrics` stays the place for counting outcomes.
 
 ```go
 type PDUExchange struct {
+    ConnectionID ConnectionID // since v1.22.0: the connection the response came from
     UnitID   uint8
     Request  []byte    // request PDU as sent (copy, owned by the tap)
     Response []byte    // response PDU as received (copy); exception: FC | 0x80
@@ -3168,9 +3640,9 @@ catalogue). Severity is the default; `Action` says what the server did.
 |---|---|---|
 | `conn.accepted` | info | every accepted connection, before any check on it (on `tcp+tls`, before the handshake) |
 | `conn.unexpected` | warning | `AllowClient` refused the peer (rejected) |
-| `conn.rejected_limit` | warning | every `MaxClients` slot was taken (rejected) |
+| `conn.rejected_limit` | warning | every `MaxClients` slot was taken, or the host reached `MaxClientsPerHost` (rejected) |
 | `tls.handshake_evicted` | notice | a connection that had not completed its TLS handshake was closed to make room (rejected) |
-| `conn.no_request` | notice | a connection ended (closed or reset by the peer: observed) or idled out (disconnected) without one request read from it: a connect scan, a probe |
+| `conn.no_request` | notice | a connection ended (closed or reset by the peer: observed) or idled out, `FirstRequestTimeout` included (disconnected), without one request read from it: a connect scan, a probe |
 | `conn.idle_timeout` | info | a connection that had sent requests idled for `Timeout` (disconnected) |
 | `proto.bad_mbap` | warning | an MBAP header the server cannot frame (disconnected) |
 | `proto.bad_pdu` | warning | a request that violated the protocol: a PDU whose length does not match its function code (disconnected) |
@@ -3180,7 +3652,7 @@ catalogue). Severity is the default; `Action` says what the server did.
 | `meta.events_dropped` | warning | `Count` events were lost to a full queue |
 | `meta.sink_panic` | warning | the sink did not return normally |
 
-A connection id (`Event.ConnID`, from `secevent.NextConnID`) ties the events of
+A connection id (`Event.ConnID`, the connection's `ConnectionID`; `secevent.NextConnID` draws from the same counter) ties the events of
 one connection together; events that belong to none have id 0. Every
 `conn.accepted` is followed by exactly one `conn.closed`, `conn.unexpected`,
 `conn.rejected_limit` or `tls.handshake_evicted` with its id (merging aside),

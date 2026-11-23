@@ -17,4 +17,7 @@ type Response struct {
 	FunctionCode  uint8
 	Payload       []byte
 	TransactionID uint16
+	// ConnectionID identifies the connection the response came from (see
+	// internal/connid); set by the session engine, 0 when unknown.
+	ConnectionID uint64
 }

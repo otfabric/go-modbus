@@ -10,15 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
+	"github.com/otfabric/go-modbus/internal/connid"
 	inttrans "github.com/otfabric/go-modbus/internal/transport"
-	"github.com/otfabric/go-modbus/secevent"
 )
 
 // The accept loop waits after an Accept that failed before it tries again: 5 ms
@@ -62,6 +62,11 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			backoff = nextAcceptBackoff(backoff)
 			ms.logger.Warningf("failed to accept client connection (next attempt in %v): %v", backoff, err)
 			ms.emitAcceptError(run, err, backoff)
+			ms.reportAcceptError(err, backoff)
+			if share.released.Load() {
+				// A Shutdown called from OnAcceptError.
+				return
+			}
 			// The wait ends early when the server stops.
 			timer := time.NewTimer(backoff)
 			select {
@@ -73,19 +78,17 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			continue
 		}
 		backoff = 0
-
-		var cid uint64
+		id := ConnectionID(connid.Next())
+		// end reports the outcome of sock to the security events once: below,
+		// from the connection's goroutine, from the eviction of its handshake,
+		// or from a Shutdown that a callback of this loop calls before then
+		// (runShare.final). Nil when the run reports no events.
+		var end *connEnd
 		if run.events != nil {
-			cid = secevent.NextConnID()
-			ms.emitAccepted(run, cid, sock)
-		}
-		// end reports the outcome of sock once: below, or from a Shutdown that
-		// a callback of this loop calls before then (runShare.final).
-		var ended sync.Once
-		end := func(f func()) { ended.Do(f) }
-		if cid != 0 {
+			end = &connEnd{}
+			ms.emitAccepted(run, uint64(id), sock)
 			share.setFinal(func() {
-				end(func() { ms.emitUnserved(run, cid, sock, "closed unserved: the server is stopping", nil) })
+				end.do(func() { ms.emitUnserved(run, uint64(id), sock, "closed unserved: the server is stopping", nil) })
 			})
 		}
 
@@ -99,36 +102,43 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			addr := sock.RemoteAddr().String()
 			ms.logger.Warningf("rejecting %v: not allowed", addr)
 			_ = sock.Close()
-			end(func() { ms.emitRefused(run, cid, sock, RejectNotAllowed) })
-			ms.reportRejected(addr, RejectNotAllowed)
+			end.do(func() { ms.emitRefused(run, uint64(id), sock, RejectNotAllowed) })
+			ms.reportRejected(share, sock, id, RejectNotAllowed)
 			if share.released.Load() {
 				return
 			}
 			continue
 		}
 
-		accepted, refused := false, false
+		accepted, refused, perHost := false, false, false
 		var evicted net.Conn
-		var evictedID uint64
+		var evictedID ConnectionID
+		var evictedEnd *connEnd
 		ms.lock.Lock()
 		// ms.run != run once the server has been stopped (and maybe started again).
 		if ms.started && ms.run == run {
-			if uint(len(ms.tcpClients)) >= ms.conf.MaxClients && ms.transportType == modbusTCPOverTLS {
-				evicted = ms.evictPendingTLSLocked(remoteHost(sock))
-				if evicted != nil {
-					evictedID = ms.pendingIDs[evicted]
-					delete(ms.pendingIDs, evicted)
-				}
+			host := remoteHost(sock)
+			if ms.conf.MaxClientsPerHost > 0 && ms.hostClientsLocked(host) >= ms.conf.MaxClientsPerHost {
+				// Refused before MaxClients is looked at: it evicts nobody.
+				perHost = true
+			} else if uint(len(ms.tcpClients)) >= ms.conf.MaxClients && ms.transportType == modbusTCPOverTLS {
+				evicted, evictedID, evictedEnd = ms.evictPendingTLSLocked(host)
 			}
-			if uint(len(ms.tcpClients)) < ms.conf.MaxClients {
+			if perHost {
+				refused = true
+			} else if uint(len(ms.tcpClients)) < ms.conf.MaxClients {
 				ms.tcpClients = append(ms.tcpClients, sock)
 				if ms.transportType == modbusTCPOverTLS {
 					ms.tlsPending = append(ms.tlsPending, sock)
-					if cid != 0 {
-						if ms.pendingIDs == nil {
-							ms.pendingIDs = make(map[net.Conn]uint64)
+					if ms.pendingIDs == nil {
+						ms.pendingIDs = make(map[net.Conn]ConnectionID)
+					}
+					ms.pendingIDs[sock] = id
+					if end != nil {
+						if ms.pendingEnds == nil {
+							ms.pendingEnds = make(map[net.Conn]*connEnd)
 						}
-						ms.pendingIDs[sock] = cid
+						ms.pendingEnds[sock] = end
 					}
 				}
 				accepted = true
@@ -144,7 +154,7 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		if accepted {
 			// Its goroutine reports its end.
 			share.setFinal(nil)
-			go ms.handleTCPClient(run, sock, cid)
+			go ms.handleTCPClient(run, sock, id, end)
 		}
 		if evicted != nil {
 			// Its handshake fails and its goroutine ends.
@@ -153,20 +163,27 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 				"closing %v (TLS handshake not completed) for %v",
 				addr, sock.RemoteAddr())
 			_ = evicted.Close()
-			ms.emitRefused(run, evictedID, evicted, RejectTLSHandshakeEvicted)
-			ms.reportRejected(addr, RejectTLSHandshakeEvicted)
+			evictedEnd.do(func() { ms.emitRefused(run, uint64(evictedID), evicted, RejectTLSHandshakeEvicted) })
+			ms.reportRejected(share, evicted, evictedID, RejectTLSHandshakeEvicted)
 		}
 		if !accepted {
 			addr := sock.RemoteAddr().String()
-			ms.logger.Warningf("max. number of concurrent connections "+
-				"reached, rejecting %v", addr)
+			reason := RejectMaxClients
+			if perHost {
+				reason = RejectPerHostLimit
+				ms.logger.Warningf("max. number of concurrent connections "+
+					"per host reached, rejecting %v", addr)
+			} else {
+				ms.logger.Warningf("max. number of concurrent connections "+
+					"reached, rejecting %v", addr)
+			}
 			_ = sock.Close()
 			if refused {
-				end(func() { ms.emitRefused(run, cid, sock, RejectMaxClients) })
-				ms.reportRejected(addr, RejectMaxClients)
+				end.do(func() { ms.emitRefused(run, uint64(id), sock, reason) })
+				ms.reportRejected(share, sock, id, reason)
 			} else {
 				// Accepted while the server was stopping.
-				end(func() { ms.emitUnserved(run, cid, sock, "closed unserved: the server is stopping", nil) })
+				end.do(func() { ms.emitUnserved(run, uint64(id), sock, "closed unserved: the server is stopping", nil) })
 			}
 		}
 		if share.released.Load() {
@@ -190,6 +207,18 @@ func remoteHost(conn net.Conn) string {
 	return host
 }
 
+// hostClientsLocked returns the number of connections in tcpClients (those
+// still handshaking included) whose remote host is host. ms.lock must be held.
+func (ms *Server) hostClientsLocked(host string) uint {
+	var n uint
+	for _, c := range ms.tcpClients {
+		if remoteHost(c) == host {
+			n++
+		}
+	}
+	return n
+}
+
 // evictPendingTLSLocked makes room for a new connection from host when every
 // MaxClients slot is taken: it removes from tcpClients one connection whose TLS
 // handshake has not completed and returns it, for the caller to close; nil if
@@ -201,16 +230,19 @@ func remoteHost(conn net.Conn) string {
 // mostly displace one another rather than clients from other hosts. A host
 // that already has as many pending connections as any other displaces its own
 // oldest one; a host with fewer displaces the oldest of a host with more.
-// ms.lock must be held.
-func (ms *Server) evictPendingTLSLocked(host string) net.Conn {
+// It also returns the victim's ConnectionID and the connEnd of its security
+// events (nil without). ms.lock must be held.
+func (ms *Server) evictPendingTLSLocked(host string) (net.Conn, ConnectionID, *connEnd) {
 	i := pickPendingVictim(ms.tlsPending, host)
 	if i < 0 {
-		return nil
+		return nil, 0, nil
 	}
 	victim := ms.tlsPending[i]
-	ms.tlsPending = append(ms.tlsPending[:i], ms.tlsPending[i+1:]...)
+	id := ms.pendingIDs[victim]
+	end := ms.pendingEnds[victim]
+	ms.dropPendingLocked(victim)
 	ms.removeTCPClientLocked(victim)
-	return victim
+	return victim, id, end
 }
 
 // pickPendingVictim returns the index in pending (oldest first) of the
@@ -276,6 +308,11 @@ func (ms *Server) handshakeDoneLocked(sock net.Conn, tlsSock *tls.Conn) bool {
 	return true
 }
 
+// isPendingLocked reports whether sock is in tlsPending. ms.lock must be held.
+func (ms *Server) isPendingLocked(sock net.Conn) bool {
+	return slices.Contains(ms.tlsPending, sock)
+}
+
 // dropPendingLocked removes sock from tlsPending and reports whether it was
 // there. ms.lock must be held.
 func (ms *Server) dropPendingLocked(sock net.Conn) bool {
@@ -283,26 +320,32 @@ func (ms *Server) dropPendingLocked(sock net.Conn) bool {
 		if c == sock {
 			ms.tlsPending = append(ms.tlsPending[:i], ms.tlsPending[i+1:]...)
 			delete(ms.pendingIDs, sock)
+			delete(ms.pendingEnds, sock)
 			return true
 		}
 	}
 	return false
 }
 
-// handleTCPClient handles a single TCP client connection. A per-connection
-// context is derived from the run's stop context and cancelled when the client
-// disconnects, when the server stops, and when this function returns.
+// handleTCPClient handles a single TCP client connection, whose identifier is
+// id. A per-connection context is derived from the run's stop context and
+// cancelled when the client disconnects, when the server stops, and when this
+// function returns; it carries the connection's connState.
 //
 // The connection's goroutines (this one and the reader of serveConn) hold
 // one count of run.wg between them, which a Shutdown called on either gives
 // back (see runShare).
-func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, cid uint64) {
+//
+// end reports the connection's outcome to the security events (nil when the
+// run reports none).
+func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, id ConnectionID, end *connEnd) {
 	share := ms.join(run, nil)
 	defer share.done()
 	defer ms.leave(run)
 
 	connCtx, connCancel := context.WithCancel(run.ctx)
 	defer connCancel()
+	st := connState{id: id, localAddr: addrString(sock.LocalAddr())}
 
 	var err error
 	var clientRole string
@@ -312,57 +355,75 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, cid uint64) {
 
 	switch ms.transportType {
 	case modbusTCP:
-		ce, ctx := ms.newConnEvents(run, connCtx, cid, sock, "", nil)
-		ms.finalClosed(run, share, ce)
-		ms.serveConn(run, share, ctx, connCancel, ce,
+		st.ev, connCtx = ms.newConnEvents(run, connCtx, uint64(id), end, sock, "", nil)
+		ms.finalClosed(run, share, st.ev)
+		ms.serveConn(run, share, withConn(connCtx, st), connCancel,
 			newTCPTransport(sock, ms.conf.Timeout, ms.conf.Logger),
 			sock.RemoteAddr().String(), "")
 
 	case modbusTCPOverTLS:
-		if cid != 0 {
-			// Until it is served, a connection still pending when a Shutdown
-			// is called on this goroutine was not served.
+		var roleErr error
+		// handshook: the handshake completed and the connection kept its slot.
+		// An evicted connection, neither pending nor handshook, was reported
+		// by its eviction.
+		handshook := false
+		if end != nil {
+			// Until it is served, a connection whose handshake a Shutdown
+			// called on this goroutine ends was not served.
 			share.setFinal(func() {
 				ms.lock.Lock()
-				pending := ms.dropPendingLocked(sock)
+				evicted := !handshook && !ms.isPendingLocked(sock)
 				ms.lock.Unlock()
-				if pending {
-					ms.emitUnserved(run, cid, sock, "the TLS handshake ended: the server is stopping", nil)
+				if !evicted {
+					end.do(func() {
+						ms.emitUnserved(run, uint64(id), sock, "the TLS handshake ended: the server is stopping", nil)
+					})
 				}
 			})
 		}
-		tlsSock, clientRole, err = ms.startTLS(sock)
+		start := time.Now()
+		tlsSock, clientRole, roleErr, err = ms.startTLS(sock)
+		ms.reportTLSHandshake(id, sock, tlsSock, time.Since(start), clientRole, roleErr, err)
 		admitted := false
 		if err == nil {
 			ms.lock.Lock()
 			admitted = ms.handshakeDoneLocked(sock, tlsSock)
+			handshook = admitted
 			ms.lock.Unlock()
 		}
 		switch {
 		case err != nil:
 			ms.logger.Warningf("TLS handshake with %s failed: %v",
 				sock.RemoteAddr().String(), err)
-			// An evicted connection was reported when it was evicted.
+			// An evicted connection is reported by its eviction, which
+			// closes it before it reports it: only one still pending here.
 			ms.lock.Lock()
-			pending := ms.dropPendingLocked(sock)
+			pending := ms.isPendingLocked(sock)
 			ms.lock.Unlock()
 			if pending {
-				detail := "the TLS handshake failed"
-				if run.ctx.Err() != nil {
-					detail = "the TLS handshake ended: the server is stopping"
-				}
-				ms.emitUnserved(run, cid, sock, detail, err)
+				end.do(func() {
+					detail := "the TLS handshake failed"
+					if run.ctx.Err() != nil {
+						detail = "the TLS handshake ended: the server is stopping"
+					}
+					ms.emitUnserved(run, uint64(id), sock, detail, err)
+				})
 			}
+		case share.released.Load():
+			// A Shutdown called from OnTLSHandshake: no further callback.
+			effectiveConn = tlsSock
 		case !admitted:
 			// Closed to make room for a newer connection while the
 			// handshake was completing.
 			_ = tlsSock.Close()
 		default:
 			effectiveConn = tlsSock
+			// connCancel cancels the parent, and with it this context.
+			st.roleErr = roleErr
 			state := tlsSock.ConnectionState()
-			ce, ctx := ms.newConnEvents(run, connCtx, cid, sock, clientRole, &state)
-			ms.finalClosed(run, share, ce)
-			ms.serveConn(run, share, ctx, connCancel, ce,
+			st.ev, connCtx = ms.newConnEvents(run, connCtx, uint64(id), end, sock, clientRole, &state)
+			ms.finalClosed(run, share, st.ev)
+			ms.serveConn(run, share, withConn(connCtx, st), connCancel,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
 		}
@@ -379,10 +440,6 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, cid uint64) {
 	_ = effectiveConn.Close()
 }
 
-// serverPipelineDepth is the number of requests a client may have sent ahead of
-// the one being served before the server stops reading from its socket.
-const serverPipelineDepth = 16
-
 // finalClosed makes a Shutdown called on the connection's goroutines report
 // its end (see runShare.final), which the goroutines then no longer do.
 func (ms *Server) finalClosed(run *serverRun, share *runShare, ce *connEvents) {
@@ -392,6 +449,17 @@ func (ms *Server) finalClosed(run *serverRun, share *runShare, ce *connEvents) {
 	}
 	share.setFinal(func() { ms.emitClosed(run, ce, CloseServerStopped, nil) })
 }
+
+// serverPipelineDepth is the number of requests a client may have sent ahead of
+// the one being served before the server stops reading from its socket.
+const serverPipelineDepth = 16
+
+// answeredCloseDrain bounds how long the server reads and discards what a
+// client still sends after the server answered a request whose PDU length it
+// rejected and half-closed the connection. Closing a socket with unread data
+// makes the system send a reset, which can discard the answer at the client
+// before it reads it.
+const answeredCloseDrain = 100 * time.Millisecond
 
 // serveConn serves one Modbus/TCP connection.
 //
@@ -415,12 +483,19 @@ func (ms *Server) finalClosed(run *serverRun, share *runShare, ce *connEvents) {
 // connection, so it must not run the application's code again after the
 // callback that called Shutdown, apart from the outcome of the request that
 // callback belongs to.
-func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Context, connCancel context.CancelFunc, ce *connEvents, t *inttrans.TCP, clientAddr, clientRole string) {
+func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Context, connCancel context.CancelFunc, t *inttrans.TCP, clientAddr, clientRole string) {
 	type inbound struct {
 		req      *adu.Request
 		txnID    uint16
 		received time.Time
+		// lengthErr: the transport rejected the request's MBAP length before
+		// reading its PDU (inttrans.RequestLengthError); req has no payload.
+		lengthErr *inttrans.RequestLengthError
 	}
+	// A request of a fixed-size function code whose MBAP length disagrees is
+	// rejected as soon as its function code is read (see
+	// malformedRequestError).
+	t.RequestPDULength = requestPDULength
 	queue := make(chan inbound, serverPipelineDepth)
 	quit := make(chan struct{})
 	readerDone := make(chan struct{})
@@ -428,7 +503,18 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	// Opened before the reader starts, closed once the socket is closed and
 	// the reader has ended. A Shutdown called from either callback, or from
 	// any callback of the connection in between, ends its callbacks.
+	st := connFrom(connCtx)
 	ms.reportOpened(clientAddr, clientRole)
+	if share.released.Load() {
+		_ = t.Close()
+		return
+	}
+	opened := time.Now()
+	ms.reportServerConn(ServerConnectionEvent{
+		Kind: ServerConnectionOpened, ConnectionID: st.id,
+		RemoteAddr: clientAddr, LocalAddr: st.localAddr,
+		Role: clientRole, RoleErr: st.roleErr,
+	})
 	if share.released.Load() {
 		_ = t.Close()
 		return
@@ -436,24 +522,97 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	// cause is the first reason the connection ended for, set by the reader or
 	// by the loop below.
 	var cause closeCause
+	// badHeader is the MBAP header the reader could not frame, written by the
+	// reader before it ends (hasBadHeader), read once it has.
+	var badHeader [adu.MBAPHeaderLength]byte
+	hasBadHeader := false
 	defer func() {
 		if share.released.Load() {
 			return
+		}
+		if hasBadHeader && ms.violationMetrics != nil {
+			reason, err := cause.get()
+			if reason == CloseMalformedFrame {
+				ms.reportViolation(ProtocolViolation{
+					ConnectionID:  st.id,
+					ClientAddr:    clientAddr,
+					ClientRole:    clientRole,
+					TransactionID: adu.BytesToUint16(adu.BigEndian, badHeader[0:2]),
+					ProtocolID:    adu.BytesToUint16(adu.BigEndian, badHeader[2:4]),
+					Length:        adu.BytesToUint16(adu.BigEndian, badHeader[4:6]),
+					UnitID:        badHeader[6],
+					Err:           err,
+					Closed:        true,
+				})
+				if share.released.Load() {
+					return
+				}
+			}
 		}
 		ms.reportClosed(clientAddr)
 		if share.released.Load() {
 			return
 		}
 		reason, err := cause.get()
+		ms.emitClosed(run, st.ev, reason, err)
 		ms.reportCloseReason(clientAddr, reason, err)
-		ms.emitClosed(run, ce, reason, err)
+		if share.released.Load() {
+			return
+		}
+		ms.reportServerConn(ServerConnectionEvent{
+			Kind: ServerConnectionClosed, ConnectionID: st.id,
+			RemoteAddr: clientAddr, LocalAddr: st.localAddr,
+			Role: clientRole, RoleErr: st.roleErr,
+			CloseReason: reason, Err: err, Age: time.Since(opened),
+		})
 	}()
 
 	// pending counts the requests read and not yet answered. It and the read
-	// deadline change together, under mu.
+	// deadline change together, under mu. draining: the connection is being
+	// closed after an answer, and the read deadline is that of the drain,
+	// which the reader must not lift.
 	var mu sync.Mutex
 	pending := 0
-	_ = t.SetReadDeadline(time.Now().Add(ms.conf.Timeout))
+	draining := false
+	// The read deadline is the earliest of the limits that apply (see
+	// armLocked): the idle timeout (ServerConfig.Timeout, or
+	// FirstRequestTimeout until the first request has been read) while no
+	// request is pending, from idleSince; and FrameTimeout from the first
+	// byte of a request (frameDeadline) while one is being read (inFrame).
+	// limit is the close reason of the deadline set last.
+	received, inFrame := false, false
+	idleSince := time.Now()
+	var frameDeadline time.Time
+	limit := CloseIdleTimeout
+	armLocked := func() {
+		if draining {
+			return
+		}
+		var d time.Time
+		limit = CloseIdleTimeout
+		if pending == 0 {
+			idle := ms.conf.Timeout
+			if !received && ms.conf.FirstRequestTimeout > 0 {
+				idle, limit = ms.conf.FirstRequestTimeout, CloseFirstRequestTimeout
+			}
+			d = idleSince.Add(idle)
+		}
+		if inFrame && (d.IsZero() || frameDeadline.Before(d)) {
+			d, limit = frameDeadline, CloseFrameTimeout
+		}
+		_ = t.SetReadDeadline(d)
+	}
+	mu.Lock()
+	armLocked()
+	mu.Unlock()
+	if ms.conf.FrameTimeout > 0 {
+		t.OnFrameStart = func() {
+			mu.Lock()
+			inFrame, frameDeadline = true, time.Now().Add(ms.conf.FrameTimeout)
+			armLocked()
+			mu.Unlock()
+		}
+	}
 
 	go func() {
 		defer close(readerDone)
@@ -462,50 +621,76 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		defer ms.leave(run)
 		for {
 			req, txnID, err := t.ReadFrame()
-			if err != nil {
+			var lengthErr *inttrans.RequestLengthError
+			if err != nil && !errors.As(err, &lengthErr) {
 				// Disconnected, idle for too long, not speaking Modbus/TCP, or
 				// closed by the server.
-				cause.set(readCloseReason(run.ctx, err))
+				badHeader, hasBadHeader = t.LastBadHeader()
+				reason, rerr := readCloseReason(run.ctx, err)
+				if reason == CloseIdleTimeout {
+					// Which of the limits ran out.
+					mu.Lock()
+					reason = limit
+					mu.Unlock()
+				}
+				cause.set(reason, rerr)
 				connCancel()
 				return
 			}
-			if ce != nil {
-				ce.requests.Add(1)
-			}
-			var received time.Time
+			var readAt time.Time
 			if ms.conf.PDUTap != nil {
-				received = time.Now()
+				readAt = time.Now()
+			}
+			if st.ev != nil {
+				st.ev.requests.Add(1)
 			}
 			mu.Lock()
 			pending++
-			_ = t.SetReadDeadline(time.Time{})
+			received, inFrame = true, false
+			armLocked()
 			mu.Unlock()
 			select {
-			case queue <- inbound{req: req, txnID: txnID, received: received}:
+			case queue <- inbound{req: req, txnID: txnID, received: readAt, lengthErr: lengthErr}:
 			case <-quit:
+				return
+			}
+			if lengthErr != nil {
+				// The stream is out of step: nothing after this request is
+				// read. The loop below answers it and closes the connection.
 				return
 			}
 		}
 	}()
 
+	// drainAfterAnswer: the loop ended on a request it answered and must close
+	// the connection after (see answeredCloseDrain).
+	drainAfterAnswer := false
 	for in := range queue {
 		if share.released.Load() {
 			break
 		}
-		res, closeLink := ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
+		var res *adu.Response
+		var closeLink bool
+		if in.lengthErr != nil {
+			res = ms.serveLengthError(in.req, in.txnID, st.id, clientAddr, clientRole, in.lengthErr)
+			closeLink = true
+		} else {
+			res, closeLink = ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
+		}
 		if !share.released.Load() {
 			ms.tapServerExchange(connCtx, in.req, res, clientAddr, clientRole, in.received)
 		}
 		if closeLink {
 			cause.set(CloseProtocolError, ErrProtocolError)
 		}
-		if closeLink || share.released.Load() {
+		if share.released.Load() {
 			break
 		}
 		// res is nil when the handler chose not to answer (ErrNoResponse).
 		// A response that could not be written, or only in part, leaves the
 		// stream out of step, and a client that does not read would hold the
-		// connection forever: close it.
+		// connection forever: close it. With closeLink the response is a best
+		// effort before the connection is closed.
 		if res != nil {
 			if writeErr := t.WriteFrame(in.txnID, res); writeErr != nil {
 				ms.logger.Warningf("failed to write response, closing link (client address: '%s'): %v", clientAddr, writeErr)
@@ -514,10 +699,15 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 				break
 			}
 		}
+		if closeLink {
+			drainAfterAnswer = res != nil
+			break
+		}
 		mu.Lock()
 		pending--
 		if pending == 0 {
-			_ = t.SetReadDeadline(time.Now().Add(ms.conf.Timeout))
+			idleSince = time.Now()
+			armLocked()
 		}
 		mu.Unlock()
 	}
@@ -525,6 +715,22 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	// Closing the socket ends the reader if it is still reading; quit ends it if
 	// it is waiting to hand over a request.
 	close(quit)
+	if drainAfterAnswer && !share.released.Load() {
+		// The answer is written: half-close, so that it is followed by a FIN,
+		// and read and discard what the client still sends for a short while
+		// (the reader, until it stops at its next handover, then here), so
+		// that closing does not reset the connection under the answer. What
+		// is read is not served.
+		if hc, ok := t.Socket.(interface{ CloseWrite() error }); ok {
+			_ = hc.CloseWrite()
+		}
+		mu.Lock()
+		draining = true
+		_ = t.SetReadDeadline(time.Now().Add(answeredCloseDrain))
+		mu.Unlock()
+		<-readerDone
+		_, _ = io.Copy(io.Discard, t.Socket)
+	}
 	_ = t.Close()
 	<-readerDone
 }
@@ -599,23 +805,27 @@ func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, cl
 			return
 		}
 		res, closeLink := ms.serveRequest(connCtx, req, txnID, clientAddr, clientRole)
+		if res != nil {
+			if writeErr := t.WriteResponse(res); writeErr != nil {
+				ms.logger.Warningf("failed to write response: %v", writeErr)
+			}
+		}
 		if closeLink {
 			_ = t.Close()
 			return
-		}
-		if res == nil {
-			continue
-		}
-		if writeErr := t.WriteResponse(res); writeErr != nil {
-			ms.logger.Warningf("failed to write response: %v", writeErr)
 		}
 	}
 }
 
 // serveRequest dispatches one request and returns the response to send.
-// closeLink is true when the request violates the protocol: nothing is sent and
-// the connection must be closed. res is nil with closeLink false when the handler
-// returned ErrNoResponse: nothing is sent and the connection is kept.
+// closeLink is true when the connection must be closed after res, if any, is
+// written: when a handler returned ErrProtocolError (res is nil), or the
+// length of the request PDU disagrees with its function code or byte count
+// (res is the Illegal Data Value exception; see malformedRequestError). A
+// request that is otherwise malformed is answered with Illegal Data Value and
+// the connection kept. res is nil with closeLink false when the handler
+// returned ErrNoResponse, or the request carried an exception function code
+// (errExceptionFCRequest): nothing is sent and the connection is kept.
 func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint16, clientAddr, clientRole string) (res *adu.Response, closeLink bool) {
 	var reqStart time.Time
 	if ms.metrics != nil {
@@ -638,31 +848,96 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 	}
 
 	if err != nil {
+		// The server's own errors are not wrapped: a type assertion, which
+		// calls none of the methods of a handler's error, finds them.
 		if err == ErrProtocolError {
-			ms.logger.Warningf("protocol error, closing link (client address: '%s')", clientAddr)
+			// A handler that returned ErrProtocolError itself.
+			ms.logger.Warningf("protocol error, closing link (client address: '%s'): FC 0x%02x: %v", clientAddr, req.FunctionCode, err)
 			if ms.metrics != nil {
 				ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
 			}
 			return nil, true
 		}
+		if malformed, ok := err.(*malformedRequestError); ok && malformed.closeLink {
+			// A PDU whose length disagrees with its function code or byte
+			// count (see malformedRequestError): answered, then closed.
+			ms.logger.Warningf("protocol error, closing link (client address: '%s'): FC 0x%02x: %v: answering with Illegal Data Value", clientAddr, req.FunctionCode, err)
+			if ms.metrics != nil {
+				ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
+			}
+			ms.reportRequestViolation(req, txnID, connFrom(ctx).id, clientAddr, clientRole, err, exIllegalDataValue, true)
+			return exceptionResponse(req, txnID, exIllegalDataValue), true
+		}
 
 		if ms.metrics != nil {
 			ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
+		}
+		switch e := err.(type) {
+		case exceptionFCRequestError:
+			ms.logger.Warningf("request with exception function code 0x%02x from %s not answered", req.FunctionCode, clientAddr)
+			ms.reportRequestViolation(req, txnID, connFrom(ctx).id, clientAddr, clientRole, err, 0, false)
+			return nil, false
+		case *malformedRequestError:
+			ms.logger.Warningf("malformed FC 0x%02x request from %s (%s): answering with Illegal Data Value", req.FunctionCode, clientAddr, e.reason)
+			ms.reportRequestViolation(req, txnID, connFrom(ctx).id, clientAddr, clientRole, err, exIllegalDataValue, false)
+		default:
 		}
 		silent, code := ms.answerFor(req, clientAddr, err)
 		if silent {
 			return nil, false
 		}
-		res = &adu.Response{
-			UnitID:        req.UnitID,
-			FunctionCode:  req.FunctionCode | 0x80,
-			Payload:       []byte{byte(code)},
-			TransactionID: txnID,
-		}
+		res = exceptionResponse(req, txnID, code)
 	} else if ms.metrics != nil {
 		ms.reportMetrics(metricsOnResponse, req, clientAddr, time.Since(reqStart), nil)
 	}
 	return res, false
+}
+
+// exceptionResponse is the exception response with code to req.
+func exceptionResponse(req *adu.Request, txnID uint16, code ExceptionCode) *adu.Response {
+	return &adu.Response{
+		UnitID:        req.UnitID,
+		FunctionCode:  req.FunctionCode | 0x80,
+		Payload:       []byte{byte(code)},
+		TransactionID: txnID,
+	}
+}
+
+// serveLengthError answers a request whose MBAP length the transport rejected
+// for its fixed-size function code (inttrans.RequestLengthError) before
+// reading its PDU, and is followed by closing the connection. The handler is
+// not called. The answer is the one the full request would have had first:
+// Illegal Function when the server does not serve the function code, else
+// Illegal Data Value. ServerMetrics sees the request and an error.
+func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, id ConnectionID, clientAddr, clientRole string, lengthErr *inttrans.RequestLengthError) *adu.Response {
+	var reqStart time.Time
+	if ms.metrics != nil {
+		ms.reportMetrics(metricsOnRequest, req, clientAddr, 0, nil)
+		reqStart = time.Now()
+	}
+	var err error = errPDUTrailing
+	if lengthErr.Have < lengthErr.Want {
+		err = errPDUTruncated
+	}
+	code := exIllegalDataValue
+	if !ms.servesFixedLength(FunctionCode(req.FunctionCode)) {
+		err, code = ErrIllegalFunction, exIllegalFunction
+	}
+	ms.logger.Warningf("protocol error, closing link (client address: '%s'): FC 0x%02x: %v: answering with exception %d",
+		clientAddr, req.FunctionCode, lengthErr, code)
+	if ms.metrics != nil {
+		ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
+	}
+	if ms.violationMetrics != nil {
+		ms.reportViolation(ProtocolViolation{
+			ConnectionID: id,
+			ClientAddr:   clientAddr, ClientRole: clientRole,
+			TransactionID: txnID, Length: adu.Uint16(lengthErr.Have + 1), UnitID: req.UnitID,
+			FunctionCode: FunctionCode(req.FunctionCode), HasFunctionCode: true,
+			Err: err, Exception: code, Closed: true,
+		})
+	}
+	return exceptionResponse(req, txnID, code)
 }
 
 // metricsHook names one method of ServerMetrics.
@@ -784,6 +1059,11 @@ func (ms *Server) dispatchRequest(ctx context.Context, req *adu.Request, txnID u
 	case FCReadFIFOQueue:
 		return ms.handleReadFIFOQueue(ctx, req, txnID, clientAddr, clientRole)
 	default:
+		if req.FunctionCode&0x80 != 0 {
+			// An exception function code in a request: not answered (see
+			// errExceptionFCRequest).
+			return nil, errExceptionFCRequest
+		}
 		// Any other function code, vendor and user-defined ones included, is not
 		// supported: it is reported like an optional handler that is not
 		// implemented. The client gets an Illegal Function exception,
@@ -792,9 +1072,11 @@ func (ms *Server) dispatchRequest(ctx context.Context, req *adu.Request, txnID u
 	}
 }
 
-// startTLS performs a TLS handshake with client authentication.
+// startTLS performs a TLS handshake with client authentication. roleErr is
+// the error of a Modbus Role extension that could not be used (clientRole is
+// then empty). tlsSock is nil when the handshake could not be started.
 func (ms *Server) startTLS(tcpSock net.Conn) (
-	tlsSock *tls.Conn, clientRole string, err error) {
+	tlsSock *tls.Conn, clientRole string, roleErr error, err error) {
 
 	err = tcpSock.SetDeadline(time.Now().Add(ms.conf.TLSHandshakeTimeout))
 	if err != nil {
@@ -822,7 +1104,7 @@ func (ms *Server) startTLS(tcpSock net.Conn) (
 		err = errors.New("no client certificate received")
 		return
 	}
-	clientRole = ms.extractRole(connState.PeerCertificates[0])
+	clientRole, roleErr = ms.extractRole(connState.PeerCertificates[0])
 
 	// The handshake deadline must not outlive the handshake.
 	err = tlsSock.SetDeadline(time.Time{})
@@ -830,48 +1112,45 @@ func (ms *Server) startTLS(tcpSock net.Conn) (
 	return
 }
 
-// extractRole looks for Modbus Role extensions in a certificate.
-func (ms *Server) extractRole(cert *x509.Certificate) (role string) {
-	var err error
-	var found bool
-	var badCert bool
-
+// extractRole looks for Modbus Role extensions in a certificate. A
+// certificate with more than one, or with one that is not a DER UTF8String,
+// has no role: roleErr, which wraps ErrInvalidRole, says why.
+func (ms *Server) extractRole(cert *x509.Certificate) (role string, roleErr error) {
+	found := false
 	for _, ext := range cert.Extensions {
-		if ext.Id.Equal(modbusRoleOID) {
-			if found {
-				ms.logger.Warning("client certificate contains more than one role OIDs")
-				badCert = true
-				break
-			}
-			found = true
+		if !ext.Id.Equal(modbusRoleOID) {
+			continue
+		}
+		if found {
+			ms.logger.Warning("client certificate contains more than one role OIDs")
+			return "", fmt.Errorf("%w: more than one in the certificate", ErrInvalidRole)
+		}
+		found = true
 
-			if len(ext.Value) < 2 || ext.Value[0] != 0x0c {
-				badCert = true
-				break
-			}
-
-			_, err = asn1.Unmarshal(ext.Value, &role)
-			if err != nil {
-				ms.logger.Warningf("failed to decode Modbus Role extension: %v", err)
-				badCert = true
-				break
-			}
+		if len(ext.Value) < 2 || ext.Value[0] != 0x0c {
+			return "", fmt.Errorf("%w: not a UTF8String", ErrInvalidRole)
+		}
+		rest, err := asn1.Unmarshal(ext.Value, &role)
+		if err != nil {
+			ms.logger.Warningf("failed to decode Modbus Role extension: %v", err)
+			return "", fmt.Errorf("%w: %w", ErrInvalidRole, err)
+		}
+		if len(rest) > 0 {
+			// The extension value is the DER encoding of one value (RFC 5280
+			// section 4.1): bytes after the UTF8String make it invalid.
+			ms.logger.Warningf("Modbus Role extension has %d bytes after its UTF8String", len(rest))
+			return "", fmt.Errorf("%w: %d bytes after the UTF8String", ErrInvalidRole, len(rest))
 		}
 	}
-
-	if badCert {
-		role = ""
-	}
-
-	return
+	return role, nil
 }
 
 // Server-side response helpers.
 
 // decodeAddrQuantity extracts address and quantity from a 4-byte payload.
 func decodeAddrQuantity(payload []byte) (addr, quantity uint16, err error) {
-	if len(payload) != 4 {
-		return 0, 0, ErrProtocolError
+	if err := checkPDULength(payload, 4); err != nil {
+		return 0, 0, err
 	}
 	return bytesToUint16(BigEndian, payload[0:2]), bytesToUint16(BigEndian, payload[2:4]), nil
 }
@@ -899,6 +1178,15 @@ func (ms *Server) handleExceptionStatus(ctx context.Context, req *adu.Request, t
 	if !ok {
 		return nil, ErrIllegalFunction
 	}
+	if err := checkPDULength(req.Payload, 0); err != nil {
+		return nil, err
+	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	status, err := h.HandleExceptionStatus(ctx, &ExceptionStatusRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -916,6 +1204,15 @@ func (ms *Server) handleCommEventCounter(ctx context.Context, req *adu.Request, 
 	h, ok := ms.handler.(CommEventCounterHandler)
 	if !ok {
 		return nil, ErrIllegalFunction
+	}
+	if err := checkPDULength(req.Payload, 0); err != nil {
+		return nil, err
+	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
 	}
 	cr, err := h.HandleCommEventCounter(ctx, &CommEventCounterRequest{
 		ClientAddr:   clientAddr,
@@ -941,6 +1238,15 @@ func (ms *Server) handleCommEventLog(ctx context.Context, req *adu.Request, txnI
 	if !ok {
 		return nil, ErrIllegalFunction
 	}
+	if err := checkPDULength(req.Payload, 0); err != nil {
+		return nil, err
+	}
+	if ms.conf.Authorizer != nil {
+		ar := newAuthorization(req, clientAddr, clientRole, AccessDiagnostic)
+		if err := ms.authorize(ctx, req, ar); err != nil {
+			return nil, err
+		}
+	}
 	cl, err := h.HandleCommEventLog(ctx, &CommEventLogRequest{
 		ClientAddr:   clientAddr,
 		ClientRole:   clientRole,
@@ -954,11 +1260,13 @@ func (ms *Server) handleCommEventLog(ctx context.Context, req *adu.Request, txnI
 		ms.logger.Errorf("comm event log handler returned nil response")
 		return nil, ErrServerDeviceFailure
 	}
-	// Events the one-byte byte count cannot count cannot be sent. Fewer
-	// that still overflow the frame are caught by the response size check
-	// in serveRequest.
+	// The event field holds 0-64 bytes (V1.1b3 section 6.10). A handler that
+	// returns more breaks its contract: Server Device Failure, rather than a
+	// log the client would read as truncated history.
 	n := len(cl.Events)
-	if n > math.MaxUint8-6 {
+	if n > maxCommEvents {
+		ms.logger.Errorf("comm event log handler returned %d event bytes, at most %d fit: answering with Server Device Failure",
+			n, maxCommEvents)
 		return nil, ErrServerDeviceFailure
 	}
 	payload := []byte{byte(6 + n)}

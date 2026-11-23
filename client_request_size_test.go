@@ -75,8 +75,8 @@ func TestDiagnostics_RequestDataBoundary(t *testing.T) {
 		fits bool
 	}{
 		{0, true},
-		{1, true},
-		{maxData - 1, true},
+		{2, true},
+		{maxData - 2, true},
 		{maxData, true},
 		{maxData + 1, false},
 		{maxData + 2, false},

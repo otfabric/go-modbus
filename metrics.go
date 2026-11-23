@@ -55,7 +55,14 @@ type ClientMetrics interface {
 // method that does not return normally is logged, and the request goes on.
 type AttemptMetrics interface {
 	// OnAttempt is called after each individual transport attempt (including the first).
-	// attempt is the zero-based attempt index (0 = first try). err is nil on success.
+	// attempt is the zero-based attempt index (0 = first try). err is the error
+	// of the exchange on the link: a transport error, a timeout, a frame that
+	// could not be read. It is nil when a response frame was received,
+	// whatever it says: an exception response, a response for another unit
+	// ID and one the calling method then rejects (a wrong byte count or echo)
+	// are completed attempts here, and the call's error is reported to
+	// ClientMetrics.OnError. OnAttempt measures the link; ClientMetrics the
+	// outcome of the call.
 	OnAttempt(unitID uint8, functionCode FunctionCode, attempt int, duration time.Duration, err error)
 
 	// OnRetryDial is called when the engine re-dials the single connection: between
@@ -109,6 +116,10 @@ type ServerMetrics interface {
 //     once (RejectMaxClients);
 //   - on tcp+tls, a connection whose TLS handshake had not completed, which it
 //     closed to make room for a newer one (RejectTLSHandshakeEvicted).
+//
+// It is also called for a connection ServerConfig.AllowClient refused
+// (RejectNotAllowed) and for one beyond ServerConfig.MaxClientsPerHost
+// (RejectPerHostLimit), both closed as soon as they were accepted.
 //
 // Connections accepted while the server is stopping, and connections that
 // close for any other reason, are not reported.
@@ -167,10 +178,14 @@ const (
 	// MBAP header the server cannot frame: err is ErrInvalidMBAPLength or
 	// ErrUnknownProtocolID.
 	CloseMalformedFrame
-	// CloseProtocolError is a connection closed because a request violated the
-	// protocol (a PDU whose length does not match its function code, for
-	// example): err is ErrProtocolError. The request is reported to ServerMetrics
-	// as an OnError with ErrProtocolError.
+	// CloseProtocolError is a connection closed because a request PDU was
+	// shorter or longer than the fields of its function code or than its byte
+	// count announces (which on a TCP stream is what a wrong MBAP length looks
+	// like), or because a handler returned ErrProtocolError: err is
+	// ErrProtocolError. The request is reported to ServerMetrics as an OnError
+	// with an error that matches ErrProtocolError. Since v1.20.0 a request PDU
+	// of the wrong length is answered with Illegal Data Value before the
+	// connection is closed.
 	CloseProtocolError
 	// CloseWriteFailed is a connection closed because a response could not be
 	// written in full within ServerConfig.Timeout: err is the write error.
@@ -182,11 +197,21 @@ const (
 	// error the closed socket returned to the read or write in progress
 	// (typically wrapping net.ErrClosed).
 	CloseServerStopped
+	// CloseFirstRequestTimeout is a connection on which no complete request
+	// arrived within ServerConfig.FirstRequestTimeout of the server starting
+	// to serve it (err wraps os.ErrDeadlineExceeded). Only with
+	// FirstRequestTimeout set.
+	CloseFirstRequestTimeout
+	// CloseFrameTimeout is a connection on which a request had not arrived
+	// in full within ServerConfig.FrameTimeout of its first byte (err wraps
+	// os.ErrDeadlineExceeded). Only with FrameTimeout set.
+	CloseFrameTimeout
 )
 
 // String returns the name of the reason ("client closed", "idle timeout",
 // "malformed frame", "protocol error", "write failed", "read failed", "server
-// stopped"), or "CloseReason(n)" for a value without one.
+// stopped", "first request timeout", "frame timeout"), or "CloseReason(n)"
+// for a value without one.
 func (r CloseReason) String() string {
 	switch r {
 	case CloseClientClosed:
@@ -203,6 +228,10 @@ func (r CloseReason) String() string {
 		return "read failed"
 	case CloseServerStopped:
 		return "server stopped"
+	case CloseFirstRequestTimeout:
+		return "first request timeout"
+	case CloseFrameTimeout:
+		return "frame timeout"
 	default:
 		return "CloseReason(" + strconv.Itoa(int(r)) + ")"
 	}
@@ -225,10 +254,15 @@ const (
 	// RejectNotAllowed is a tcp or tcp+tls connection the server closed as soon
 	// as it was accepted, because ServerConfig.AllowClient refused it.
 	RejectNotAllowed
+	// RejectPerHostLimit is a tcp or tcp+tls connection the server closed as
+	// soon as it was accepted, because its host already had
+	// ServerConfig.MaxClientsPerHost connections.
+	RejectPerHostLimit
 )
 
 // String returns the name of the reason ("max clients", "tls handshake
-// evicted", "not allowed"), or "RejectReason(n)" for a value without one.
+// evicted", "not allowed", "per-host limit"), or "RejectReason(n)" for a
+// value without one.
 func (r RejectReason) String() string {
 	switch r {
 	case RejectMaxClients:
@@ -237,6 +271,8 @@ func (r RejectReason) String() string {
 		return "tls handshake evicted"
 	case RejectNotAllowed:
 		return "not allowed"
+	case RejectPerHostLimit:
+		return "per-host limit"
 	default:
 		return "RejectReason(" + strconv.Itoa(int(r)) + ")"
 	}

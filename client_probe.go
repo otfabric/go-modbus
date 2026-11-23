@@ -188,7 +188,12 @@ func (mc *Client) ProbeFunction(ctx context.Context, unitID uint8, fc FunctionCo
 	resFC := FunctionCode(res.FunctionCode)
 	payload := append([]byte(nil), res.Payload...)
 
-	if resFC.IsException() && len(res.Payload) >= 1 {
+	// An exception of the probed function: its function code plus 0x80 and
+	// exactly one byte, an exception code (V1.1b3 section 7). An exception
+	// to another function code, one with more or fewer bytes, or one with a
+	// code outside 0x01..0x0B, says nothing about the probed function: it is
+	// a response that failed validation, below.
+	if protocol.IsValidModbusException(FunctionCode(req.FunctionCode), protocol.Response{FunctionCode: resFC, Payload: res.Payload}) {
 		reportOutcome(m, unitID, fc, start, fmt.Errorf("exception 0x%02X", res.Payload[0]))
 		return ProbeResult{
 			Outcome: ProbeException, ExceptionCode: ExceptionCode(res.Payload[0]),

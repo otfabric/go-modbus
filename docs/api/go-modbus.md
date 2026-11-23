@@ -124,12 +124,24 @@ var (
 ```
 
 ```go
+var ErrInvalidRole = errors.New("modbus: invalid Modbus Role extension")
+```
+
+ErrInvalidRole is reported, wrapped, in TLSHandshakeInfo.RoleErr when a client certificate carries a Modbus Role extension the server cannot use: more than one, or one that is not exactly one DER UTF8String (bytes after it included). The client is then served with no role (ClientRole is empty).
+
+```go
 var ErrNoResponse = errors.New("modbus: no response")
 ```
 
 ErrNoResponse is returned by a handler method to leave the request unanswered: the server sends nothing and keeps the connection, so the client runs into its timeout. It is how a server models a device that stays silent, such as the units behind a gateway that received a broadcast (unit id 0), or one that is simulated as unresponsive. Requests the client sent after it are served as usual.
 
 It has this meaning only when returned by a handler; no client method returns it.
+
+```go
+var ErrNotAuthorized = errors.New("modbus: request not authorized")
+```
+
+ErrNotAuthorized is matched by the error ServerMetrics.OnError receives for a request that ServerConfig.Authorizer refused. The error also wraps the one the authorizer returned.
 
 ```go
 var ErrSerialPortNotOpen = errors.New("modbus: serial port not open")
@@ -173,12 +185,29 @@ ValidateServerConfig checks the server configuration and handler for errors with
 
 ## Types
 
+### type AcceptErrorMetrics
+
+```go
+type AcceptErrorMetrics interface {
+	OnAcceptError(err error, retryIn time.Duration)
+}
+```
+
+AcceptErrorMetrics is an optional extension of ServerMetrics. A ServerConfig.Metrics that implements it is told of every Accept of the listener that failed while the server was not stopping (no file descriptors left, for example), with the error and the wait before the next attempt (see OBSERVABILITY.md, "Accept errors"). It runs on the accept loop, which it delays: it must not block. One that does not return normally is logged, and the server goes on as if it had returned; it may call Stop or Shutdown.
+
 ### type AttemptMetrics
 
 ```go
 type AttemptMetrics interface {
 	// OnAttempt is called after each individual transport attempt (including the first).
-	// attempt is the zero-based attempt index (0 = first try). err is nil on success.
+	// attempt is the zero-based attempt index (0 = first try). err is the error
+	// of the exchange on the link: a transport error, a timeout, a frame that
+	// could not be read. It is nil when a response frame was received,
+	// whatever it says: an exception response, a response for another unit
+	// ID and one the calling method then rejects (a wrong byte count or echo)
+	// are completed attempts here, and the call's error is reported to
+	// ClientMetrics.OnError. OnAttempt measures the link; ClientMetrics the
+	// outcome of the call.
 	OnAttempt(unitID uint8, functionCode FunctionCode, attempt int, duration time.Duration, err error)
 
 	// OnRetryDial is called when the engine re-dials the single connection: between
@@ -191,6 +220,64 @@ type AttemptMetrics interface {
 ```
 
 AttemptMetrics is an optional extension of ClientMetrics that provides per-attempt visibility into retries and reconnects. If the value assigned to Config.Metrics also implements AttemptMetrics, the library calls its methods for every individual attempt and dial within a retried request. Implementations must be non-blocking, and must not make requests on the same client: on a single connection the methods run while the request holds that connection. As for ClientMetrics, a method that does not return normally is logged, and the request goes on.
+
+### type AuthorizationRequest
+
+```go
+type AuthorizationRequest struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
+	// ClientAddr and ClientRole identify the client, as the handlers receive
+	// them: its remote host:port, and on tcp+tls the role of its verified
+	// certificate (empty on tcp, and for a certificate without a usable
+	// role).
+	ClientAddr string
+	ClientRole string
+	// ClientRoleErr tells a certificate without a role from one whose Modbus
+	// Role extension the server could not use. It is nil on tcp, and on
+	// tcp+tls for a certificate with a valid role or none; for an unusable
+	// one (ClientRole is then empty) it is the error TLSHandshakeInfo.RoleErr
+	// reported for the connection, which matches ErrInvalidRole. It is the
+	// same for every request of a connection. The server refuses nothing
+	// because of it: what to do is the authorizer's decision.
+	ClientRoleErr error
+	UnitID        uint8
+	// FunctionCode is the request's function code, Access what it does.
+	FunctionCode FunctionCode
+	Access       RequestAccess
+	// SubFunction is the sub-function of FC08 or the MEI type of FC43;
+	// HasSubFunction says whether the function code has one.
+	SubFunction    uint16
+	HasSubFunction bool
+	// ReadAddr, ReadQuantity, WriteAddr and WriteQuantity: the data addresses
+	// read and written, see above.
+	ReadAddr      uint16
+	ReadQuantity  uint16
+	WriteAddr     uint16
+	WriteQuantity uint16
+	// FileRecords are the sub-requests of FC20 and FC21, in order; for FC21
+	// RecordLength is the number of registers the record writes.
+	FileRecords []FileRecordRequest
+}
+```
+
+AuthorizationRequest is what a RequestAuthorizer is asked about: one request, as the server read and checked it. The server makes it for the call and does not use it afterwards.
+
+The address fields hold what the function code addresses, and are zero where it addresses nothing of that kind:
+
+	FC01-FC04         ReadAddr, ReadQuantity
+	FC05, FC06, FC22  WriteAddr, WriteQuantity (1)
+	FC15, FC16        WriteAddr, WriteQuantity
+	FC23              ReadAddr, ReadQuantity, WriteAddr, WriteQuantity
+	FC24              ReadAddr (the FIFO pointer address; ReadQuantity is 0,
+	                  the queue's length is the device's)
+	FC20, FC21        FileRecords
+	FC08              SubFunction (HasSubFunction)
+	FC43              SubFunction (the MEI type, HasSubFunction)
+	FC07, FC11, FC12, FC17  none
+
+The server gives unit id 0 (broadcast) no meaning of its own: the authorizer sees it as the client sent it, and decides.
 
 ### type Client
 
@@ -206,6 +293,10 @@ type Client struct {
 
 	// metrics is Config.Metrics called through call (guardedMetrics), nil
 	// without one. It is never modified after New.
+
+	// tlsMetrics and anomalyMetrics are the optional extensions of
+	// Config.Metrics, nil when it does not implement them. Never modified
+	// after New.
 
 }
 ```
@@ -226,7 +317,7 @@ New creates, configures and returns a modbus client object.
 func (mc *Client) BusMessageCount(ctx context.Context, unitID uint8) (uint16, error)
 ```
 
-BusMessageCount reads the bus message count (sub-function 0x000B).
+BusMessageCount reads the bus message count (sub-function 0x000B). The request carries the data field 00 00 (up to v1.19.0 it carried none).
 
 #### func (Client) Close
 
@@ -272,7 +363,7 @@ DiagnosticBusExceptionErrorCount reads the bus exception error count (sub-functi
 func (mc *Client) DiagnosticClearCounters(ctx context.Context, unitID uint8) error
 ```
 
-DiagnosticClearCounters clears all counters and the diagnostic register (sub-function 0x000A).
+DiagnosticClearCounters clears all counters and the diagnostic register (sub-function 0x000A). The response must echo the request data 00 00.
 
 #### func (Client) DiagnosticClearOverrunCounterAndFlag
 
@@ -280,7 +371,7 @@ DiagnosticClearCounters clears all counters and the diagnostic register (sub-fun
 func (mc *Client) DiagnosticClearOverrunCounterAndFlag(ctx context.Context, unitID uint8) error
 ```
 
-DiagnosticClearOverrunCounterAndFlag clears the overrun counter and error flag (sub-function 0x0014).
+DiagnosticClearOverrunCounterAndFlag clears the overrun counter and error flag (sub-function 0x0014). The response must echo the request data 00 00.
 
 #### func (Client) DiagnosticForceListenOnlyMode
 
@@ -288,7 +379,7 @@ DiagnosticClearOverrunCounterAndFlag clears the overrun counter and error flag (
 func (mc *Client) DiagnosticForceListenOnlyMode(ctx context.Context, unitID uint8) error
 ```
 
-DiagnosticForceListenOnlyMode sends Force Listen Only Mode (sub-function 0x0004). Per the spec, no response is returned by serial-line devices (the device silently enters listen-only mode). Over TCP/TLS through a gateway, behavior depends on the gateway implementation — it may return a normal echo or time out.
+DiagnosticForceListenOnlyMode sends Force Listen Only Mode (sub-function 0x0004, data 00 00). The specification defines no response: a serial-line device silently enters listen-only mode, and the call then fails with ErrRequestTimedOut. Over TCP/TLS through a gateway, behavior depends on the gateway implementation: it may return a normal response, which is accepted whatever its data, or time out. This library's server has no listen-only state of its own; a DiagnosticsHandler may implement one.
 
 #### func (Client) DiagnosticLoopback
 
@@ -296,7 +387,7 @@ DiagnosticForceListenOnlyMode sends Force Listen Only Mode (sub-function 0x0004)
 func (mc *Client) DiagnosticLoopback(ctx context.Context, unitID uint8, value uint16) (uint16, error)
 ```
 
-DiagnosticLoopback sends a Return Query Data (sub-function 0x0000) request and returns the echoed value. Useful for verifying communication with a remote device.
+DiagnosticLoopback sends a Return Query Data (sub-function 0x0000) request with value as its data and checks that the device echoes it. Useful for verifying communication with a remote device. It returns the echoed value; a response whose data is not the two bytes sent is a \*ProtocolError (up to v1.19.0 a different value was returned without an error).
 
 #### func (Client) DiagnosticRegister
 
@@ -304,7 +395,7 @@ DiagnosticLoopback sends a Return Query Data (sub-function 0x0000) request and r
 func (mc *Client) DiagnosticRegister(ctx context.Context, unitID uint8) (uint16, error)
 ```
 
-DiagnosticRegister reads the diagnostic register (sub-function 0x0002).
+DiagnosticRegister reads the diagnostic register (sub-function 0x0002). The request carries the data field 00 00 (up to v1.19.0 it carried none).
 
 #### func (Client) DiagnosticServerBusyCount
 
@@ -344,7 +435,7 @@ DiagnosticServerNoResponseCount reads the server no-response count (sub-function
 func (mc *Client) Diagnostics(ctx context.Context, unitID uint8, subFunction DiagnosticSubFunction, data []byte) (dr *DiagnosticResponse, err error)
 ```
 
-Diagnostics sends a Diagnostics request (FC 0x08). subFunction selects the diagnostic (use DiagnosticSubFunction constants). data is optional request data (sub-function-specific; use nil or empty for none). The response echoes the sub-function and returns sub-function-specific data.
+Diagnostics sends a Diagnostics request (FC 0x08). subFunction selects the diagnostic (use DiagnosticSubFunction constants; vendor sub-functions are sent as they are). data is the request data (sub-function-specific; nil or empty for none), a whole number of 16-bit items (section 6.8): an odd length is a \*ParameterError (Param "data") and nothing is sent. The response must echo the sub-function; its data is returned as received, whatever its length, so that vendor sub-functions can be read. The typed wrappers below check the data of the sub-functions they send, and send the data field 00 00 where the specification gives it (section 6.8.1).
 
 At most 250 bytes of data fit a request. With more, Diagnostics returns a \*ParameterError (Param "data") and sends nothing, on every transport. That error also matches, with errors.Is, what the transport's framer returned for such a request before Diagnostics checked it: ErrInvalidMBAPLength on tcp, tcp+tls and udp, ErrProtocolError on rtu, rtuovertcp, rtuoverudp, ascii and asciiovertcp. A function code that AllowedFunctionCodes refuses and a client that is not open are reported first, as for a request that fits, and ClientMetrics sees OnRequest and OnError for it.
 
@@ -509,6 +600,11 @@ Spec limits:
 	FileNumber   must be 1–0xFFFF
 	RecordNumber must be 0–0x270F (decimal 0–9999)
 	Total request byte count must not exceed 0xF5 (at most 35 sub-requests)
+	Total response data length, the sum of 2 + 2*RecordLength over the
+	sub-requests, must not exceed 0xF5 (at most 121 registers in all for
+	one sub-request, fewer for several)
+
+Arguments outside these limits are reported as a \*ParameterError and nothing is sent.
 
 #### func (Client) ReadHoldingRegister
 
@@ -703,6 +799,87 @@ func (mc *Client) WriteRegisters(ctx context.Context, unitID uint8, addr uint16,
 
 Writes multiple 16-bit registers (function code 16).
 
+### type ClientConnectionEvent
+
+```go
+type ClientConnectionEvent struct {
+	Kind ClientConnectionEventKind
+	// ConnectionID is the connection's identifier, the same as in the
+	// TLSHandshakeInfo, ResponseAnomaly and PDUExchange of the connection.
+	ConnectionID ConnectionID
+	// Target is the endpoint of the client's URL: host:port, or the serial
+	// device.
+	Target string
+	// Pooled is true for a connection of the client's pool: Config.MaxConns > 1
+	// on a transport that pools (tcp, rtuovertcp, rtuoverudp, udp,
+	// asciiovertcp). A tcp+tls or serial client has a single connection.
+	Pooled bool
+	// Origin is set for ClientConnectionDialed.
+	Origin ConnectionOrigin
+	// DiscardReason is set for ClientConnectionDiscarded.
+	DiscardReason DiscardReason
+	// Duration is how long the dial took, TLS handshake included (Dialed).
+	Duration time.Duration
+	// Age is the time since the connection was dialled (Discarded, Closed).
+	Age time.Duration
+	// Err is the error of the dial (Dialed: nil when it succeeded), or the one
+	// the connection was discarded for (Discarded; see DiscardReason).
+	Err error
+}
+```
+
+ClientConnectionEvent is one step of the lifecycle of a client connection (see ClientConnectionMetrics).
+
+### type ClientConnectionEventKind
+
+```go
+type ClientConnectionEventKind uint8
+```
+
+ClientConnectionEventKind is what happened to a client connection, as reported in a ClientConnectionEvent.
+
+```go
+const (
+	// ClientConnectionDialed is a dial that ended: Err is nil when it opened a
+	// connection.
+	ClientConnectionDialed ClientConnectionEventKind = iota + 1
+	// ClientConnectionDiscarded is a connection the client closed because of a
+	// failure (see DiscardReason).
+	ClientConnectionDiscarded
+	// ClientConnectionClosed is a connection the client closed because it was
+	// shut down: a normal end.
+	ClientConnectionClosed
+)
+```
+
+#### func (ClientConnectionEventKind) String
+
+```go
+func (k ClientConnectionEventKind) String() string
+```
+
+String returns the name of the kind ("dialed", "discarded", "closed"), or "ClientConnectionEventKind(n)" for a value without one.
+
+### type ClientConnectionMetrics
+
+```go
+type ClientConnectionMetrics interface {
+	OnClientConnection(ev ClientConnectionEvent)
+}
+```
+
+ClientConnectionMetrics is an optional extension of ClientMetrics: the lifecycle of the transport connections of a client, single or pooled, with their ConnectionID. A Config.Metrics that implements it is told:
+
+  - ClientConnectionDialed for every dial, whether or not it succeeded, with Origin (Open, including the pre-warmed MinConns of a pool; a pool dial on demand; a re-dial of the single connection), the dial's Duration and its Err;
+  - ClientConnectionDiscarded for a connection closed because of a failure, with DiscardReason and the error;
+  - ClientConnectionClosed for a connection closed by the shutdown of the client (Close, a failed Open, a request or dial that ended after Close): a normal end, never a failure.
+
+Every connection that was dialled successfully is reported once more, as Discarded or as Closed, unless the client is never closed. A failed dial is reported only as Dialed.
+
+There are no replacement pairs: when a pool dials after a discard, the new connection is not reported as the replacement of the old one, because a pool does not dial for a given connection (any waiting request may take the freed slot, or none). Correlate by time and Target if you need to.
+
+OnClientConnection runs synchronously, on the goroutine of the Open, request or Close that caused the event, with none of the client's locks held. It must be non-blocking and must not make requests on the same client; it may call Close. The connections a Close closes are reported once that Close has closed them all and no longer counts as closing: a Close called from OnClientConnection then returns at once, and one called concurrently may return before they are reported. One that does not return normally is logged at error level with the stack, and the client goes on as if it had returned.
+
 ### type ClientFilter
 
 ```go
@@ -804,10 +981,14 @@ const (
 	// MBAP header the server cannot frame: err is ErrInvalidMBAPLength or
 	// ErrUnknownProtocolID.
 	CloseMalformedFrame
-	// CloseProtocolError is a connection closed because a request violated the
-	// protocol (a PDU whose length does not match its function code, for
-	// example): err is ErrProtocolError. The request is reported to ServerMetrics
-	// as an OnError with ErrProtocolError.
+	// CloseProtocolError is a connection closed because a request PDU was
+	// shorter or longer than the fields of its function code or than its byte
+	// count announces (which on a TCP stream is what a wrong MBAP length looks
+	// like), or because a handler returned ErrProtocolError: err is
+	// ErrProtocolError. The request is reported to ServerMetrics as an OnError
+	// with an error that matches ErrProtocolError. Since v1.20.0 a request PDU
+	// of the wrong length is answered with Illegal Data Value before the
+	// connection is closed.
 	CloseProtocolError
 	// CloseWriteFailed is a connection closed because a response could not be
 	// written in full within ServerConfig.Timeout: err is the write error.
@@ -819,6 +1000,15 @@ const (
 	// error the closed socket returned to the read or write in progress
 	// (typically wrapping net.ErrClosed).
 	CloseServerStopped
+	// CloseFirstRequestTimeout is a connection on which no complete request
+	// arrived within ServerConfig.FirstRequestTimeout of the server starting
+	// to serve it (err wraps os.ErrDeadlineExceeded). Only with
+	// FirstRequestTimeout set.
+	CloseFirstRequestTimeout
+	// CloseFrameTimeout is a connection on which a request had not arrived
+	// in full within ServerConfig.FrameTimeout of its first byte (err wraps
+	// os.ErrDeadlineExceeded). Only with FrameTimeout set.
+	CloseFrameTimeout
 )
 ```
 
@@ -828,7 +1018,7 @@ const (
 func (r CloseReason) String() string
 ```
 
-String returns the name of the reason ("client closed", "idle timeout", "malformed frame", "protocol error", "write failed", "read failed", "server stopped"), or "CloseReason(n)" for a value without one.
+String returns the name of the reason ("client closed", "idle timeout", "malformed frame", "protocol error", "write failed", "read failed", "server stopped", "first request timeout", "frame timeout"), or "CloseReason(n)" for a value without one.
 
 ### type CoilsRequest
 
@@ -1071,6 +1261,26 @@ type ConnectionCloseMetrics interface {
 
 ConnectionCloseMetrics is an optional extension of ServerMetrics. A ServerConfig.Metrics that implements it is told why the server stopped serving a tcp or tcp+tls connection: OnConnectionCloseReason is called once for every connection reported to ConnectionLifecycleMetrics.OnConnectionOpened (whether or not the value implements that interface), right after OnConnectionClosed, with the same exception: a connection a Shutdown called from one of its own callbacks stopped is not reported. err is the error that ended the connection; it is never nil. It runs on the connection's goroutine and must not block; one that does not return normally is logged, and the server goes on as if it had returned.
 
+### type ConnectionID
+
+```go
+type ConnectionID uint64
+```
+
+ConnectionID identifies one transport connection of a client or a server: a TCP, TLS, UDP or serial link. It is allocated once per connection, before the connection is dialled or as soon as it is accepted, and stays the same for its whole life. A failed dial, a rejected connection and a failed TLS handshake have one too, so that their reports can be told apart.
+
+Identifiers come from one counter shared by every client and server of the process, starting at 1: an identifier is unique within the process for as long as it runs and is never reused, but it means nothing across processes or restarts, and its value carries no other information (ordering between identifiers reflects allocation order, nothing more). 0 means no connection: the field of a report that is not tied to one.
+
+It is meant for correlating the reports of one connection (in logs, traces, audit records). Do not use it as a metric label (a Prometheus label, for example): every connection has a new one, so the number of series grows without bound.
+
+#### func (ConnectionID) String
+
+```go
+func (id ConnectionID) String() string
+```
+
+String returns the identifier in decimal.
+
 ### type ConnectionLifecycleMetrics
 
 ```go
@@ -1095,9 +1305,43 @@ ConnectionMetrics is an optional extension of ServerMetrics. If the value assign
   - a connection it accepted when every slot was taken, which it closes at once (RejectMaxClients);
   - on tcp+tls, a connection whose TLS handshake had not completed, which it closed to make room for a newer one (RejectTLSHandshakeEvicted).
 
+It is also called for a connection ServerConfig.AllowClient refused (RejectNotAllowed) and for one beyond ServerConfig.MaxClientsPerHost (RejectPerHostLimit), both closed as soon as they were accepted.
+
 Connections accepted while the server is stopping, and connections that close for any other reason, are not reported.
 
 addr is the remote address of the connection (host:port). The method is called on the server's accept loop, after the connection was closed and with no lock held, so it delays the next Accept: it must be non-blocking. Like the ServerMetrics methods, a method that does not return normally is logged at error level with the stack, and the server goes on as if it had returned. It may call Stop or Shutdown (see RequestHandler).
+
+### type ConnectionOrigin
+
+```go
+type ConnectionOrigin uint8
+```
+
+ConnectionOrigin says why a client dialled a connection.
+
+```go
+const (
+	// ConnectionOriginOpen is a dial made by Open: the single connection, or
+	// one of the MinConns connections of a pool, pre-warmed.
+	ConnectionOriginOpen ConnectionOrigin = iota + 1
+	// ConnectionOriginOnDemand is a pool dial made by a request that found no
+	// idle connection.
+	ConnectionOriginOnDemand
+	// ConnectionOriginRedial is a dial of the single connection made by a
+	// request that found the client without one: after the previous one was
+	// discarded, before a retry for example. AttemptMetrics.OnRetryDial reports
+	// the same dials.
+	ConnectionOriginRedial
+)
+```
+
+#### func (ConnectionOrigin) String
+
+```go
+func (o ConnectionOrigin) String() string
+```
+
+String returns the name of the origin ("open", "on demand", "redial"), or "ConnectionOrigin(n)" for a value without one.
 
 ### type ContextLogger
 
@@ -1280,7 +1524,9 @@ type DiagnosticsHandler interface {
 }
 ```
 
-DiagnosticsHandler is an optional interface for serving FC08 (Diagnostics). The handler returns the response data; the server echoes the sub-function in front of it. For Return Query Data (0x0000) the data should echo req.Data. For Force Listen Only Mode (0x0004), a serial-line device sends no response: return ErrNoResponse to behave like one. Other state changes (restart communications, clear counters) are the handler's to apply. At most 250 data bytes fit in a response.
+DiagnosticsHandler is an optional interface for serving FC08 (Diagnostics). The handler returns the response data; the server echoes the sub-function in front of it. For Return Query Data (0x0000) the data should echo req.Data. For Force Listen Only Mode (0x0004), a serial-line device sends no response: return ErrNoResponse to behave like one. Other state changes (restart communications, clear counters) are the handler's to apply; the server keeps no listen-only state of its own.
+
+The data field is N x 2 bytes in both directions (MODBUS Application Protocol V1.1b3, section 6.8). A request with an odd number of data bytes is answered with Illegal Data Value without calling the handler; data the handler returns with an odd length, or more than 250 bytes, is not sent: the request is answered with Server Device Failure. Vendor sub-functions reach the handler like the others.
 
 ### type DiagnosticsRequest
 
@@ -1315,6 +1561,43 @@ Like net.Dialer.DialContext, a Dialer returns a connection exactly when the erro
 For udp and rtuoverudp, each Read of the connection must return one datagram and each Write must send one, as a connected \*net.UDPConn does.
 
 A Dialer, or a method of a connection it returned, that does not return normally is stopped there and logged at error level with its stack, through Config.Logger, and fails as if it had returned an error that describes it: the dial fails, or the request using the connection does and the connection is not used again. The errors a Dialer or its connections return are not guarded: errors.Is and errors.As call their methods on the goroutine that called the client.
+
+### type DiscardReason
+
+```go
+type DiscardReason uint8
+```
+
+DiscardReason says why a client discarded a connection.
+
+```go
+const (
+	// DiscardTransportError is a connection whose exchange failed (a timeout,
+	// a read or write error, a frame that could not be read, a cancelled
+	// request): Err is that error. A single serial connection (rtu, ascii)
+	// is kept after an error that leaves it usable, and is not reported.
+	DiscardTransportError DiscardReason = iota + 1
+	// DiscardSuspectResponse is a connection that returned a response showing
+	// that requests and responses are no longer aligned on it (see
+	// ResponseAnomalyMetrics): the response is still returned to the caller.
+	// Err is nil.
+	DiscardSuspectResponse
+	// DiscardRetry is the single connection, closed before a retry so that
+	// the retry runs on a new one: Err is the error of the attempt.
+	DiscardRetry
+	// DiscardOpenFailed is a pre-warmed pool connection closed because a
+	// later pre-warm dial of the same Open failed: Err is that dial's error.
+	DiscardOpenFailed
+)
+```
+
+#### func (DiscardReason) String
+
+```go
+func (r DiscardReason) String() string
+```
+
+String returns the name of the reason ("transport error", "suspect response", "retry", "open failed"), or "DiscardReason(n)" for a value without one.
 
 ### type DiscreteInputsRequest
 
@@ -1612,6 +1895,9 @@ ObservabilityConfig groups logging and metrics settings. Use with NewConfig for 
 
 ```go
 type PDUExchange struct {
+	// ConnectionID is the connection the response came from (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// UnitID is the unit id the request was addressed to (and the response
 	// carried).
 	UnitID uint8
@@ -1745,6 +2031,64 @@ ProbeResult contains the detailed outcome of a function code probe.
 type ProtocolError = protocol.ProtocolError
 ```
 
+### type ProtocolViolation
+
+```go
+type ProtocolViolation struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
+	// ClientAddr and ClientRole identify the connection, as the handlers
+	// receive them (ClientRole is empty on tcp).
+	ClientAddr string
+	ClientRole string
+	// TransactionID, ProtocolID, Length and UnitID are the fields of the MBAP
+	// header as received.
+	TransactionID uint16
+	ProtocolID    uint16
+	Length        uint16
+	UnitID        uint8
+	// FunctionCode is the request's function code. HasFunctionCode is false
+	// for an MBAP header the server could not frame: nothing after it was
+	// read, and FunctionCode is zero.
+	FunctionCode    FunctionCode
+	HasFunctionCode bool
+	// Err says what is wrong (see ProtocolViolationMetrics).
+	Err error
+	// Exception is the exception code the server decided to answer with;
+	// zero when it decided to send no answer. Closed reports whether the
+	// server decided to close the connection because of it. Both are
+	// decisions, not observed outcomes: the callback runs before the answer
+	// is written and before the connection is closed. A write that then
+	// fails, or a client that left first, is reported by
+	// ConnectionCloseMetrics (CloseWriteFailed, CloseClientClosed), which
+	// also reports the close itself.
+	Exception ExceptionCode
+	Closed    bool
+}
+```
+
+ProtocolViolation is a request that breaks the framing or the structure of its function code, as reported to ProtocolViolationMetrics.
+
+### type ProtocolViolationMetrics
+
+```go
+type ProtocolViolationMetrics interface {
+	OnProtocolViolation(v ProtocolViolation)
+}
+```
+
+ProtocolViolationMetrics is an optional extension of ServerMetrics. A ServerConfig.Metrics that implements it is told of every request on a tcp or tcp+tls connection that breaks the framing or the structure the Modbus specification gives its function code, with what the server read of it and what it did about it:
+
+  - an MBAP header the server cannot frame: a length outside 2-254, or a protocol ID other than 0 (Err is ErrInvalidMBAPLength or ErrUnknownProtocolID; the connection is closed, nothing is answered);
+  - a request PDU shorter or longer than the fields of its function code or than its byte count announces, which on a TCP stream is what a wrong MBAP length looks like (Err matches ErrProtocolError and ErrIllegalDataValue; answered with exception 3, or 1 for a function code the server does not serve, and the connection is closed);
+  - a complete PDU whose fields contradict one another or whose data is not what the function code takes (Err matches ErrProtocolError and ErrIllegalDataValue; answered with exception 3, the connection kept);
+  - a request whose function code has the exception bit set, 0x80-0xFF (Err matches ErrIllegalFunction; not answered, the connection kept).
+
+Not reported here: a function code the server does not serve, a value out of range (a quantity of 0, an address beyond 0xFFFF) and the errors of the handlers, ErrProtocolError included. Those are ordinary outcomes, reported to ServerMetrics.OnError and ServerConfig.PDUTap. A request that is reported here is also reported there, when it was framed, and ConnectionCloseMetrics reports the close of a connection it ended.
+
+OnProtocolViolation runs on the connection's goroutine, after ServerMetrics.OnError for a framed request and before ConnectionLifecycleMetrics.OnConnectionClosed. It must not block; one that does not return normally is logged, and the server goes on as if it had returned. It may call Stop or Shutdown (see RequestHandler).
+
 ### type ReadFileRecordHandler
 
 ```go
@@ -1837,6 +2181,10 @@ const (
 	// RejectNotAllowed is a tcp or tcp+tls connection the server closed as soon
 	// as it was accepted, because ServerConfig.AllowClient refused it.
 	RejectNotAllowed
+	// RejectPerHostLimit is a tcp or tcp+tls connection the server closed as
+	// soon as it was accepted, because its host already had
+	// ServerConfig.MaxClientsPerHost connections.
+	RejectPerHostLimit
 )
 ```
 
@@ -1846,7 +2194,7 @@ const (
 func (r RejectReason) String() string
 ```
 
-String returns the name of the reason ("max clients", "tls handshake evicted", "not allowed"), or "RejectReason(n)" for a value without one.
+String returns the name of the reason ("max clients", "tls handshake evicted", "not allowed", "per-host limit"), or "RejectReason(n)" for a value without one.
 
 ### type ReportServerIDHandler
 
@@ -1856,7 +2204,7 @@ type ReportServerIDHandler interface {
 }
 ```
 
-ReportServerIDHandler is an optional interface for serving FC17 (Report Server ID). The handler returns the device-specific payload: by convention the server ID bytes, a run indicator byte (0xFF on, 0x00 off) and optional additional data (Client.ReportServerID reads the last byte as the run indicator). The server adds the byte count. At most 251 bytes fit.
+ReportServerIDHandler is an optional interface for serving FC17 (Report Server ID). The handler returns everything after the byte count, in the order of MODBUS Application Protocol V1.1b3, section 6.13: the Server ID (device specific, at least one byte is advisable), the Run Indicator Status byte (0x00 OFF, 0xFF ON) and optional Additional Data. The server adds the byte count; it cannot tell where the Server ID ends, so it does not check the run indicator. Data must hold at least the run indicator: an empty result is answered with Server Device Failure, as is one of more than 251 bytes. Client.ReportServerID guesses the run indicator from the last byte only when it is 0x00 or 0xFF; a device with Additional Data should document the length of its Server ID so that clients can use ReportServerIDResponse.RunIndicator.
 
 ### type ReportServerIDRequest
 
@@ -1880,9 +2228,91 @@ type ReportServerIDResponse struct {
 }
 ```
 
-ReportServerIDResponse is the response from Report Server ID (FC 0x11). Data contains the raw device-specific payload (server ID bytes, run indicator, and any optional additional data).
+ReportServerIDResponse is the response from Report Server ID (FC 0x11). Data contains the raw device-specific payload after the byte count: the Server ID, the Run Indicator Status byte (0x00 OFF, 0xFF ON) and any Additional Data (MODBUS Application Protocol V1.1b3, section 6.13). The length of the Server ID is device specific, so where the run indicator is cannot be told from the response alone.
 
-RunIndicatorStatus is a heuristic parse: when the payload contains at least 2 bytes, the last byte is interpreted as the run indicator (0xFF = ON, 0x00 = OFF). This follows the common convention but may misinterpret vendor-specific data on devices that pack additional information into the payload. When the heuristic does not apply (fewer than 2 bytes), the field is nil. Callers that need strict parsing should inspect Data directly.
+RunIndicatorStatus is a guess from the last byte of Data, not a parse: it is set whenever Data has at least 2 bytes, true when that byte is 0xFF and false otherwise. That byte is the run indicator only on a device that sends no Additional Data. When the length of the device's Server ID is known, use RunIndicator instead, which also tells a byte that is neither 0x00 nor 0xFF.
+
+#### func (ReportServerIDResponse) RunIndicator
+
+```go
+func (rs *ReportServerIDResponse) RunIndicator(serverIDLen int) (on, ok bool)
+```
+
+RunIndicator returns the Run Indicator Status of a device whose Server ID is serverIDLen bytes long: the byte of Data at that offset. ok is false when Data is too short for it or the byte is neither 0x00 (OFF) nor 0xFF (ON).
+
+### type RequestAccess
+
+```go
+type RequestAccess uint8
+```
+
+RequestAccess says what a request does to the data of a device, as told to a RequestAuthorizer.
+
+```go
+const (
+	// AccessRead is a request that reads data: FC01, FC02, FC03, FC04, FC20
+	// and FC24.
+	AccessRead RequestAccess = iota + 1
+	// AccessWrite is a request that writes data: FC05, FC06, FC15, FC16,
+	// FC21 and FC22.
+	AccessWrite
+	// AccessReadWrite is FC23, which writes and then reads registers.
+	AccessReadWrite
+	// AccessDiagnostic is a request that reads the state or the
+	// identification of the device rather than its data, or acts on its
+	// communication: FC07, FC08, FC11, FC12, FC17 and FC43. What an FC08
+	// request does depends on its sub-function (AuthorizationRequest.
+	// SubFunction): some reset counters, restart the communications port or
+	// make the device listen only; the server does not classify them.
+	AccessDiagnostic
+)
+```
+
+#### func (RequestAccess) String
+
+```go
+func (a RequestAccess) String() string
+```
+
+String returns the name of the access ("read", "write", "read/write", "diagnostic"), or "RequestAccess(n)" for a value without one.
+
+### type RequestAuthorizer
+
+```go
+type RequestAuthorizer interface {
+	AuthorizeRequest(ctx context.Context, req *AuthorizationRequest) error
+}
+```
+
+RequestAuthorizer decides whether the server serves a request (ServerConfig.Authorizer). It is the place to enforce an application's own access rules, for example by the role of a tcp+tls client, at the server's boundary rather than in every handler method.
+
+AuthorizeRequest is called once for every request the server would hand to a handler method: after the server has checked the request's framing, its structure and its values, and that a handler serves its function code, and right before the handler method is called. A request the server answers itself (an exception for a malformed request, Illegal Function for a function code no handler serves) does not reach it. ctx is the connection's context, as the handler would receive it.
+
+nil serves the request. Any other error refuses it: the handler method is not called, so the request has no effect, and the server answers with an exception, as for an error of a handler:
+
+  - an error that matches one of the exception errors (ErrIllegalFunction, ErrIllegalDataAddress, ErrIllegalDataValue, ErrServerDeviceFailure, ErrAcknowledge, ErrServerDeviceBusy, ErrMemoryParityError, ErrGWPathUnavailable, ErrGWTargetFailedToRespond) is answered with that exception;
+  - ErrNoResponse (or an error that matches it) leaves the request unanswered, the connection kept, as a handler returning it does: the client runs into its timeout. Use it only where a silent device is what the client expects;
+  - any other error is answered with Illegal Function (exception 01), which MODBUS Application Protocol V1.1b3, section 7, defines as a function code that "is not an allowable action for the server".
+
+ServerMetrics.OnError is called for a refused request with an error that matches ErrNotAuthorized and wraps the authorizer's error, and ServerConfig.PDUTap sees the request and the exception answered.
+
+The server holds no lock while it calls AuthorizeRequest, on the connection's goroutine: it must be safe for concurrent use, and should return quickly, as the connection waits for it. One that does not return normally is logged at error level with its stack, and the request is refused with Server Device Failure (exception 04): a failed authorizer never lets a request through. It may call Stop or Shutdown (see RequestHandler); the request is then not answered. The methods of the error it returns are called through the same guard.
+
+### type RequestAuthorizerFunc
+
+```go
+type RequestAuthorizerFunc func(ctx context.Context, req *AuthorizationRequest) error
+```
+
+RequestAuthorizerFunc is a function that serves as a RequestAuthorizer. A ServerConfig holding one is not comparable with ==: comparing it panics, as comparing two functions would.
+
+#### func (RequestAuthorizerFunc) AuthorizeRequest
+
+```go
+func (f RequestAuthorizerFunc) AuthorizeRequest(ctx context.Context, req *AuthorizationRequest) error
+```
+
+AuthorizeRequest returns f(ctx, req).
 
 ### type RequestHandler
 
@@ -1903,9 +2333,83 @@ An error returned by a handler method is sent to the client as the matching Modb
 
 Ownership. The slices in a request (Args, WriteValues, Data, Requests, Records) are the handler's: the server made them for this call and does not use them again. A slice, or a response struct, that a handler returns is read by the server after the handler has returned, while it encodes the response, and not kept after that: return a copy of shared state, not a view of it (h.regs\[a:b]) that another call may be writing to. This holds for the optional handler interfaces as well.
 
-Stopping the server from a handler. A handler method may call Stop or Shutdown, and so may a ServerMetrics, ConnectionMetrics, ConnectionLifecycleMetrics or ConnectionCloseMetrics method, ServerConfig.AllowClient, ServerConfig.PDUTap, the Logger and the sink of the security events (ServerConfig.Security). The call stops the server as a call from any other goroutine does: it stops accepting, cancels the context of every connection and closes the listener and the client sockets. Then it waits for the server's goroutines, the handlers running for other connections included, except the ones of the connection it was called on (or the accept loop, for ServerConfig.AllowClient, a ConnectionMetrics method or a log entry of the accept loop). Stop returns once they have ended. Shutdown also returns when its context ends, and at once when that context is already done: Shutdown with the handler's own context, which the shutdown cancels, returns context.Canceled without waiting.
+Stopping the server from a handler. A handler method may call Stop or Shutdown, and so may a method of ServerConfig.Metrics (ServerMetrics and its optional extensions: ConnectionMetrics, ConnectionLifecycleMetrics, ConnectionCloseMetrics, TLSHandshakeMetrics, AcceptErrorMetrics, ProtocolViolationMetrics), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer, the Logger and the sink of the security events (ServerConfig.Security). The call stops the server as a call from any other goroutine does: it stops accepting, cancels the context of every connection and closes the listener and the client sockets. Then it waits for the server's goroutines, the handlers running for other connections included, except the ones of the connection it was called on (or the accept loop, for ServerConfig.AllowClient, a ConnectionMetrics or AcceptErrorMetrics method or a log entry of the accept loop). Stop returns once they have ended. Shutdown also returns when its context ends, and at once when that context is already done: Shutdown with the handler's own context, which the shutdown cancels, returns context.Canceled without waiting.
 
 When the call returns, the listener and the client sockets are closed and every other goroutine of the server has ended. The caller's connection is still served on the caller's goroutine until the request in progress is complete: that request is not answered (its connection is closed), its handler is still called, with its context cancelled, when the call came from OnRequest, and its outcome is reported to ServerMetrics as usual. Then no further request of the connection is dispatched and its goroutines end; they may still write log entries. A Stop on any other goroutine (go srv.Stop() from a handler, say) waits for them too, and so for the handler that started it to return.
+
+### type ResponseAnomaly
+
+```go
+type ResponseAnomaly struct {
+	Kind ResponseAnomalyKind
+	// ConnectionID is the connection the exchange ran on (see ConnectionID).
+	// Since v1.22.0.
+	ConnectionID ConnectionID
+	// UnitID and FunctionCode are those of the request in flight.
+	UnitID       uint8
+	FunctionCode FunctionCode
+	// ExpectedTransactionID is the request's transaction ID, TransactionID
+	// and ProtocolID those of the skipped frame (AnomalyTransactionID and
+	// AnomalyProtocolID; zero for AnomalyDiscarded). A transaction ID
+	// correlates a response with its request: it is not protection against
+	// replay.
+	ExpectedTransactionID uint16
+	TransactionID         uint16
+	ProtocolID            uint16
+	// Discarded is the number of bytes discarded (AnomalyDiscarded; zero
+	// for the others).
+	Discarded int
+}
+```
+
+ResponseAnomaly is one thing a client tolerated during the exchange of a request, as reported to ResponseAnomalyMetrics.
+
+### type ResponseAnomalyKind
+
+```go
+type ResponseAnomalyKind uint8
+```
+
+ResponseAnomalyKind says what a client tolerated, as reported to ResponseAnomalyMetrics.
+
+```go
+const (
+	// AnomalyTransactionID is an MBAP frame (tcp, tcp+tls, udp) whose
+	// transaction ID is not the request's: a late answer to an earlier
+	// request, for example. The client skipped it and went on waiting.
+	AnomalyTransactionID ResponseAnomalyKind = iota + 1
+	// AnomalyProtocolID is an MBAP frame (tcp, tcp+tls, udp) whose protocol
+	// ID is not 0. The client skipped it and went on waiting. After 10
+	// skipped frames of either kind the request fails, with
+	// ErrBadTransactionID or ErrUnknownProtocolID (the last one skipped).
+	AnomalyProtocolID
+	// AnomalyDiscarded is bytes a serial framing (rtu, ascii, rtuovertcp,
+	// rtuoverudp, asciiovertcp) read and discarded before it wrote the
+	// request: the rest of an earlier exchange that failed or was abandoned
+	// (a late answer), or noise on the line.
+	AnomalyDiscarded
+)
+```
+
+#### func (ResponseAnomalyKind) String
+
+```go
+func (k ResponseAnomalyKind) String() string
+```
+
+String returns the name of the kind ("transaction id", "protocol id", "discarded"), or "ResponseAnomalyKind(n)" for a value without one.
+
+### type ResponseAnomalyMetrics
+
+```go
+type ResponseAnomalyMetrics interface {
+	OnResponseAnomaly(a ResponseAnomaly)
+}
+```
+
+ResponseAnomalyMetrics is an optional extension of ClientMetrics. A Config.Metrics that implements it is told of what the client tolerated while it waited for a response, and which therefore does not show in the outcome of the request: frames it skipped and bytes it discarded (see ResponseAnomalyKind). Responses that fail a request (a bad CRC or LRC, a truncated frame, another unit ID, a wrong echo, an exception) are reported through the request's error, to ClientMetrics.OnError and AttemptMetrics.OnAttempt, and not here.
+
+OnResponseAnomaly runs on the goroutine executing the request, while the request holds its connection: like AttemptMetrics, it must not block and must not make requests on the same client. One that does not return normally is logged, and the request goes on as if it had returned.
 
 ### type RetryPolicy
 
@@ -2050,14 +2554,20 @@ See package secevent for the events and how they are delivered, and ServerConfig
 ```go
 type Server struct {
 
+	// The optional extensions of metrics the server looks for on
+	// every connection or request, found once by NewServer (nil: not
+	// implemented).
+
 	// tcpClients holds the sockets of the connected clients.
 
 	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
 	// handshake has not completed (tcp+tls only).
 
-	// pendingIDs maps a socket of tlsPending to its connection id, when the
-	// run reports security events, so that the event of its eviction belongs
-	// to the connection its conn.accepted announced.
+	// pendingIDs holds the ConnectionID of every socket in tlsPending, for
+	// the report of one that is evicted.
+
+	// pendingEnds holds the connEnd of every socket in tlsPending, when the
+	// run reports security events, for the event of one that is evicted.
 
 	// run is what the last Start created. The fields below it are copies of its
 	// members, written by Start under lock and kept after the server has stopped.
@@ -2102,7 +2612,7 @@ Shutdown gracefully shuts down the server. It stops accepting new connections, c
 
 Only the first Shutdown or Stop of a Start..Stop cycle waits. A call made while that one is still waiting, or after it returned because its context ended, finds the server stopped and returns nil at once, although handler goroutines of the cycle may still be running; nothing else waits for them.
 
-Shutdown may be called from the application's code that the server runs: a RequestHandler method, a ServerMetrics, ConnectionMetrics, ConnectionLifecycleMetrics or ConnectionCloseMetrics method, ServerConfig.AllowClient, ServerConfig.PDUTap, the Logger. It then waits for every goroutine of the server except the ones of the connection, or of the accept loop, that it was called on (see RequestHandler, "Stopping the server from a handler"). When ctx is already done once the listener and the client sockets are closed, as the context a handler received is (the shutdown cancels it), such a call returns ctx.Err() without waiting.
+Shutdown may be called from the application's code that the server runs: a RequestHandler method, a method of ServerConfig.Metrics (ServerMetrics or one of its optional extensions), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer, the Logger. It then waits for every goroutine of the server except the ones of the connection, or of the accept loop, that it was called on (see RequestHandler, "Stopping the server from a handler"). When ctx is already done once the listener and the client sockets are closed, as the context a handler received is (the shutdown cancels it), such a call returns ctx.Err() without waiting.
 
 #### func (Server) Start
 
@@ -2120,7 +2630,7 @@ func (ms *Server) Stop() error
 
 Stop stops the server and blocks until all handler goroutines have exited. It is equivalent to Shutdown(context.Background()), and like Shutdown it waits only when it is the first such call of a Start..Stop cycle: a Stop after a Shutdown whose context ended, or while another Stop is waiting, returns nil at once.
 
-Called from a RequestHandler method, a ServerMetrics, ConnectionMetrics, ConnectionLifecycleMetrics or ConnectionCloseMetrics method, ServerConfig.AllowClient, ServerConfig.PDUTap or the Logger, Stop returns once every other goroutine of the server has ended; it does not wait for the connection, or the accept loop, it was called on (see RequestHandler).
+Called from a RequestHandler method, a method of ServerConfig.Metrics (ServerMetrics or one of its optional extensions), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer or the Logger, Stop returns once every other goroutine of the server has ended; it does not wait for the connection, or the accept loop, it was called on (see RequestHandler).
 
 ### type ServerConfig
 
@@ -2146,7 +2656,40 @@ type ServerConfig struct {
 	// on the goroutine that accepts connections, so it should return quickly;
 	// one that panics refuses the connection. A function serves as one through
 	// ClientFilterFunc.
-	AllowClient   ClientFilter
+	AllowClient ClientFilter
+	// MaxClientsPerHost, when set, limits the tcp and tcp+tls connections
+	// the server serves at once from one remote host (the IP address of the
+	// client, without its port), connections still in their TLS handshake
+	// included. A connection beyond it is closed as soon as it is accepted,
+	// before anything is read from it: it takes no MaxClients slot, does not
+	// replace a connection still handshaking, and ConnectionMetrics reports
+	// it as RejectPerHostLimit. Zero (the default) sets no limit. Clients
+	// behind one NAT or proxy share a host.
+	MaxClientsPerHost uint
+	// FirstRequestTimeout, when set, replaces Timeout as the idle timeout of
+	// a connection until its first complete request has been read: a client
+	// that connects and sends no request is closed after it, and
+	// ConnectionCloseMetrics reports CloseFirstRequestTimeout. It runs from
+	// the moment the server starts serving the connection (on tcp+tls, once
+	// its handshake completed; TLSHandshakeTimeout bounds the handshake).
+	// Zero (the default) uses Timeout; negative is a configuration error.
+	FirstRequestTimeout time.Duration
+	// FrameTimeout, when set, bounds the time a request takes to arrive in
+	// full once its first byte has been read: a request still incomplete
+	// after it closes the connection, and ConnectionCloseMetrics reports
+	// CloseFrameTimeout. It applies to every request, also while earlier
+	// ones are being served, and together with the idle timeout: the earlier
+	// of the two ends the wait. Zero (the default) leaves a request the idle
+	// timeout alone, as before; negative is a configuration error. A value
+	// well above the round-trip time of the slowest legitimate client keeps
+	// it from cutting off a request split over several segments.
+	FrameTimeout time.Duration
+	// Authorizer, when set, is asked about every request before a handler
+	// method serves it, and can refuse it: the handler is then not called,
+	// and the client is answered with an exception (see RequestAuthorizer).
+	// Nil (the default) serves every request, as before. A function serves
+	// as one through RequestAuthorizerFunc.
+	Authorizer    RequestAuthorizer
 	TLSServerCert *tls.Certificate
 	TLSClientCAs  *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
@@ -2169,6 +2712,87 @@ type ServerConfig struct {
 ```
 
 Server configuration object.
+
+### type ServerConnectionEvent
+
+```go
+type ServerConnectionEvent struct {
+	Kind ServerConnectionEventKind
+	// ConnectionID is the connection's identifier, the same as in the
+	// TLSHandshakeInfo, ProtocolViolation, AuthorizationRequest and
+	// ServerPDUExchange of the connection.
+	ConnectionID ConnectionID
+	// RemoteAddr and LocalAddr are the addresses of the connection (host:port),
+	// empty when the socket does not have one.
+	RemoteAddr string
+	LocalAddr  string
+	// Role and RoleErr are the client's role and the error of an unusable
+	// Modbus Role extension, as in TLSHandshakeInfo (tcp+tls; Opened and
+	// Closed only).
+	Role    string
+	RoleErr error
+	// RejectReason is set for ServerConnectionRejected.
+	RejectReason RejectReason
+	// CloseReason and Err are set for ServerConnectionClosed: why the server
+	// stopped serving the connection, and the error that ended it (never nil),
+	// as reported to ConnectionCloseMetrics.
+	CloseReason CloseReason
+	Err         error
+	// Age is how long the server served the connection (Closed only): the time
+	// since it was opened.
+	Age time.Duration
+}
+```
+
+ServerConnectionEvent is one step of the lifecycle of a server connection (see ServerConnectionMetrics).
+
+### type ServerConnectionEventKind
+
+```go
+type ServerConnectionEventKind uint8
+```
+
+ServerConnectionEventKind is what happened to a server connection, as reported in a ServerConnectionEvent.
+
+```go
+const (
+	// ServerConnectionRejected is a connection the server closed as soon as
+	// it was accepted, or (RejectTLSHandshakeEvicted) during its TLS
+	// handshake. RejectReason says why.
+	ServerConnectionRejected ServerConnectionEventKind = iota + 1
+	// ServerConnectionOpened is a connection the server starts serving.
+	ServerConnectionOpened
+	// ServerConnectionClosed is a connection the server stopped serving.
+	// CloseReason and Err say why.
+	ServerConnectionClosed
+)
+```
+
+#### func (ServerConnectionEventKind) String
+
+```go
+func (k ServerConnectionEventKind) String() string
+```
+
+String returns the name of the kind ("rejected", "opened", "closed"), or "ServerConnectionEventKind(n)" for a value without one.
+
+### type ServerConnectionMetrics
+
+```go
+type ServerConnectionMetrics interface {
+	OnServerConnection(ev ServerConnectionEvent)
+}
+```
+
+ServerConnectionMetrics is an optional extension of ServerMetrics: the detailed lifecycle of the tcp and tcp+tls connections of a server, with their ConnectionID. A ServerConfig.Metrics that implements it is called at the same points as ConnectionMetrics.OnConnectionRejected, ConnectionLifecycleMetrics and ConnectionCloseMetrics, whether or not it implements those, which keep their signatures and are still called:
+
+  - ServerConnectionRejected for every connection reported to OnConnectionRejected, right after it;
+  - ServerConnectionOpened for every connection reported to OnConnectionOpened (on tcp+tls, once its TLS handshake completed), right after it;
+  - ServerConnectionClosed once for every opened connection, after OnConnectionCloseReason, with the same exception: a connection that a Shutdown called from one of its own callbacks stopped is not reported.
+
+A tcp+tls connection whose TLS handshake fails is neither opened nor closed here; TLSHandshakeMetrics reports it, with the same ConnectionID. A Shutdown or Stop called from a callback of a connection (this one included) ends that connection's callbacks: nothing more is reported for it.
+
+OnServerConnection runs on the accept loop (Rejected) or on the connection's goroutine, with no lock held, and must not block. One that does not return normally is logged at error level with the stack, and the server goes on as if it had returned. It may call Stop or Shutdown (see RequestHandler).
 
 ### type ServerMetrics
 
@@ -2202,20 +2826,26 @@ A method may call Stop or Shutdown on the server that calls it; see RequestHandl
 
 ```go
 type ServerPDUExchange struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// ClientAddr is the client's remote host:port, ClientRole its role (tcp+tls;
 	// empty on tcp), as the handlers receive them.
 	ClientAddr string
 	ClientRole string
 	// UnitID is the unit id the request was addressed to.
 	UnitID uint8
-	// Request is the request PDU as received.
+	// Request is the request PDU as received. For a request whose MBAP
+	// length the server rejected as soon as it read the function code (a
+	// fixed-size function code), it is the function code alone.
 	Request []byte
 	// Response is the response PDU the server answers with: an exception
 	// response has the function code with bit 0x80 set, the server's own
 	// exceptions (Illegal Function for a function code no handler serves, for
 	// example) included. It is nil when the server sends no response: a handler
-	// that returned ErrNoResponse, or a request that violated the protocol, on
-	// which the server closes the connection.
+	// that returned ErrNoResponse, a request whose function code has the
+	// exception bit set (0x80-0xFF; the connection is kept), or a handler that
+	// returned ErrProtocolError, on which the server closes the connection.
 	Response []byte
 	// Received is the time the server read the request from the connection,
 	// Answered the time its answer was decided, before the response is
@@ -2260,6 +2890,69 @@ func (f ServerPDUTapFunc) OnServerPDU(ctx context.Context, ex ServerPDUExchange)
 ```
 
 OnServerPDU calls f(ctx, ex).
+
+### type TLSHandshakeInfo
+
+```go
+type TLSHandshakeInfo struct {
+	// ConnectionID is the connection the handshake ran on (see ConnectionID):
+	// the same in the other reports of that connection. Since v1.22.0.
+	ConnectionID ConnectionID
+	// LocalAddr and RemoteAddr are the addresses of the connection
+	// (host:port); empty when the connection does not report one.
+	LocalAddr  string
+	RemoteAddr string
+	// Err is nil when the handshake completed and the peer's certificate was
+	// verified, else the error it failed with, as crypto/tls returned it: a
+	// certificate that does not verify, a timeout (os.ErrDeadlineExceeded),
+	// a connection that was closed, or "no client certificate received". A
+	// client's handshake that failed is also returned, wrapped, by the dial.
+	Err error
+	// Duration is the time the handshake took.
+	Duration time.Duration
+	// Version and CipherSuite are those negotiated (tls.VersionTLS13,
+	// tls.TLS_AES_128_GCM_SHA256, ...); zero when the handshake did not get
+	// that far. ServerName is the server name the client asked for (SNI).
+	Version     uint16
+	CipherSuite uint16
+	ServerName  string
+	// PeerCertificates is the certificate chain the peer sent, leaf first;
+	// empty when none was received, which may be the case for a handshake
+	// that failed.
+	PeerCertificates []*x509.Certificate
+	// Verified reports whether the peer's chain was verified against
+	// ServerConfig.TLSClientCAs (server) or Config.TLSRootCAs (client). It is
+	// true for every completed handshake.
+	Verified bool
+	// Role is the role of the client from the Modbus Role extension of its
+	// certificate, as the handlers receive it in ClientRole; empty when it
+	// has none or the handshake failed. Server only.
+	Role string
+	// RoleErr is non-nil when the client's certificate carries a Modbus Role
+	// extension that the server could not use (it wraps ErrInvalidRole), so
+	// that a missing role (Role empty, RoleErr nil) can be told from an
+	// unusable one. Server only.
+	RoleErr error
+}
+```
+
+TLSHandshakeInfo is the outcome of one TLS handshake, as reported to TLSHandshakeMetrics. It is the receiver's: the certificates are parsed afresh for each call and are not used by the library afterwards.
+
+### type TLSHandshakeMetrics
+
+```go
+type TLSHandshakeMetrics interface {
+	OnTLSHandshake(info TLSHandshakeInfo)
+}
+```
+
+TLSHandshakeMetrics is an optional extension of ServerMetrics and of ClientMetrics: a ServerConfig.Metrics or Config.Metrics that implements it is told the outcome of every TLS handshake of a tcp+tls connection.
+
+On a server, OnTLSHandshake is called once for every tcp+tls connection the server admitted (not refused through AllowClient, MaxClients or MaxClientsPerHost), when its handshake has ended: completed, failed, timed out after TLSHandshakeTimeout, or cut short because the connection was closed to make room for a newer one (ConnectionMetrics also reports that, as RejectTLSHandshakeEvicted) or because the server stopped. It runs on the connection's goroutine, before ConnectionLifecycleMetrics.OnConnectionOpened for a connection that is then served. A handshake that completed while the connection was being evicted is reported as completed, and the connection is not served: OnConnectionOpened says which connections were.
+
+On a client, it is called for every handshake of a dial (Open, a re-dial, a connection of the pool), on the goroutine that dials, after the handshake and before the connection is used. As for AttemptMetrics, it must not make requests on the same client.
+
+It must not block. A method that does not return normally is logged at error level with its stack, and the library goes on as if it had returned: the handshake's outcome is not changed. On a server it may call Stop or Shutdown (see RequestHandler).
 
 ### type TransportConfig
 

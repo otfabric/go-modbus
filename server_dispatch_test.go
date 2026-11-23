@@ -162,8 +162,10 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 		fc      FunctionCode
 		payload []byte
 		// wantExc is the expected exception code; 0 means the link must be
-		// dropped without a response (protocol error).
+		// dropped without a response (protocol error). closes: after the
+		// exception the link is closed (a PDU length error).
 		wantExc ExceptionCode
+		closes  bool
 		wantErr error // error reported to metrics
 	}{
 		{
@@ -211,7 +213,7 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 		{
 			name:    "FC23 zero write quantity",
 			handler: &fnHandler{readWrite: okRW},
-			fc:      FCReadWriteMultipleRegs, payload: append(u16(0, 1, 0, 0), 0x00, 0x00),
+			fc:      FCReadWriteMultipleRegs, payload: append(u16(0, 1, 0, 0), 0x00),
 			wantExc: exIllegalDataValue, wantErr: ErrIllegalDataValue,
 		},
 		{
@@ -230,7 +232,13 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 			name:    "FC23 data longer than its byte count",
 			handler: &fnHandler{readWrite: okRW},
 			fc:      FCReadWriteMultipleRegs, payload: append(append(u16(0, 1, 0, 1), 0x02), 0x00, 0x07, 0xFF),
-			wantErr: ErrProtocolError,
+			wantExc: exIllegalDataValue, closes: true, wantErr: ErrIllegalDataValue,
+		},
+		{
+			name:    "FC23 data shorter than its byte count",
+			handler: &fnHandler{readWrite: okRW},
+			fc:      FCReadWriteMultipleRegs, payload: append(append(u16(0, 1, 0, 1), 0x02), 0x00),
+			wantExc: exIllegalDataValue, closes: true, wantErr: ErrProtocolError,
 		},
 		{
 			name:    "FC23 byte count disagrees with write quantity",
@@ -301,8 +309,8 @@ func TestServerDispatch_ExceptionsAndProtocolErrors(t *testing.T) {
 					t.Fatal("link was not closed after a protocol error")
 				}
 			} else {
-				if tr.closed {
-					t.Fatal("link was closed for a request that only warrants an exception")
+				if tr.closed != tc.closes {
+					t.Fatalf("link closed %v after the exception, want %v", tr.closed, tc.closes)
 				}
 				want := &adu.Response{
 					UnitID:        0x2A,
@@ -589,7 +597,7 @@ func TestServerHandleTCPClient_UnknownTransportClosesConnection(t *testing.T) {
 	defer func() { _ = c2.Close() }()
 	ms.tcpClients = []net.Conn{c1}
 	run.wg.Add(1)
-	ms.handleTCPClient(run, c1, 0)
+	ms.handleTCPClient(run, c1, 1, nil)
 
 	if len(ms.tcpClients) != 0 {
 		t.Fatalf("client still tracked: %d", len(ms.tcpClients))
@@ -608,7 +616,7 @@ func TestServerStartTLS_DeadlineErrorOnClosedSocket(t *testing.T) {
 	c1, c2 := net.Pipe()
 	_ = c1.Close()
 	_ = c2.Close()
-	tlsSock, role, err := ms.startTLS(c1)
+	tlsSock, role, _, err := ms.startTLS(c1)
 	if !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("want io.ErrClosedPipe, got %v", err)
 	}
@@ -623,17 +631,23 @@ func TestServerExtractRole_MalformedExtension(t *testing.T) {
 		"truncated UTF8String":  {0x0c, 0x05, 'a'},
 		"not a UTF8String":      {0x13, 0x02, 'o', 'p'},
 		"too short to be a TLV": {0x0c},
+		"bytes after the value": {0x0c, 0x02, 'o', 'p', 0x00},
+		"two values":            {0x0c, 0x02, 'o', 'p', 0x0c, 0x02, 'a', 'd'},
 	}
 	for name, value := range cases {
 		cert := &x509.Certificate{Extensions: []pkix.Extension{{Id: modbusRoleOID, Value: value}}}
-		if role := ms.extractRole(cert); role != "" {
+		role, roleErr := ms.extractRole(cert)
+		if role != "" {
 			t.Errorf("%s: role = %q, want empty", name, role)
+		}
+		if !errors.Is(roleErr, ErrInvalidRole) {
+			t.Errorf("%s: roleErr = %v, want ErrInvalidRole", name, roleErr)
 		}
 	}
 	// Sanity check: a well-formed extension is accepted.
 	cert := &x509.Certificate{Extensions: []pkix.Extension{{Id: modbusRoleOID, Value: []byte{0x0c, 0x02, 'o', 'p'}}}}
-	if role := ms.extractRole(cert); role != "op" {
-		t.Errorf("well-formed extension: role = %q, want %q", role, "op")
+	if role, roleErr := ms.extractRole(cert); role != "op" || roleErr != nil {
+		t.Errorf("well-formed extension: role = %q, %v, want %q, nil", role, roleErr, "op")
 	}
 }
 

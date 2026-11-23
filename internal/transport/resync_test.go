@@ -90,25 +90,41 @@ func TestRTUAnswerAfterCancelDrained(t *testing.T) {
 // Before the request that follows a failed exchange, an answer that is still
 // being received is discarded as a whole, past the minimum window of 3 x t3.5,
 // until the line has been quiet for t3.5.
+//
+// The test depends on wall-clock gaps, so its margins are wide: at 1200 bit/s
+// t3.5 is about 32 ms and the minimum window about 96 ms, while the late bytes
+// come 3 ms apart for at least 120 ms. A scheduler that stretches one of those
+// gaps by less than 29 ms does not end the drain early.
 func TestRTUDrainUntilQuiet(t *testing.T) {
 	client, peer := tcpPair(t)
-	// 4800 bit/s: t3.5 is about 8 ms, the minimum window about 24 ms.
-	rt := NewRTU(client, "", 4800, 50*time.Millisecond, logging.NopLogger())
+	rt := NewRTU(client, "", 1200, 50*time.Millisecond, logging.NopLogger())
 	req := readRegsReq(100)
 	reqLen := len(adu.AssembleRTUFrame(1, 0x03, req.Payload))
 	trickle := make(chan struct{})
+	started := make(chan struct{})
 	go func() {
+		defer func() {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+		}()
 		buf := make([]byte, reqLen)
 		if _, err := io.ReadFull(peer, buf); err != nil {
 			return
 		}
 		<-trickle
-		// Late, slow bytes for about 80 ms, 2 ms apart.
-		for range 40 {
+		// Late, slow bytes for at least 120 ms, 3 ms apart: longer than the
+		// minimum window.
+		for i := range 40 {
 			if _, err := peer.Write([]byte{0x55}); err != nil {
 				return
 			}
-			time.Sleep(2 * time.Millisecond)
+			if i == 0 {
+				close(started)
+			}
+			time.Sleep(3 * time.Millisecond)
 		}
 		rtuReadRegsAnswer(peer)
 	}()
@@ -116,7 +132,8 @@ func TestRTUDrainUntilQuiet(t *testing.T) {
 		t.Fatal("first request answered, want a timeout")
 	}
 	close(trickle)
-	rt.Timeout = time.Second
+	<-started
+	rt.Timeout = 5 * time.Second
 	res, err := rt.ExecuteRequest(context.Background(), readRegsReq(200))
 	if err != nil || !bytes.Equal(res.Payload, []byte{2, 0, 200}) {
 		t.Fatalf("second request: %+v, %v; want its own answer", res, err)

@@ -4,16 +4,21 @@ package modbus
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"time"
 
+	"github.com/otfabric/go-modbus/internal/adu"
 	"github.com/otfabric/go-modbus/internal/callback"
+	inttrans "github.com/otfabric/go-modbus/internal/transport"
 )
 
 // The client calls application code in these places, each through call:
 //
-//   - the methods of Config.Metrics: ClientMetrics (guardedMetrics) and
-//     AttemptMetrics (attemptBridge);
+//   - the methods of Config.Metrics: ClientMetrics (guardedMetrics),
+//     AttemptMetrics (attemptBridge), TLSHandshakeMetrics
+//     (reportTLSHandshake), ResponseAnomalyMetrics (anomalyFunc) and
+//     ClientConnectionMetrics (connectionObserver);
 //   - Config.PDUTap (tapExchange);
 //   - Config.RetryPolicy (guardedRetry);
 //   - Config.Dialer (dialConn) and the methods of the connections it returns
@@ -175,4 +180,41 @@ func (c *appConn) SetReadDeadline(t time.Time) error {
 
 func (c *appConn) SetWriteDeadline(t time.Time) error {
 	return c.mc.call("net.Conn.SetWriteDeadline (Config.Dialer)", func() error { return c.conn.SetWriteDeadline(t) })
+}
+
+// reportTLSHandshake calls TLSHandshakeMetrics.OnTLSHandshake, when
+// Config.Metrics implements it, through call, for the handshake on sock that
+// took d and ended with err.
+func (mc *Client) reportTLSHandshake(id ConnectionID, sock *tls.Conn, d time.Duration, err error) {
+	tm := mc.tlsMetrics
+	if tm == nil {
+		return
+	}
+	info := newTLSHandshakeInfo(sock, d, err)
+	info.ConnectionID = id
+	_ = mc.call("TLSHandshakeMetrics.OnTLSHandshake", func() error { tm.OnTLSHandshake(info); return nil })
+}
+
+// anomalyFunc returns the function a transport reports what it tolerated to
+// (see ResponseAnomalyMetrics): ResponseAnomalyMetrics.OnResponseAnomaly
+// called through call, nil when Config.Metrics does not implement it. id is
+// the connection of the transport the function is for.
+func (mc *Client) anomalyFunc(id ConnectionID) inttrans.AnomalyFunc {
+	am := mc.anomalyMetrics
+	if am == nil {
+		return nil
+	}
+	return func(req *adu.Request, a inttrans.Anomaly) {
+		ra := ResponseAnomaly{
+			Kind:                  ResponseAnomalyKind(a.Kind),
+			ConnectionID:          id,
+			UnitID:                req.UnitID,
+			FunctionCode:          FunctionCode(req.FunctionCode),
+			ExpectedTransactionID: a.Expected,
+			TransactionID:         a.TransactionID,
+			ProtocolID:            a.ProtocolID,
+			Discarded:             a.Discarded,
+		}
+		_ = mc.call("ResponseAnomalyMetrics.OnResponseAnomaly", func() error { am.OnResponseAnomaly(ra); return nil })
+	}
 }

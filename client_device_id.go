@@ -164,6 +164,18 @@ func (mc *Client) ReadDeviceIdentification(ctx context.Context, unitID uint8, ca
 		pageCategory := DeviceIDCategory(res.Payload[1])
 		pageConformityLevel := res.Payload[2]
 
+		// "ReadDevId code: Same as request ReadDevId code" (V1.1b3 6.21). A
+		// device asked for more than its conformity level answers at its
+		// level; some put the code of that level in the response. For stream
+		// access a lower stream code is tolerated, as up to v1.19.0, and
+		// reported in Category; a higher one, or any other code for
+		// individual access, is not.
+		if pageCategory != category && (category == DeviceIDIndividual || pageCategory < DeviceIDBasic || pageCategory > category) {
+			err = newProtocolError("ReadDeviceIdentification",
+				fmt.Sprintf("ReadDevId code 0x%02X in the response, the request had 0x%02X", uint8(pageCategory), uint8(category)))
+			return
+		}
+
 		switch pageConformityLevel {
 		case 0x01, 0x02, 0x03, 0x81, 0x82, 0x83:
 		default:
@@ -187,8 +199,19 @@ func (mc *Client) ReadDeviceIdentification(ctx context.Context, unitID uint8, ca
 				return
 			}
 		}
+		// Number Of Objects counts the objects of this PDU (V1.1b3 6.21, "Number
+		// of identification Object returned in the response"). The second
+		// transaction of the specification's two-page example gives 03 for
+		// the one object it carries; that example contradicts the field's
+		// definition and such a page is rejected below as trailing data.
 		objCount = int(res.Payload[5])
 		offset = 6
+		if category == DeviceIDIndividual && objCount != 1 {
+			// "for an individual access, Number Of Objects = 1".
+			err = newProtocolError("ReadDeviceIdentification",
+				fmt.Sprintf("individual access must return exactly 1 object, the response announces %d", objCount))
+			return
+		}
 
 		for i := 0; i < objCount; i++ {
 			if offset+2 > len(res.Payload) {
@@ -208,6 +231,12 @@ func (mc *Client) ReadDeviceIdentification(ctx context.Context, unitID uint8, ca
 			}
 
 			objValue := string(res.Payload[offset : offset+int(objLen)])
+			if category == DeviceIDIndividual && objID != startObject {
+				// "Object0.Id: ... the requested Object (individual access)".
+				err = newProtocolError("ReadDeviceIdentification",
+					fmt.Sprintf("individual access to object 0x%02X answered with object 0x%02X", uint8(startObject), uint8(objID)))
+				return
+			}
 			if prevValue, dup := seenObjValues[objID]; dup {
 				if prevValue != objValue {
 					err = newProtocolError("ReadDeviceIdentification",

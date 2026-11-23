@@ -8,16 +8,23 @@ import (
 )
 
 // diagEchoResponder answers FC08 by echoing the request sub-function plus
-// dataLen fabricated data bytes. A well-behaved device returns 2 data bytes for
-// the counter/register sub-functions.
+// dataLen data bytes: for the sub-functions whose response is the echo of the
+// request data (0x0000, 0x000A, 0x0014), the request data cut or padded to
+// dataLen bytes, else fabricated bytes. A well-behaved device returns 2 data
+// bytes for the counter/register sub-functions.
 func diagEchoResponder(dataLen int) mockResponder {
 	return func(txid []byte, unitID, fc byte, payload []byte) []byte {
 		if fc != byte(FCDiagnostics) || len(payload) < 2 {
 			return exceptionFrame(txid, unitID, fc, byte(exIllegalFunction))
 		}
 		data := append([]byte{payload[0], payload[1]}, make([]byte, dataLen)...)
-		for i := range dataLen {
-			data[2+i] = byte(0x10 + i)
+		switch DiagnosticSubFunction(bytesToUint16(BigEndian, payload[0:2])) {
+		case DiagReturnQueryData, DiagClearCountersAndDiagnosticReg, DiagClearOverrunCounterAndFlag:
+			copy(data[2:], payload[2:])
+		default:
+			for i := range dataLen {
+				data[2+i] = byte(0x10 + i)
+			}
 		}
 		return normalFrame(txid, unitID, fc, data)
 	}

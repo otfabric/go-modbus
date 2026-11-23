@@ -5,16 +5,16 @@ package secevent
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
-)
 
-var connSeq atomic.Uint64
+	"github.com/otfabric/go-modbus/internal/connid"
+)
 
 // NextConnID returns a new connection identifier: 1, 2, 3, ... for the
 // process, shared by every endpoint, so that the events of one connection can
-// be put together.
-func NextConnID() uint64 { return connSeq.Add(1) }
+// be put together. It is the counter of modbus.ConnectionID: a server's
+// events carry the ConnectionID of their connection.
+func NextConnID() uint64 { return connid.Next() }
 
 // Reporter is what a handler reaches through its context to report an event
 // of its own and to learn who it is talking to.

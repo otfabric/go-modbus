@@ -16,20 +16,26 @@ import (
 // Request and Response are copies owned by the receiver of the exchange; they
 // may be kept and modified.
 type ServerPDUExchange struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// ClientAddr is the client's remote host:port, ClientRole its role (tcp+tls;
 	// empty on tcp), as the handlers receive them.
 	ClientAddr string
 	ClientRole string
 	// UnitID is the unit id the request was addressed to.
 	UnitID uint8
-	// Request is the request PDU as received.
+	// Request is the request PDU as received. For a request whose MBAP
+	// length the server rejected as soon as it read the function code (a
+	// fixed-size function code), it is the function code alone.
 	Request []byte
 	// Response is the response PDU the server answers with: an exception
 	// response has the function code with bit 0x80 set, the server's own
 	// exceptions (Illegal Function for a function code no handler serves, for
 	// example) included. It is nil when the server sends no response: a handler
-	// that returned ErrNoResponse, or a request that violated the protocol, on
-	// which the server closes the connection.
+	// that returned ErrNoResponse, a request whose function code has the
+	// exception bit set (0x80-0xFF; the connection is kept), or a handler that
+	// returned ErrProtocolError, on which the server closes the connection.
 	Response []byte
 	// Received is the time the server read the request from the connection,
 	// Answered the time its answer was decided, before the response is
@@ -79,12 +85,13 @@ func (ms *Server) tapServerExchange(ctx context.Context, req *adu.Request, res *
 		return
 	}
 	ex := ServerPDUExchange{
-		ClientAddr: clientAddr,
-		ClientRole: clientRole,
-		UnitID:     req.UnitID,
-		Request:    pduBytes(req.FunctionCode, req.Payload),
-		Received:   received,
-		Answered:   time.Now(),
+		ConnectionID: connFrom(ctx).id,
+		ClientAddr:   clientAddr,
+		ClientRole:   clientRole,
+		UnitID:       req.UnitID,
+		Request:      pduBytes(req.FunctionCode, req.Payload),
+		Received:     received,
+		Answered:     time.Now(),
 	}
 	if res != nil {
 		ex.Response = pduBytes(res.FunctionCode, res.Payload)
