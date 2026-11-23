@@ -28,6 +28,7 @@ defaults see **[OBSERVABILITY.md](OBSERVABILITY.md)**.
    - [Request types](#34-request-types)
    - [Optional handler interfaces (FC07, FC08, FC0B, FC0C, FC17, FC20–FC24, FC43)](#35-optional-handler-interfaces)
    - [Request authorization](#36-request-authorization)
+   - [Connection authorization](#37-connection-authorization)
 4. [Errors](#4-errors) — also [ERRORS.md](ERRORS.md)
 5. [Logging](#5-logging) — also [OBSERVABILITY.md](OBSERVABILITY.md)
 6. [Metrics](#6-metrics) — also [OBSERVABILITY.md](OBSERVABILITY.md)
@@ -1250,6 +1251,14 @@ type ServerConfig struct {
     // Since v1.21.0.
     Authorizer RequestAuthorizer
 
+    // ConnectionAuthorizer, when set, is asked about every tcp+tls connection
+    // once its TLS handshake completed and the client's certificate was
+    // verified, before any request is read, and can refuse it
+    // (RejectNotAuthorized; § 3.7). Nil (default) serves every verified
+    // client. Set on a tcp server it is a configuration error. A function
+    // serves as one through ConnectionAuthorizerFunc. Since v1.23.0.
+    ConnectionAuthorizer ConnectionAuthorizer
+
     // TLSServerCert is the server certificate and private key (tcp+tls only). Required.
     TLSServerCert *tls.Certificate
 
@@ -1287,8 +1296,8 @@ stays comparable with `==`, as it was up to v1.17.0. A `ServerConfig` holding a
 `ClientFilterFunc` compiles in a comparison but panics when compared, as two
 functions would.
 
-None of `MaxClientsPerHost`, `FirstRequestTimeout`, `FrameTimeout` and
-`Authorizer` has a default: left at zero, the server behaves exactly as before
+None of `MaxClientsPerHost`, `FirstRequestTimeout`, `FrameTimeout`,
+`Authorizer` and `ConnectionAuthorizer` has a default: left at zero, the server behaves exactly as before
 they existed. The library picks no thresholds; [SECURITY.md](SECURITY.md)
 discusses how to choose them.
 
@@ -1829,6 +1838,8 @@ const (
 
 type AuthorizationRequest struct {
     ConnectionID   ConnectionID // since v1.22.0; see § 6 "Connection identity"
+    RequestSeq     uint64       // since v1.23.0: the request's position on the connection, from 1
+    TransactionID  uint16       // since v1.23.0: its MBAP transaction ID, as the client chose it
     ClientAddr     string // remote host:port
     ClientRole     string // tcp+tls: role of the verified certificate; else empty
     ClientRoleErr  error  // tcp+tls: wraps ErrInvalidRole for an unusable role extension; else nil
@@ -1897,7 +1908,52 @@ be safe for concurrent use and return quickly. It may call `Stop` or
 `Shutdown`; the request is then not answered. `RequestAccess` has a `String`
 method (`"read"`, `"write"`, `"read/write"`, `"diagnostic"`).
 
+`OnError` carries no `ConnectionID` and none of the authorizer's inputs: for
+an audit record of each decision, implement `AuthorizationDecisionMetrics`
+(§ 6, since v1.23.0) on `ServerConfig.Metrics`.
+
+`RequestSeq` numbers the requests the server read from one connection, from 1,
+served, refused and malformed alike. It is per connection: `ConnectionID` and
+`RequestSeq` together identify one request within the process, and are the
+same in its `AuthorizationDecisionEvent`, `ServerPDUExchange` and
+`ProtocolViolation`, which is how a consumer joins a decision to its PDU
+record. `TransactionID` is the client's MBAP transaction ID; a client may
+repeat it, so it is not a key of its own. Like `ConnectionID`, neither is a
+metric label.
+
 Example: [examples/security_hooks/security_hooks.go](examples/security_hooks/security_hooks.go).
+
+### 3.7 Connection authorization
+
+Since v1.23.0. `ServerConfig.ConnectionAuthorizer` decides which verified
+`tcp+tls` clients may connect at all, after the handshake and before any
+request is read: the place to pin an issuing CA, check a subject or SAN, or
+consult a revocation list the application keeps. The server imposes no model
+of users, tenants or roles.
+
+```go
+type ConnectionAuthorizer interface {
+    AuthorizeConnection(ctx context.Context, info TLSHandshakeInfo) error
+}
+
+type ConnectionAuthorizerFunc func(ctx context.Context, info TLSHandshakeInfo) error
+```
+
+| Step | What happens |
+|---|---|
+| TLS handshake, chain verified against `TLSClientCAs` | a failure ends here (`TLSHandshakeMetrics`, `Err` set); the authorizer is not asked |
+| `TLSHandshakeMetrics.OnTLSHandshake` | the completed handshake |
+| `AuthorizeConnection(ctx, info)` | `info` as `OnTLSHandshake` got it (`Err` nil, `Verified`, `PeerCertificates`, `VerifiedChains`, `Role`, `RoleErr`, addresses, `ConnectionID`), parsed afresh for this call; `ctx` is the connection's |
+| `nil` | the connection is served: `OnConnectionOpened`, `ServerConnectionOpened`, requests |
+| an error | the connection is closed without reading a request; `OnConnectionRejected` and `ServerConnectionRejected` with `RejectNotAuthorized`, `ServerConnectionEvent.Err` matching `ErrNotAuthorized` and wrapping the error; logged at warning level. Never opened or closed |
+| a panic | as an error (fail closed), logged at error level with its stack; `Err` matches `ErrNotAuthorized` |
+| `Stop` or `Shutdown` from it | the connection is closed without being served; nothing more is reported for it |
+
+The connection holds its `MaxClients` slot while the authorizer runs and is
+not evicted for a newer one: the authorizer must be safe for concurrent use,
+must not block and should return quickly. On a `tcp` server, which has no
+verified identity, `NewServer` returns a configuration error when it is set;
+`AllowClient` decides by address there.
 
 ---
 
@@ -1937,7 +1993,7 @@ var (
     ErrSunSpecModelChainInvalid      // malformed SunSpec model chain: no progress, or a model that does not fit in the address space
     ErrSunSpecModelChainLimitExceeded // SunSpec model chain exceeded MaxAddressSpan
     ErrNoResponse                     // server handlers only: leave the request unanswered
-    ErrNotAuthorized                  // server: ServerConfig.Authorizer refused the request (ServerMetrics.OnError)
+    ErrNotAuthorized                  // server: ServerConfig.Authorizer refused the request (ServerMetrics.OnError), or ConnectionAuthorizer the connection (ServerConnectionEvent.Err, v1.23.0)
     ErrInvalidRole                    // server: unusable Modbus Role extension (TLSHandshakeInfo.RoleErr)
 )
 ```
@@ -2204,6 +2260,7 @@ on a buffered channel).
 | `AcceptErrorMetrics` | the accept loop | is stopped there and logged; the server goes on as if it had returned |
 | `TLSHandshakeMetrics` (client), `ResponseAnomalyMetrics` | the goroutine that dials, or that runs the request | is stopped there and logged through `Config.Logger`; the dial or the request goes on unchanged |
 | `ServerConnectionMetrics` | the accept loop (rejected) or the connection's goroutine | is stopped there and logged; the server goes on as if it had returned |
+| `AuthorizationDecisionMetrics` | the connection's goroutine | is stopped there and logged; the request is served or refused as decided |
 | `ClientConnectionMetrics` | the goroutine of the `Open`, request or `Close` that caused the event | is stopped there and logged through `Config.Logger`; the client goes on unchanged |
 
 `ServerMetrics` methods get the unit ID and the function code as the client sent
@@ -2306,6 +2363,7 @@ const (
     RejectTLSHandshakeEvicted                         // tcp+tls: handshake not completed, closed to make room
     RejectNotAllowed                                  // closed as soon as accepted: ServerConfig.AllowClient refused it
     RejectPerHostLimit                                // closed as soon as accepted: its host had MaxClientsPerHost connections (v1.21.0)
+    RejectNotAuthorized                               // tcp+tls: handshake completed, ServerConfig.ConnectionAuthorizer refused it (v1.23.0)
 )
 ```
 
@@ -2315,12 +2373,15 @@ connection it closes to keep within `MaxClients`: a connection it accepted when
 every slot was taken (on `tcp+tls`, by connections that completed their
 handshake), a `tcp+tls` connection whose handshake had not completed, closed
 to make room for a newer one, and a connection `ServerConfig.AllowClient`
-refused, or that `MaxClientsPerHost` refused. `addr` is its remote `host:port`. Connections
+refused, or that `MaxClientsPerHost` refused, and (since v1.23.0) a `tcp+tls`
+connection `ServerConfig.ConnectionAuthorizer` refused after its handshake.
+`addr` is its remote `host:port`. Connections
 accepted while the server is stopping, and connections closed for any other
-reason, are not reported. The method runs on the accept loop after the
-connection was closed, with no lock held, and delays the next `Accept`: it must
-not block. `RejectReason` has a `String` method (`"max clients"`, `"tls
-handshake evicted"`, `"not allowed"`, `"per-host limit"`).
+reason, are not reported. The method runs after the connection was closed,
+with no lock held: on the accept loop, which it delays, except for
+`RejectNotAuthorized`, reported on the connection's goroutine. It must not
+block. `RejectReason` has a `String` method (`"max clients"`, `"tls handshake
+evicted"`, `"not allowed"`, `"per-host limit"`, `"not authorized"`).
 
 ### `ConnectionLifecycleMetrics` (optional, server)
 
@@ -2391,11 +2452,11 @@ type ServerConnectionEvent struct {
     ConnectionID ConnectionID
     RemoteAddr   string
     LocalAddr    string
-    Role         string        // tcp+tls; Opened and Closed
+    Role         string        // tcp+tls; Opened, Closed, and Rejected with RejectNotAuthorized
     RoleErr      error         // as TLSHandshakeInfo.RoleErr
     RejectReason RejectReason  // Rejected
     CloseReason  CloseReason   // Closed
-    Err          error         // Closed: the error that ended the connection, never nil
+    Err          error         // Closed: the error that ended the connection, never nil; Rejected with RejectNotAuthorized (v1.23.0): matches ErrNotAuthorized, wraps the authorizer's error
     Age          time.Duration // Closed: time since Opened
 }
 
@@ -2427,7 +2488,7 @@ connection:
 
 | Report | Field |
 |---|---|
-| server: `TLSHandshakeInfo`, `ProtocolViolation`, `AuthorizationRequest`, `ServerPDUExchange`, `ServerConnectionEvent` | `ConnectionID` |
+| server: `TLSHandshakeInfo`, `ProtocolViolation`, `AuthorizationRequest`, `AuthorizationDecisionEvent` (in `Request`), `ServerPDUExchange`, `ServerConnectionEvent` | `ConnectionID` |
 | client: `TLSHandshakeInfo`, `ResponseAnomaly`, `PDUExchange`, `ClientConnectionEvent` | `ConnectionID` |
 
 The two ends of one TCP connection have different identifiers (each process,
@@ -2496,6 +2557,7 @@ type TLSHandshakeInfo struct {
     ServerName              string        // SNI
     PeerCertificates        []*x509.Certificate // the receiver's copies, leaf first
     Verified                bool
+    VerifiedChains          [][]*x509.Certificate // since v1.23.0: the receiver's copies, leaf first, root last; empty on failure
     Role                    string        // server only: as ClientRole
     RoleErr                 error         // server only: wraps ErrInvalidRole for an unusable Role extension
 }
@@ -2540,6 +2602,7 @@ type ProtocolViolationMetrics interface {
 
 type ProtocolViolation struct {
     ConnectionID           ConnectionID // since v1.22.0
+    RequestSeq             uint64       // since v1.23.0: as in the request's ServerPDUExchange; 0 for an unframable header
     ClientAddr, ClientRole string
     TransactionID          uint16 // MBAP header as received
     ProtocolID             uint16
@@ -2570,6 +2633,34 @@ written and the connection closed, so an answer that could not be delivered
 shows only in `ConnectionCloseMetrics` (`CloseWriteFailed`,
 `CloseClientClosed`). The server does not
 interpret violations: what counts as hostile is the receiver's decision.
+
+### `AuthorizationDecisionMetrics` (optional, server)
+
+Since v1.23.0.
+
+```go
+type AuthorizationDecisionMetrics interface {
+    OnAuthorizationDecision(ev AuthorizationDecisionEvent)
+}
+
+type AuthorizationDecisionEvent struct {
+    Request   AuthorizationRequest // what the authorizer was asked: a copy taken before the call
+    Allowed   bool
+    Err       error         // nil when allowed; the authorizer's error, or, when Failed, one saying it did not return normally
+    Failed    bool          // the authorizer did not return normally: refused with Server Device Failure
+    Exception ExceptionCode // the exception decided for a refusal; 0 when allowed or unanswered (ErrNoResponse)
+}
+```
+
+Every decision of `ServerConfig.Authorizer`, allowed or refused, with the
+inputs it was made on, the `ConnectionID`, `RequestSeq` and `TransactionID`
+included, which join it to the request's `ServerPDUExchange`. It runs on the
+connection's goroutine right after the authorizer: before the handler for an
+allowed request, before `ServerMetrics.OnError` for a refused one. Changes the
+authorizer made to its `AuthorizationRequest` do not reach `Request`. It
+reports what was decided; it attaches no severity. It may call `Stop` or
+`Shutdown`: as from `OnRequest`, the request is then not answered, and an
+allowed request's handler is still called, with its context cancelled.
 
 ### `ResponseAnomalyMetrics` (optional, client)
 
@@ -2619,6 +2710,8 @@ client asked and was answered; `ServerMetrics` stays the place for counting.
 ```go
 type ServerPDUExchange struct {
     ConnectionID ConnectionID // since v1.22.0
+    RequestSeq    uint64      // since v1.23.0: the request's position on the connection, from 1 (§ 3.6)
+    TransactionID uint16      // since v1.23.0: its MBAP transaction ID
     ClientAddr string    // remote host:port, as the handlers receive it
     ClientRole string    // tcp+tls role; empty on tcp
     UnitID     uint8

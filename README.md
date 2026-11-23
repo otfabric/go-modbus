@@ -633,7 +633,7 @@ modbus-cli completion powershell | Out-String | Invoke-Expression
 | [examples/tls_client/tls_client.go](examples/tls_client/tls_client.go) | MBAPS client with mutual TLS |
 | [examples/client_metrics/client_metrics.go](examples/client_metrics/client_metrics.go) | Client observation hooks: `ClientMetrics`, `AttemptMetrics`, `ResponseAnomalyMetrics`, `TLSHandshakeMetrics`, `ClientConnectionMetrics` and `PDUTap`, as non-blocking counters |
 | [examples/server_metrics/server_metrics.go](examples/server_metrics/server_metrics.go) | Server observation hooks: `ServerMetrics`, `ConnectionMetrics`, `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics`, `ServerConnectionMetrics` and `ServerConfig.PDUTap` |
-| [examples/security_hooks/security_hooks.go](examples/security_hooks/security_hooks.go) | Server security hooks (`TLSHandshakeMetrics`, `AcceptErrorMetrics`, `ProtocolViolationMetrics`, refusals) forwarded to an application channel, an authorizer that refuses writes and state-changing diagnostics, and opt-in connection limits |
+| [examples/security_hooks/security_hooks.go](examples/security_hooks/security_hooks.go) | One tcp+tls audit flow: verified identity and `ConnectionID`, a `ConnectionAuthorizer` that pins a CA and keeps a revocation list, an authorizer whose decisions (`AuthorizationDecisionMetrics`) join their PDU records by `RequestSeq`, protocol violations and connection closes, delivered as application-owned audit events without blocking, with a drop count |
 
 For the full public API reference — all types, method signatures, configuration
 details, and annotated examples — see **[API.md](API.md)**.

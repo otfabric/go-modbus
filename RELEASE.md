@@ -1,11 +1,19 @@
 # go-modbus Releases
 
-## v1.22.1
+## v1.23.0
 
 **Date:** 2026-11-23
 **Previous release:** v1.22.0
 
-A fix for RTU responses whose length is not in their header, which a client that ran late could cut short. No exported identifier is added, removed or changed, and nothing changes on the wire.
+Closes the gaps an external review of v1.22.0 found in the server's security integration surface: a post-verification hook for mutual TLS, an event for every authorization decision, and a per-request key that joins a decision to its PDU record. All of it is additive and opt-in: no exported identifier is removed or changed, no method is added to an existing interface, and without the new settings the server behaves as before, apart from the new fields being filled in. Nothing changes on the wire. The library still reports facts and enforces what the application configures: no event dispatcher, schema, severities, detection rules or exporter. It also fixes RTU responses whose length is not in their header, which a client that ran late could cut short (under Fixed).
+
+### Added
+
+- `ServerConfig.ConnectionAuthorizer` (`ConnectionAuthorizer`, `ConnectionAuthorizerFunc`): asked once for every `tcp+tls` connection whose handshake completed and whose client chain was verified, after `TLSHandshakeMetrics.OnTLSHandshake` and before the connection is opened or any request read, with the connection's context and the handshake's `TLSHandshakeInfo` (peer certificates, verified chains, role, `RoleErr`, addresses, `ConnectionID`), parsed afresh for the call. An error refuses the connection: it is closed, logged at warning level and reported to `ConnectionMetrics.OnConnectionRejected` and `ServerConnectionMetrics` as the new `RejectNotAuthorized`, never as opened or closed. An authorizer that does not return normally refuses the connection (fail closed). It may call `Stop` or `Shutdown`; the connection is then closed unserved and nothing more is reported for it. The connection keeps its `MaxClients` slot while the authorizer runs. Setting it on a `tcp` server is a configuration error.
+- `RejectNotAuthorized` (`String`: `"not authorized"`). For it `ServerConnectionEvent.Err` matches `ErrNotAuthorized` and wraps the authorizer's error, and `Role`/`RoleErr` are set.
+- `TLSHandshakeInfo.VerifiedChains`: the chains crypto/tls verified, leaf first and root last, as copies (server and client).
+- `AuthorizationDecisionMetrics` with `AuthorizationDecisionEvent`: every decision of `ServerConfig.Authorizer`, allowed or refused, with a copy of the `AuthorizationRequest` taken before the call, the refusal error, whether the authorizer did not return normally (`Failed`) and the exception decided. It runs right after the authorizer, before the handler or `ServerMetrics.OnError`; `OnError` still carries no `ConnectionID`, which is why the event exists.
+- `RequestSeq` (the request's position on its connection, from 1, served, refused and malformed requests alike) on `AuthorizationRequest`, `ServerPDUExchange` and `ProtocolViolation` (0 for an MBAP header that could not be framed), and `TransactionID` (the request's MBAP transaction ID) on `AuthorizationRequest` and `ServerPDUExchange`. (`ConnectionID`, `RequestSeq`) identifies one request in the process and joins its decision, PDU record and violation; like `ConnectionID`, neither is a metric label.
 
 ### Fixed
 
@@ -14,10 +22,20 @@ A fix for RTU responses whose length is not in their header, which a client that
 
 ### Changed
 
+- `examples/security_hooks` is one tcp+tls flow on an in-memory throw-away PKI: verified identity and `ConnectionID`, a connection authorizer that pins a CA and keeps a revocation list, the request decisions, the PDU and violation records joined by `RequestSeq`, and the connection's close, each turned into an application-owned audit event and delivered without blocking, with a drop count. It runs without certificate files; its test checks the trail.
+- `ConnectionMetrics.OnConnectionRejected` and `ServerConnectionRejected` run on the connection's goroutine for `RejectNotAuthorized` (on the accept loop for the other reasons, as before).
+- The callbacks that may call `Stop` or `Shutdown`, and the guarded calls, now include `ConnectionAuthorizer` and `AuthorizationDecisionMetrics`, with the same guarantees as the others.
 - The bundled `modbus-cli` is built on v1.22.0 (was v1.20.0).
+
+### Documentation
+
+- API.md (§ 3.1 the new field, § 3.6 the correlation fields and their scope, new § 3.7 "Connection authorization", § 6 `AuthorizationDecisionMetrics`, `RejectNotAuthorized`, `VerifiedChains`, the struct listings), ERRORS.md (`ErrNotAuthorized` for a refused connection, the decision's `Err`), OBSERVABILITY.md (the new interface, the callback order, "Per-request correlation"), SECURITY.md ("Connection Authorization", "Audit Records"), LIMITATIONS.md, README.md examples, docs/api. LIMITATIONS.md: RTU FC08 and the MEI types other than Read Device Identification still end at t3.5 of silence.
 
 ### Tests
 
+- `server_connection_authorizer_test.go`: an allowed connection (order handshake, authorizer, opened; the verified facts and chains), a refused one (`RejectNotAuthorized` on both interfaces, the error matching `ErrNotAuthorized` and wrapping the authorizer's, no open or close, the slot freed, the handler not called), a panicking authorizer failing closed, `Stop` from the authorizer for an allow and a refusal, `Shutdown` from `OnConnectionRejected` and from `OnServerConnection` for the refusal, the info being the authorizer's copy, concurrent allowed and refused connections under `-race`, the configuration error on `tcp`.
+- `server_authorization_decision_test.go`: allowed and refused decisions with their inputs and their order against `OnRequest`, `OnResponse`, `OnError` and the PDU tap, joined to the exchanges by `ConnectionID`, `RequestSeq` and a repeated transaction ID; a silent refusal; a failed authorizer; the event's request a snapshot taken before the authorizer changed it; a panicking decision callback; `Stop` from it, allowed and refused; `ProtocolViolation.RequestSeq` equal to its exchange's, and 0 for an unframable header; per-connection sequences without gaps across concurrent connections under `-race`.
+- Existing payload tests check the new fields instead of ignoring them; `TestRejectReason_String` covers `RejectPerHostLimit` and `RejectNotAuthorized`.
 - A link that reports a timeout while bytes are waiting, at every read of a frame in turn, for FC43/14 (with and without objects), another MEI type and FC08; FC43/14 frames cut short, oversized, corrupted, followed by more bytes, and interrupted while in flight; FC43/14 seeds with several objects and with another MEI type in `FuzzHostileRTUResponse`.
 - Chaos soak (`TestChaosMonkey`, the nightly `make soak`): a scenario that corrupts unit IDs in both directions accepts Illegal Function. The proxy could corrupt the unit of a request, which the test device answers with Illegal Function, and then corrupt the unit of that answer back to the one requested; the client then holds a well-formed exception for its own request, which it cannot tell apart. The nightly run of 2026-11-23 failed on it (seed 2272165658, which now passes).
 

@@ -8,6 +8,11 @@ type Request struct {
 	UnitID       uint8
 	FunctionCode uint8
 	Payload      []byte
+	// Seq and TransactionID are set by a server for a request it read from a
+	// connection: its position in the connection's requests (from 1) and the
+	// MBAP transaction ID it arrived with. Zero elsewhere.
+	Seq           uint64
+	TransactionID uint16
 }
 
 // Response represents a Modbus response PDU.

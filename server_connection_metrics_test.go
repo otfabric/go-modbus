@@ -164,6 +164,8 @@ func TestRejectReason_String(t *testing.T) {
 		RejectMaxClients:          "max clients",
 		RejectTLSHandshakeEvicted: "tls handshake evicted",
 		RejectNotAllowed:          "not allowed",
+		RejectPerHostLimit:        "per-host limit",
+		RejectNotAuthorized:       "not authorized",
 		0:                         "RejectReason(0)",
 		200:                       "RejectReason(200)",
 	} {

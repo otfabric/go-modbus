@@ -95,9 +95,18 @@ type ServerConfig struct {
 	// and the client is answered with an exception (see RequestAuthorizer).
 	// Nil (the default) serves every request, as before. A function serves
 	// as one through RequestAuthorizerFunc.
-	Authorizer    RequestAuthorizer
-	TLSServerCert *tls.Certificate
-	TLSClientCAs  *x509.CertPool
+	Authorizer RequestAuthorizer
+	// ConnectionAuthorizer, when set, is asked about every tcp+tls connection
+	// once its TLS handshake has completed and the client's certificate has
+	// been verified, before any request is read, and can refuse it: the
+	// connection is then closed and reported as RejectNotAuthorized (see
+	// ConnectionAuthorizer). Nil (the default) serves every verified client,
+	// as before. Setting it on a tcp server is a configuration error: there
+	// is no verified identity to decide on. A function serves as one through
+	// ConnectionAuthorizerFunc. Since v1.23.0.
+	ConnectionAuthorizer ConnectionAuthorizer
+	TLSServerCert        *tls.Certificate
+	TLSClientCAs         *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
 	// from accept. Defaults to 10 s.
 	TLSHandshakeTimeout time.Duration
@@ -206,8 +215,10 @@ var ErrNoResponse = errors.New("modbus: no response")
 // Shutdown, and so may a method of ServerConfig.Metrics (ServerMetrics and
 // its optional extensions: ConnectionMetrics, ConnectionLifecycleMetrics,
 // ConnectionCloseMetrics, TLSHandshakeMetrics, AcceptErrorMetrics,
-// ProtocolViolationMetrics), ServerConfig.AllowClient, ServerConfig.PDUTap,
-// ServerConfig.Authorizer and the Logger.
+// ProtocolViolationMetrics, ServerConnectionMetrics,
+// AuthorizationDecisionMetrics), ServerConfig.AllowClient,
+// ServerConfig.PDUTap, ServerConfig.Authorizer,
+// ServerConfig.ConnectionAuthorizer and the Logger.
 // The call stops the server as a call from any other goroutine does: it stops
 // accepting, cancels the context of every connection and closes the
 // listener and the client sockets. Then it waits for the server's goroutines,
@@ -336,6 +347,7 @@ type Server struct {
 	acceptMetrics    AcceptErrorMetrics
 	violationMetrics ProtocolViolationMetrics
 	connMetrics      ServerConnectionMetrics
+	decisionMetrics  AuthorizationDecisionMetrics
 	// tcpClients holds the sockets of the connected clients.
 	tcpClients []net.Conn
 	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
@@ -440,6 +452,7 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 	ms.acceptMetrics, _ = conf.Metrics.(AcceptErrorMetrics)
 	ms.violationMetrics, _ = conf.Metrics.(ProtocolViolationMetrics)
 	ms.connMetrics, _ = conf.Metrics.(ServerConnectionMetrics)
+	ms.decisionMetrics, _ = conf.Metrics.(AuthorizationDecisionMetrics)
 
 	splitURL = strings.SplitN(ms.conf.URL, "://", 2)
 	if len(splitURL) == 2 {
@@ -470,6 +483,9 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 		}
 		if ms.conf.MaxClients == 0 {
 			ms.conf.MaxClients = 10
+		}
+		if ms.conf.ConnectionAuthorizer != nil {
+			return nil, newConfigurationError("ConnectionAuthorizer", "requires the tcp+tls scheme")
 		}
 		ms.transportType = modbusTCP
 
@@ -557,7 +573,8 @@ func (ms *Server) Start() (err error) {
 // Shutdown may be called from the application's code that the server runs: a
 // RequestHandler method, a method of ServerConfig.Metrics (ServerMetrics or
 // one of its optional extensions), ServerConfig.AllowClient,
-// ServerConfig.PDUTap, ServerConfig.Authorizer, the Logger. It
+// ServerConfig.PDUTap, ServerConfig.Authorizer,
+// ServerConfig.ConnectionAuthorizer, the Logger. It
 // then waits for every goroutine of the server except the ones of the
 // connection, or of the accept loop, that it was called on (see
 // RequestHandler, "Stopping the server from a handler"). When ctx is already
@@ -625,8 +642,8 @@ func (ms *Server) Addr() net.Addr {
 //
 // Called from a RequestHandler method, a method of ServerConfig.Metrics
 // (ServerMetrics or one of its optional extensions),
-// ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer or
-// the Logger,
+// ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer,
+// ServerConfig.ConnectionAuthorizer or the Logger,
 // Stop returns once every other goroutine of the server has ended; it does
 // not wait for the connection, or the accept loop, it was called on (see
 // RequestHandler).
