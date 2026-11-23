@@ -5,7 +5,7 @@
 **Date:** 2026-11-23
 **Previous release:** v1.22.0
 
-Closes the gaps an external review of v1.22.0 found in the server's security integration surface: a post-verification hook for mutual TLS, an event for every authorization decision, and a per-request key that joins a decision to its PDU record. All of it is additive and opt-in: no exported identifier is removed or changed, no method is added to an existing interface, and without the new settings the server behaves as before, apart from the new fields being filled in. Nothing changes on the wire. The library still reports facts and enforces what the application configures: no event dispatcher, schema, severities, detection rules or exporter.
+Closes the gaps an external review of v1.22.0 found in the server's security integration surface: a post-verification hook for mutual TLS, an event for every authorization decision, and a per-request key that joins a decision to its PDU record. All of it is additive and opt-in: no exported identifier is removed or changed, no method is added to an existing interface, and without the new settings the server behaves as before, apart from the new fields being filled in. Nothing changes on the wire. The library still reports facts and enforces what the application configures: no event dispatcher, schema, severities, detection rules or exporter. It also fixes RTU responses whose length is not in their header, which a client that ran late could cut short (under Fixed).
 
 ### Added
 
@@ -14,6 +14,11 @@ Closes the gaps an external review of v1.22.0 found in the server's security int
 - `TLSHandshakeInfo.VerifiedChains`: the chains crypto/tls verified, leaf first and root last, as copies (server and client).
 - `AuthorizationDecisionMetrics` with `AuthorizationDecisionEvent`: every decision of `ServerConfig.Authorizer`, allowed or refused, with a copy of the `AuthorizationRequest` taken before the call, the refusal error, whether the authorizer did not return normally (`Failed`) and the exception decided. It runs right after the authorizer, before the handler or `ServerMetrics.OnError`; `OnError` still carries no `ConnectionID`, which is why the event exists.
 - `RequestSeq` (the request's position on its connection, from 1, served, refused and malformed requests alike) on `AuthorizationRequest`, `ServerPDUExchange` and `ProtocolViolation` (0 for an MBAP header that could not be framed), and `TransactionID` (the request's MBAP transaction ID) on `AuthorizationRequest` and `ServerPDUExchange`. (`ConnectionID`, `RequestSeq`) identifies one request in the process and joins its decision, PDU record and violation; like `ConnectionID`, neither is a metric label.
+
+### Fixed
+
+- RTU (`rtu`, `rtuovertcp`, `rtuoverudp`): an FC43/14 Read Device Identification response is read by its structure (section 6.21: the Number Of Objects, then each object's id and length), not until the line falls quiet for t3.5. Up to v1.22.0 a client goroutine that ran more than t3.5 late inside the frame took the bytes it had for the whole frame and reported `ErrBadCRC`, because a read whose deadline has already passed reports a timeout even when bytes are waiting. t3.5 is 1.75 ms on the tunnelled framings, so a loaded host (a CI runner under the race detector) was enough. A frame that ends early is `ErrShortFrame` and one whose objects run past the 256 bytes of an RTU frame is `ErrProtocolError`, as for the other function codes.
+- RTU: FC08 responses, and FC43 responses of other MEI types, are still delimited by t3.5 of silence, since their length is not in the frame; a timeout now ends the frame only when a second read, with a fresh deadline, finds no byte either. Each such response takes up to one t3.5 longer to complete.
 
 ### Changed
 
@@ -24,13 +29,15 @@ Closes the gaps an external review of v1.22.0 found in the server's security int
 
 ### Documentation
 
-- API.md (§ 3.1 the new field, § 3.6 the correlation fields and their scope, new § 3.7 "Connection authorization", § 6 `AuthorizationDecisionMetrics`, `RejectNotAuthorized`, `VerifiedChains`, the struct listings), ERRORS.md (`ErrNotAuthorized` for a refused connection, the decision's `Err`), OBSERVABILITY.md (the new interface, the callback order, "Per-request correlation"), SECURITY.md ("Connection Authorization", "Audit Records"), LIMITATIONS.md, README.md examples, docs/api.
+- API.md (§ 3.1 the new field, § 3.6 the correlation fields and their scope, new § 3.7 "Connection authorization", § 6 `AuthorizationDecisionMetrics`, `RejectNotAuthorized`, `VerifiedChains`, the struct listings), ERRORS.md (`ErrNotAuthorized` for a refused connection, the decision's `Err`), OBSERVABILITY.md (the new interface, the callback order, "Per-request correlation"), SECURITY.md ("Connection Authorization", "Audit Records"), LIMITATIONS.md, README.md examples, docs/api. LIMITATIONS.md: RTU FC08 and the MEI types other than Read Device Identification still end at t3.5 of silence.
 
 ### Tests
 
 - `server_connection_authorizer_test.go`: an allowed connection (order handshake, authorizer, opened; the verified facts and chains), a refused one (`RejectNotAuthorized` on both interfaces, the error matching `ErrNotAuthorized` and wrapping the authorizer's, no open or close, the slot freed, the handler not called), a panicking authorizer failing closed, `Stop` from the authorizer for an allow and a refusal, `Shutdown` from `OnConnectionRejected` and from `OnServerConnection` for the refusal, the info being the authorizer's copy, concurrent allowed and refused connections under `-race`, the configuration error on `tcp`.
 - `server_authorization_decision_test.go`: allowed and refused decisions with their inputs and their order against `OnRequest`, `OnResponse`, `OnError` and the PDU tap, joined to the exchanges by `ConnectionID`, `RequestSeq` and a repeated transaction ID; a silent refusal; a failed authorizer; the event's request a snapshot taken before the authorizer changed it; a panicking decision callback; `Stop` from it, allowed and refused; `ProtocolViolation.RequestSeq` equal to its exchange's, and 0 for an unframable header; per-connection sequences without gaps across concurrent connections under `-race`.
 - Existing payload tests check the new fields instead of ignoring them; `TestRejectReason_String` covers `RejectPerHostLimit` and `RejectNotAuthorized`.
+- A link that reports a timeout while bytes are waiting, at every read of a frame in turn, for FC43/14 (with and without objects), another MEI type and FC08; FC43/14 frames cut short, oversized, corrupted, followed by more bytes, and interrupted while in flight; FC43/14 seeds with several objects and with another MEI type in `FuzzHostileRTUResponse`.
+- Chaos soak (`TestChaosMonkey`, the nightly `make soak`): a scenario that corrupts unit IDs in both directions accepts Illegal Function. The proxy could corrupt the unit of a request, which the test device answers with Illegal Function, and then corrupt the unit of that answer back to the one requested; the client then holds a well-formed exception for its own request, which it cannot tell apart. The nightly run of 2026-11-23 failed on it (seed 2272165658, which now passes).
 
 ---
 

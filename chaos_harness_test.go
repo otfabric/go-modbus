@@ -1010,6 +1010,14 @@ type chaosWorkload struct {
 	// corrupted (chaosCorruptLen from client to server) when the length still
 	// frames, and then closes the connection.
 	lengthExceptions bool
+	// unitExceptions accepts Illegal Function while the link is faulty: the
+	// proxy can corrupt the unit ID of a request (chaosCorruptUnit from client
+	// to server), which the reference device answers with Illegal Function,
+	// and then corrupt the unit ID of that answer back to the one requested
+	// (the same fault from server to client, 1 chance in 255 that it restores
+	// it). The client then holds a well-formed exception for its own unit,
+	// transaction and function code: nothing in it shows the double fault.
+	unitExceptions bool
 	// clean is set while no faults are active: every call must then succeed.
 	clean atomic.Bool
 
@@ -1098,6 +1106,7 @@ func (w *chaosWorker) call(name string, fn func(ctx context.Context) error) erro
 		wl.failf("worker %d %s: failed on a healthy link: %v", w.id, name, err)
 	case wl.allowed[class]:
 	case wl.lengthExceptions && errors.Is(err, ErrIllegalDataValue):
+	case wl.unitExceptions && errors.Is(err, ErrIllegalFunction):
 	default:
 		wl.failf("worker %d %s: unexpected error class %q: %v", w.id, name, class, err)
 	}

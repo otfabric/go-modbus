@@ -166,6 +166,13 @@ Either way, many hosts can still crowd out a client whose handshake is slow.
   code in the response, which 6.21 does not allow, is tolerated.
 - FC43 server: the mandatory basic objects (0x00–0x02) are not checked; a
   handler without them is served as it is.
+- RTU (`rtu`, `rtuovertcp`, `rtuoverudp`): an FC08 response, or an FC43
+  response of an MEI type other than Read Device Identification, has no length
+  in its frame, so the client ends it after t3.5 of silence (1.75 ms on the
+  tunnelled framings). A device or a network path that pauses longer than that
+  inside the frame splits it, and the client reports `ErrBadCRC`. FC43/14 Read
+  Device Identification is read by its structure and does not depend on
+  timing.
 - FC01/FC02: nonzero padding bits in a response are not reported (a
   deliberate tolerance; sections 6.1 and 6.2 say "zero filled").
 - FC20: the 0x07 minimum of the response table (section 6.14) is not
