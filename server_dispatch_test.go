@@ -616,7 +616,7 @@ func TestServerStartTLS_DeadlineErrorOnClosedSocket(t *testing.T) {
 	c1, c2 := net.Pipe()
 	_ = c1.Close()
 	_ = c2.Close()
-	tlsSock, role, err := ms.startTLS(c1)
+	tlsSock, role, _, err := ms.startTLS(c1)
 	if !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("want io.ErrClosedPipe, got %v", err)
 	}
@@ -634,14 +634,18 @@ func TestServerExtractRole_MalformedExtension(t *testing.T) {
 	}
 	for name, value := range cases {
 		cert := &x509.Certificate{Extensions: []pkix.Extension{{Id: modbusRoleOID, Value: value}}}
-		if role := ms.extractRole(cert); role != "" {
+		role, roleErr := ms.extractRole(cert)
+		if role != "" {
 			t.Errorf("%s: role = %q, want empty", name, role)
+		}
+		if !errors.Is(roleErr, ErrInvalidRole) {
+			t.Errorf("%s: roleErr = %v, want ErrInvalidRole", name, roleErr)
 		}
 	}
 	// Sanity check: a well-formed extension is accepted.
 	cert := &x509.Certificate{Extensions: []pkix.Extension{{Id: modbusRoleOID, Value: []byte{0x0c, 0x02, 'o', 'p'}}}}
-	if role := ms.extractRole(cert); role != "op" {
-		t.Errorf("well-formed extension: role = %q, want %q", role, "op")
+	if role, roleErr := ms.extractRole(cert); role != "op" || roleErr != nil {
+		t.Errorf("well-formed extension: role = %q, %v, want %q, nil", role, roleErr, "op")
 	}
 }
 

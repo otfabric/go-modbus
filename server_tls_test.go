@@ -373,7 +373,7 @@ func TestServerExtractRole(t *testing.T) {
 
 	// calling extractRole on a cert without role extension should return an
 	// empty string (see R-23 of the MBAPS spec)
-	role = ms.extractRole(x509Cert)
+	role, _ = ms.extractRole(x509Cert)
 	if role != "" {
 		t.Errorf("role should have been empty, got: '%s'", role)
 	}
@@ -391,7 +391,7 @@ func TestServerExtractRole(t *testing.T) {
 		return
 	}
 
-	role = ms.extractRole(x509Cert)
+	role, _ = ms.extractRole(x509Cert)
 	if role != "operator2" {
 		t.Errorf("role should have been 'operator2', got: '%s'", role)
 	}
@@ -421,7 +421,7 @@ func TestServerExtractRole(t *testing.T) {
 		},
 	}
 
-	role = ms.extractRole(x509Cert)
+	role, _ = ms.extractRole(x509Cert)
 	if role != "" {
 		t.Errorf("role should have been empty, got: '%s'", role)
 	}
@@ -442,7 +442,7 @@ func TestServerExtractRole(t *testing.T) {
 		},
 	}
 
-	role = ms.extractRole(x509Cert)
+	role, _ = ms.extractRole(x509Cert)
 	if role != "" {
 		t.Errorf("role should have been empty, got: '%s'", role)
 	}
@@ -462,7 +462,7 @@ func TestServerExtractRole(t *testing.T) {
 		},
 	}
 
-	role = ms.extractRole(x509Cert)
+	role, _ = ms.extractRole(x509Cert)
 	if role != "" {
 		t.Errorf("role should have been empty, got: '%s'", role)
 	}
@@ -491,7 +491,7 @@ func TestServerExtractRole(t *testing.T) {
 		},
 	}
 
-	role = ms.extractRole(x509Cert)
+	role, _ = ms.extractRole(x509Cert)
 	if role != "" {
 		t.Errorf("role should have been empty, got: '%s'", role)
 	}
@@ -512,7 +512,7 @@ func TestServerExtractRole(t *testing.T) {
 		},
 	}
 
-	role = ms.extractRole(x509Cert)
+	role, _ = ms.extractRole(x509Cert)
 	if role != "fwgx" {
 		t.Errorf("role should have been 'fwgx', got: '%s'", role)
 	}

@@ -293,6 +293,12 @@ type Server struct {
 	started bool
 	handler RequestHandler
 	metrics ServerMetrics
+	// The optional extensions of metrics the server looks for on
+	// every connection or request, found once by NewServer (nil: not
+	// implemented).
+	tlsMetrics       TLSHandshakeMetrics
+	acceptMetrics    AcceptErrorMetrics
+	violationMetrics ProtocolViolationMetrics
 	// tcpClients holds the sockets of the connected clients.
 	tcpClients []net.Conn
 	// tlsPending holds, oldest first, the sockets of tcpClients whose TLS
@@ -390,6 +396,9 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 		metrics: conf.Metrics,
 		wg:      &sync.WaitGroup{},
 	}
+	ms.tlsMetrics, _ = conf.Metrics.(TLSHandshakeMetrics)
+	ms.acceptMetrics, _ = conf.Metrics.(AcceptErrorMetrics)
+	ms.violationMetrics, _ = conf.Metrics.(ProtocolViolationMetrics)
 
 	splitURL = strings.SplitN(ms.conf.URL, "://", 2)
 	if len(splitURL) == 2 {

@@ -104,6 +104,9 @@ type RTU struct {
 	// the drain may have been read as the answer to the next request, and that
 	// request's own answer would then be waiting on the line.
 	verify bool
+	// OnAnomaly, when set, receives the bytes discarded before a request
+	// (AnomalyDiscarded).
+	OnAnomaly AnomalyFunc
 }
 
 // NewRTU returns a new RTU transport.
@@ -171,7 +174,8 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Response, error) {
 	switch {
 	case rt.drain:
-		rt.drainBeforeRequest(ctx)
+		n := rt.drainBeforeRequest(ctx)
+		reportDiscarded(rt.OnAnomaly, req, n)
 		if err := ctx.Err(); err != nil {
 			// The drain was cut short: the next request starts with it again.
 			return nil, err
@@ -182,6 +186,7 @@ func (rt *RTU) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 		// Bytes on a line that should be quiet: the last answer read may have
 		// been another request's. Keep checking until the line is found quiet.
 		n := rt.drainBeforeRequest(ctx)
+		reportDiscarded(rt.OnAnomaly, req, n)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

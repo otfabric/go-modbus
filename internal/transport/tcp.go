@@ -36,7 +36,21 @@ type TCP struct {
 	// length of such a request as soon as it has read the function code, and
 	// reads no further when the two disagree (see RequestLengthError).
 	RequestPDULength func(fc byte) int
-	lastTxnID        uint16
+	// OnAnomaly, when set (client use), receives the frames readResponse
+	// skips: another transaction ID, a protocol ID other than 0.
+	OnAnomaly AnomalyFunc
+	lastTxnID uint16
+	// badHeader is the last MBAP header that could not be framed (an invalid
+	// length or a protocol ID other than 0), hasBadHeader whether there is one.
+	badHeader    [adu.MBAPHeaderLength]byte
+	hasBadHeader bool
+}
+
+// LastBadHeader returns the last MBAP header the transport read and could not
+// frame (ErrInvalidMBAPLength, ErrUnknownProtocolID), and whether there was
+// one. The caller must not use it concurrently with ReadFrame.
+func (tt *TCP) LastBadHeader() ([adu.MBAPHeaderLength]byte, bool) {
+	return tt.badHeader, tt.hasBadHeader
 }
 
 // RequestLengthError is returned by ReadFrame, together with the request's
@@ -87,7 +101,7 @@ func (tt *TCP) ExecuteRequest(ctx context.Context, req *adu.Request) (*adu.Respo
 	if err := writeFull(tt.Socket, frame); err != nil {
 		return nil, err
 	}
-	res, err := tt.readResponse()
+	res, err := tt.readResponse(req)
 	if err == nil {
 		tt.Logger.Debugf("RX: unit=0x%02x fc=0x%02x payload=% X", res.UnitID, res.FunctionCode, res.Payload)
 	}
@@ -158,7 +172,7 @@ func (tt *TCP) SetReadDeadline(t time.Time) error {
 
 const maxAnomalies = 10
 
-func (tt *TCP) readResponse() (*adu.Response, error) {
+func (tt *TCP) readResponse(req *adu.Request) (*adu.Response, error) {
 	txnMismatches := 0
 	protoMismatches := 0
 	for {
@@ -167,6 +181,14 @@ func (tt *TCP) readResponse() (*adu.Response, error) {
 			if errors.Is(err, protocol.ErrUnknownProtocolID) {
 				protoMismatches++
 				tt.Logger.Warnf("received unexpected protocol ID (count %d/%d)", protoMismatches, maxAnomalies)
+				if tt.OnAnomaly != nil {
+					tt.OnAnomaly(req, Anomaly{
+						Kind:          AnomalyProtocolID,
+						Expected:      tt.lastTxnID,
+						TransactionID: adu.BytesToUint16(adu.BigEndian, tt.badHeader[0:2]),
+						ProtocolID:    adu.BytesToUint16(adu.BigEndian, tt.badHeader[2:4]),
+					})
+				}
 				if txnMismatches+protoMismatches >= maxAnomalies {
 					return nil, protocol.ErrUnknownProtocolID
 				}
@@ -178,6 +200,9 @@ func (tt *TCP) readResponse() (*adu.Response, error) {
 			txnMismatches++
 			tt.Logger.Warnf("received unexpected transaction id (expected 0x%04x, got 0x%04x, count %d/%d)",
 				tt.lastTxnID, txnID, txnMismatches, maxAnomalies)
+			if tt.OnAnomaly != nil {
+				tt.OnAnomaly(req, Anomaly{Kind: AnomalyTransactionID, Expected: tt.lastTxnID, TransactionID: txnID})
+			}
 			if txnMismatches+protoMismatches >= maxAnomalies {
 				return nil, protocol.ErrBadTransactionID
 			}
@@ -208,6 +233,8 @@ func (tt *TCP) readMBAPFrameRaw() (*adu.Request, uint16, error) {
 	}
 	txnID, unitID, mbapLen, err := adu.ParseMBAPHeader(header)
 	if err != nil {
+		tt.badHeader = [adu.MBAPHeaderLength]byte(header)
+		tt.hasBadHeader = true
 		if errors.Is(err, adu.ErrInvalidMBAPLength) {
 			tt.Logger.Warnf("invalid MBAP length (expected %d-%d)", adu.MBAPLengthMin, adu.MBAPLengthMax)
 			return nil, 0, protocol.ErrInvalidMBAPLength

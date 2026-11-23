@@ -59,6 +59,11 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			}
 			backoff = nextAcceptBackoff(backoff)
 			ms.logger.Warningf("failed to accept client connection (next attempt in %v): %v", backoff, err)
+			ms.reportAcceptError(err, backoff)
+			if share.released.Load() {
+				// A Shutdown called from OnAcceptError.
+				return
+			}
 			// The wait ends early when the server stops.
 			timer := time.NewTimer(backoff)
 			select {
@@ -279,7 +284,10 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 			sock.RemoteAddr().String(), "")
 
 	case modbusTCPOverTLS:
-		tlsSock, clientRole, err = ms.startTLS(sock)
+		var roleErr error
+		start := time.Now()
+		tlsSock, clientRole, roleErr, err = ms.startTLS(sock)
+		ms.reportTLSHandshake(sock, tlsSock, time.Since(start), clientRole, roleErr, err)
 		admitted := false
 		if err == nil {
 			ms.lock.Lock()
@@ -290,6 +298,9 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 		case err != nil:
 			ms.logger.Warningf("TLS handshake with %s failed: %v",
 				sock.RemoteAddr().String(), err)
+		case share.released.Load():
+			// A Shutdown called from OnTLSHandshake: no further callback.
+			effectiveConn = tlsSock
 		case !admitted:
 			// Closed to make room for a newer connection while the
 			// handshake was completing.
@@ -374,9 +385,31 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	// cause is the first reason the connection ended for, set by the reader or
 	// by the loop below.
 	var cause closeCause
+	// badHeader is the MBAP header the reader could not frame, written by the
+	// reader before it ends (hasBadHeader), read once it has.
+	var badHeader [adu.MBAPHeaderLength]byte
+	hasBadHeader := false
 	defer func() {
 		if share.released.Load() {
 			return
+		}
+		if hasBadHeader && ms.violationMetrics != nil {
+			reason, err := cause.get()
+			if reason == CloseMalformedFrame {
+				ms.reportViolation(ProtocolViolation{
+					ClientAddr:    clientAddr,
+					ClientRole:    clientRole,
+					TransactionID: adu.BytesToUint16(adu.BigEndian, badHeader[0:2]),
+					ProtocolID:    adu.BytesToUint16(adu.BigEndian, badHeader[2:4]),
+					Length:        adu.BytesToUint16(adu.BigEndian, badHeader[4:6]),
+					UnitID:        badHeader[6],
+					Err:           err,
+					Closed:        true,
+				})
+				if share.released.Load() {
+					return
+				}
+			}
 		}
 		ms.reportClosed(clientAddr)
 		if share.released.Load() {
@@ -406,6 +439,7 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 			if err != nil && !errors.As(err, &lengthErr) {
 				// Disconnected, idle for too long, not speaking Modbus/TCP, or
 				// closed by the server.
+				badHeader, hasBadHeader = t.LastBadHeader()
 				cause.set(readCloseReason(run.ctx, err))
 				connCancel()
 				return
@@ -443,7 +477,7 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		var res *adu.Response
 		var closeLink bool
 		if in.lengthErr != nil {
-			res = ms.serveLengthError(in.req, in.txnID, clientAddr, in.lengthErr)
+			res = ms.serveLengthError(in.req, in.txnID, clientAddr, clientRole, in.lengthErr)
 			closeLink = true
 		} else {
 			res, closeLink = ms.serveRequest(connCtx, in.req, in.txnID, clientAddr, clientRole)
@@ -635,6 +669,7 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 			if ms.metrics != nil {
 				ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
 			}
+			ms.reportRequestViolation(req, txnID, clientAddr, clientRole, err, exIllegalDataValue, true)
 			return exceptionResponse(req, txnID, exIllegalDataValue), true
 		}
 
@@ -644,9 +679,11 @@ func (ms *Server) serveRequest(ctx context.Context, req *adu.Request, txnID uint
 		switch e := err.(type) {
 		case exceptionFCRequestError:
 			ms.logger.Warningf("request with exception function code 0x%02x from %s not answered", req.FunctionCode, clientAddr)
+			ms.reportRequestViolation(req, txnID, clientAddr, clientRole, err, 0, false)
 			return nil, false
 		case *malformedRequestError:
 			ms.logger.Warningf("malformed FC 0x%02x request from %s (%s): answering with Illegal Data Value", req.FunctionCode, clientAddr, e.reason)
+			ms.reportRequestViolation(req, txnID, clientAddr, clientRole, err, exIllegalDataValue, false)
 		default:
 		}
 		silent, code := ms.answerFor(req, clientAddr, err)
@@ -676,7 +713,7 @@ func exceptionResponse(req *adu.Request, txnID uint16, code ExceptionCode) *adu.
 // not called. The answer is the one the full request would have had first:
 // Illegal Function when the server does not serve the function code, else
 // Illegal Data Value. ServerMetrics sees the request and an error.
-func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, clientAddr string, lengthErr *inttrans.RequestLengthError) *adu.Response {
+func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, clientAddr, clientRole string, lengthErr *inttrans.RequestLengthError) *adu.Response {
 	var reqStart time.Time
 	if ms.metrics != nil {
 		ms.reportMetrics(metricsOnRequest, req, clientAddr, 0, nil)
@@ -694,6 +731,14 @@ func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, clientAddr st
 		clientAddr, req.FunctionCode, lengthErr, code)
 	if ms.metrics != nil {
 		ms.reportMetrics(metricsOnError, req, clientAddr, time.Since(reqStart), err)
+	}
+	if ms.violationMetrics != nil {
+		ms.reportViolation(ProtocolViolation{
+			ClientAddr: clientAddr, ClientRole: clientRole,
+			TransactionID: txnID, Length: adu.Uint16(lengthErr.Have + 1), UnitID: req.UnitID,
+			FunctionCode: FunctionCode(req.FunctionCode), HasFunctionCode: true,
+			Err: err, Exception: code, Closed: true,
+		})
 	}
 	return exceptionResponse(req, txnID, code)
 }
@@ -830,9 +875,11 @@ func (ms *Server) dispatchRequest(ctx context.Context, req *adu.Request, txnID u
 	}
 }
 
-// startTLS performs a TLS handshake with client authentication.
+// startTLS performs a TLS handshake with client authentication. roleErr is
+// the error of a Modbus Role extension that could not be used (clientRole is
+// then empty). tlsSock is nil when the handshake could not be started.
 func (ms *Server) startTLS(tcpSock net.Conn) (
-	tlsSock *tls.Conn, clientRole string, err error) {
+	tlsSock *tls.Conn, clientRole string, roleErr error, err error) {
 
 	err = tcpSock.SetDeadline(time.Now().Add(ms.conf.TLSHandshakeTimeout))
 	if err != nil {
@@ -860,7 +907,7 @@ func (ms *Server) startTLS(tcpSock net.Conn) (
 		err = errors.New("no client certificate received")
 		return
 	}
-	clientRole = ms.extractRole(connState.PeerCertificates[0])
+	clientRole, roleErr = ms.extractRole(connState.PeerCertificates[0])
 
 	// The handshake deadline must not outlive the handshake.
 	err = tlsSock.SetDeadline(time.Time{})
@@ -868,40 +915,30 @@ func (ms *Server) startTLS(tcpSock net.Conn) (
 	return
 }
 
-// extractRole looks for Modbus Role extensions in a certificate.
-func (ms *Server) extractRole(cert *x509.Certificate) (role string) {
-	var err error
-	var found bool
-	var badCert bool
-
+// extractRole looks for Modbus Role extensions in a certificate. A
+// certificate with more than one, or with one that is not a DER UTF8String,
+// has no role: roleErr, which wraps ErrInvalidRole, says why.
+func (ms *Server) extractRole(cert *x509.Certificate) (role string, roleErr error) {
+	found := false
 	for _, ext := range cert.Extensions {
-		if ext.Id.Equal(modbusRoleOID) {
-			if found {
-				ms.logger.Warning("client certificate contains more than one role OIDs")
-				badCert = true
-				break
-			}
-			found = true
+		if !ext.Id.Equal(modbusRoleOID) {
+			continue
+		}
+		if found {
+			ms.logger.Warning("client certificate contains more than one role OIDs")
+			return "", fmt.Errorf("%w: more than one in the certificate", ErrInvalidRole)
+		}
+		found = true
 
-			if len(ext.Value) < 2 || ext.Value[0] != 0x0c {
-				badCert = true
-				break
-			}
-
-			_, err = asn1.Unmarshal(ext.Value, &role)
-			if err != nil {
-				ms.logger.Warningf("failed to decode Modbus Role extension: %v", err)
-				badCert = true
-				break
-			}
+		if len(ext.Value) < 2 || ext.Value[0] != 0x0c {
+			return "", fmt.Errorf("%w: not a UTF8String", ErrInvalidRole)
+		}
+		if _, err := asn1.Unmarshal(ext.Value, &role); err != nil {
+			ms.logger.Warningf("failed to decode Modbus Role extension: %v", err)
+			return "", fmt.Errorf("%w: %w", ErrInvalidRole, err)
 		}
 	}
-
-	if badCert {
-		role = ""
-	}
-
-	return
+	return role, nil
 }
 
 // Server-side response helpers.
