@@ -20,6 +20,7 @@ Closes the gaps an external review of v1.22.0 found in the server's security int
 - `examples/security_hooks` is one tcp+tls flow on an in-memory throw-away PKI: verified identity and `ConnectionID`, a connection authorizer that pins a CA and keeps a revocation list, the request decisions, the PDU and violation records joined by `RequestSeq`, and the connection's close, each turned into an application-owned audit event and delivered without blocking, with a drop count. It runs without certificate files; its test checks the trail.
 - `ConnectionMetrics.OnConnectionRejected` and `ServerConnectionRejected` run on the connection's goroutine for `RejectNotAuthorized` (on the accept loop for the other reasons, as before).
 - The callbacks that may call `Stop` or `Shutdown`, and the guarded calls, now include `ConnectionAuthorizer` and `AuthorizationDecisionMetrics`, with the same guarantees as the others.
+- The bundled `modbus-cli` is built on v1.22.0 (was v1.20.0).
 
 ### Documentation
 
