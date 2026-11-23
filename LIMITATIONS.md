@@ -43,8 +43,9 @@ What it implements, function by function, is in
 ## Security
 
 Only `tcp+tls://` protects the connection. Authorization on the server is the
-application's: `ServerConfig.Authorizer` or the handlers decide; the library
-gives roles no meaning. See [SECURITY.md](SECURITY.md).
+application's: `ServerConfig.ConnectionAuthorizer` (which verified clients
+connect), `ServerConfig.Authorizer` or the handlers decide; the library gives
+roles no meaning. See [SECURITY.md](SECURITY.md).
 
 A `tcp+tls://` server counts a connection against `MaxClients` before its TLS
 handshake. When every slot is taken, a new connection replaces the oldest one
@@ -57,7 +58,24 @@ Either way, many hosts can still crowd out a client whose handshake is slow.
 - **No connection-rate limit.** The server does not limit how fast connections
   are accepted, per host or overall; that belongs at the network edge.
 - **No defaults for the hardening settings.** `MaxClientsPerHost`,
-  `FirstRequestTimeout`, `FrameTimeout` and `Authorizer` are off unless set.
+  `FirstRequestTimeout`, `FrameTimeout`, `Authorizer` and
+  `ConnectionAuthorizer` are off unless set.
+- **Connection authorization is tcp+tls only.** `ConnectionAuthorizer` needs a
+  verified certificate; setting it on a `tcp://` server is a configuration
+  error. It runs after the TLS handshake completed, so a refused client has
+  completed its handshake and sees its connection closed, not a TLS alert.
+  The library checks no CRL or OCSP itself: revocation is the authorizer's.
+- **Request sequence numbers are per connection.** `RequestSeq` (since
+  v1.23.0) counts the requests the server read from one connection, from 1; it
+  identifies a request only together with its `ConnectionID`, is not exchanged
+  on the wire, and starts over on every connection. The MBAP transaction ID
+  beside it is the client's and may repeat. Neither is meant as a metric
+  label.
+- **Decisions only of the authorizer.** `AuthorizationDecisionMetrics` reports
+  the decisions of `ServerConfig.Authorizer`; a request the server answers
+  itself (malformed, unserved function code) is never decided and is reported
+  through `ServerMetrics.OnError`, `ProtocolViolationMetrics` and
+  `ServerConfig.PDUTap` only.
 - **Per-host means per IP address.** Clients behind one NAT or proxy share a
   `MaxClientsPerHost` budget; an IPv6 client that rotates addresses within its
   prefix counts as several hosts.
@@ -164,7 +182,8 @@ Either way, many hosts can still crowd out a client whose handshake is slow.
 - `Server.Stop` and `Server.Shutdown` called from a handler method, a
   `ServerMetrics` method or a method of one of its optional extensions,
   `ServerConfig.AllowClient`, `ServerConfig.Authorizer`,
-  `ServerConfig.PDUTap` or the `Logger` do not wait for
+  `ServerConfig.ConnectionAuthorizer`, `ServerConfig.PDUTap` or the `Logger`
+  do not wait for
   the connection (or the accept loop) they were called on: when they return,
   that connection's goroutines are still finishing the request in progress (its
   outcome hook included) and end afterwards

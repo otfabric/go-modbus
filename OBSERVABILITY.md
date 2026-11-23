@@ -51,6 +51,7 @@ Pluggable synchronous callbacks via `Config.Metrics` / `ServerConfig.Metrics`:
 | `ProtocolViolationMetrics` | Optional, on the `ServerMetrics` value; a request that breaks the framing or the structure of its function code, with its MBAP header and what the server did (`OnProtocolViolation`). Since v1.21.0 |
 | `ResponseAnomalyMetrics` | Optional, on the `ClientMetrics` value; what the client skipped or discarded while waiting for a response (`OnResponseAnomaly`). Since v1.21.0 |
 | `ServerConnectionMetrics` | Optional, on the `ServerMetrics` value; the lifecycle of each tcp / tcp+tls connection (rejected, opened, closed) as one typed event with its `ConnectionID` (`OnServerConnection`). Since v1.22.0 |
+| `AuthorizationDecisionMetrics` | Optional, on the `ServerMetrics` value; every decision of `ServerConfig.Authorizer`, allowed or refused, with the request it was asked about (`ConnectionID`, `RequestSeq`, role, unit, function code, access, addresses), the refusal error, the exception decided and whether the authorizer failed (`OnAuthorizationDecision`). Since v1.23.0 |
 | `ClientConnectionMetrics` | Optional, on the `ClientMetrics` value; every dial (with its origin, duration and error), discard (with its reason) and close of the client's connections, single or pooled, with their `ConnectionID` (`OnClientConnection`). Since v1.22.0 |
 
 `ClientMetrics` reflects what the calling method returns (including exception and
@@ -130,10 +131,12 @@ monitoring product it uses.
 | Fact | Where it is reported |
 |---|---|
 | Connection refused at accept (`AllowClient`, `MaxClients`, `MaxClientsPerHost`) or evicted mid-handshake | `ConnectionMetrics.OnConnectionRejected` |
+| Verified tcp+tls client refused by `ServerConfig.ConnectionAuthorizer` after its handshake (since v1.23.0) | `ConnectionMetrics.OnConnectionRejected` (`RejectNotAuthorized`), `ServerConnectionMetrics` with `Err` and the role |
 | TLS handshake completed or failed: version, suite, SNI, peer chain, role, unusable role | `TLSHandshakeMetrics.OnTLSHandshake` (server and client) |
 | Connection opened, with the client's role; closed, and why (idle, first-request and frame timeouts, malformed frame, protocol error, write failure, reset, stop) | `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics` |
 | Framing or structure violation: bad MBAP length or protocol ID, wrong PDU length, contradicting fields, exception function code; the answer and close the server decided on (delivery: `ConnectionCloseMetrics`) | `ProtocolViolationMetrics.OnProtocolViolation` |
-| Request refused by `ServerConfig.Authorizer` | `ServerMetrics.OnError` with an error matching `ErrNotAuthorized` |
+| Request refused by `ServerConfig.Authorizer` | `ServerMetrics.OnError` with an error matching `ErrNotAuthorized` (no `ConnectionID`, no inputs) |
+| Every decision of `ServerConfig.Authorizer`, with its inputs (since v1.23.0) | `AuthorizationDecisionMetrics.OnAuthorizationDecision` |
 | Function code not served, value out of range, handler error | `ServerMetrics.OnError`, `ServerConfig.PDUTap` |
 | Every request and answer, raw | `ServerConfig.PDUTap` (server), `Config.PDUTap` (client) |
 | Accept failure | `AcceptErrorMetrics.OnAcceptError` |
@@ -147,8 +150,12 @@ and `ServerPDUTap`. Since v1.22.0 the structured reports also carry a
 address is reused.
 
 **Order on one connection (server).** `OnTLSHandshake` (tcp+tls), then
-`OnConnectionOpened`; per request `OnRequest`, then `OnResponse` or `OnError`,
-then `OnProtocolViolation` for a violation; then `OnConnectionClosed` and
+`ConnectionAuthorizer.AuthorizeConnection` (tcp+tls, when set; a refusal ends
+here with `OnConnectionRejected` and `ServerConnectionRejected`), then
+`OnConnectionOpened`; per request `OnRequest`, then
+`OnAuthorizationDecision` (when `Authorizer` is set and the request reaches
+it), then `OnResponse` or `OnError`, then `OnProtocolViolation` for a
+violation, then `ServerPDUTap.OnServerPDU`; then `OnConnectionClosed` and
 `OnConnectionCloseReason`. A malformed MBAP header, which never becomes a
 request, is reported to `OnProtocolViolation` right before the close.
 
@@ -181,6 +188,26 @@ logs, traces and audit records; count by the event's kind and reason.
 |---|---|
 | Server connection rejected, opened, closed, with its ID | `ServerConnectionMetrics.OnServerConnection` |
 | Client dial (origin, duration, error), discard (reason, error), close, with its ID | `ClientConnectionMetrics.OnClientConnection` |
+
+### Per-request correlation (since v1.23.0)
+
+Within a server connection every request the server read has a `RequestSeq`:
+1 for the first, counting served, refused and malformed requests alike. The
+same `ConnectionID` and `RequestSeq`, and the request's MBAP `TransactionID`,
+are in its `AuthorizationRequest`, `AuthorizationDecisionEvent.Request`,
+`ServerPDUExchange` and `ProtocolViolation`, so that an audit consumer can join
+a decision to the exact PDU record it was made on. An MBAP header the server
+could not frame is not a request: its `ProtocolViolation.RequestSeq` is 0.
+
+Scope, as for `ConnectionID`: `RequestSeq` is per connection, and only the pair
+(`ConnectionID`, `RequestSeq`) identifies a request in the process.
+`TransactionID` is chosen by the client and may repeat, so it is not a key on
+its own. Neither is a metric label.
+
+| Fact | Where it is reported |
+|---|---|
+| A decision, joined to its PDU record | `AuthorizationDecisionEvent.Request.{ConnectionID,RequestSeq}` = `ServerPDUExchange.{ConnectionID,RequestSeq}` |
+| A violation, joined to its PDU record | `ProtocolViolation.{ConnectionID,RequestSeq}` = `ServerPDUExchange.{ConnectionID,RequestSeq}` |
 
 **Cost.** The interfaces are found once, by type assertion, in `New` and
 `NewServer`. The `ConnectionID` is allocated whether or not they are
@@ -216,8 +243,10 @@ Runnable examples, each with a test: [examples/client_metrics](examples/client_m
 (every client interface and `Config.PDUTap`),
 [examples/server_metrics](examples/server_metrics/server_metrics.go) (`ServerMetrics`, the
 connection interfaces and `ServerConfig.PDUTap`) and
-[examples/security_hooks](examples/security_hooks/security_hooks.go) (the server's security
-hooks, the authorizer and the opt-in limits).
+[examples/security_hooks](examples/security_hooks/security_hooks.go) (one tcp+tls flow from
+the verified identity through the connection authorizer, the request decisions,
+the PDU and violation records and the close to an application-owned audit
+event, delivered without blocking and with a drop count).
 
 ### Callbacks that do not return normally
 
@@ -238,6 +267,8 @@ locks when it logs.
 | `ServerPDUTap.OnServerPDU` | `ServerPDUTap.OnServerPDU for <addr> did not return normally` | the response is sent as if it had returned |
 | `ServerConfig.AllowClient` | `ServerConfig.AllowClient for <addr> did not return normally` | the connection is refused (`RejectNotAllowed`) |
 | `ServerConfig.Authorizer` | `RequestAuthorizer.AuthorizeRequest for FC 0x.. from <client> did not return normally` | the request is refused with Server Device Failure; the handler is not called |
+| `ServerConfig.ConnectionAuthorizer` | `ConnectionAuthorizer.AuthorizeConnection for <addr> did not return normally` | the connection is refused (`RejectNotAuthorized`): it fails closed |
+| `AuthorizationDecisionMetrics.OnAuthorizationDecision` | `AuthorizationDecisionMetrics.OnAuthorizationDecision for FC 0x.. from <client> did not return normally` | the request is served or refused as decided |
 | `Is` or `Unwrap` of the authorizer's error | `the error of the authorizer for FC 0x.. from <client> did not return normally` | the request is refused with Server Device Failure |
 | `TLSHandshakeMetrics.OnTLSHandshake` (server) | `TLSHandshakeMetrics.OnTLSHandshake for <addr> did not return normally` | the server goes on as if it had returned |
 | `ProtocolViolationMetrics.OnProtocolViolation` | `ProtocolViolationMetrics.OnProtocolViolation for <addr> did not return normally` | the server goes on as if it had returned |

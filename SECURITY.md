@@ -37,6 +37,7 @@ Modbus TCP, UDP, RTU and ASCII carry no authentication and no encryption: anyone
 - TLS 1.2 is the minimum version
 - Keep private keys out of source control and give key files restrictive permissions (`chmod 600`)
 - The server passes the role from the client certificate's Modbus role extension to handlers as `ClientRole`. The library attaches no meaning to a role: what a role may do is the application's decision, made in `ServerConfig.Authorizer` (below) or in the handlers. A certificate whose role extension the server cannot use (more than one, or not exactly one DER UTF8String) is served with no role; `TLSHandshakeMetrics` reports it with `RoleErr` wrapping `ErrInvalidRole`, and the authorizer sees the same error in `AuthorizationRequest.ClientRoleErr`, so a policy can refuse such a client while still serving one without a role
+- Certificate verification against `TLSClientCAs` decides whether a client may complete the handshake; `ServerConfig.ConnectionAuthorizer` (since v1.23.0, below) decides whether a verified client may connect at all
 
 ### Restricting Destinations
 
@@ -62,7 +63,8 @@ Since v1.21.0. Every setting here is off by default, and the library chooses no 
 | `MaxClientsPerHost` | connections at once from one IP address, handshaking ones included; refused at accept, before anything is read | `RejectPerHostLimit` |
 | `FirstRequestTimeout` | time from the start of serving (after the TLS handshake) to the first complete request: a client that connects and stays silent | `CloseFirstRequestTimeout` |
 | `FrameTimeout` | time from a request's first byte to its last: a client that trickles a request in, byte by byte, to hold the connection | `CloseFrameTimeout` |
-| `Authorizer` | which requests reach the handlers (below) | `ServerMetrics.OnError` with `ErrNotAuthorized` |
+| `Authorizer` | which requests reach the handlers (below) | `ServerMetrics.OnError` with `ErrNotAuthorized`; each decision with its inputs to `AuthorizationDecisionMetrics` (since v1.23.0) |
+| `ConnectionAuthorizer` | which verified `tcp+tls` clients are served at all, after the handshake and before any request (below; since v1.23.0) | `RejectNotAuthorized`, with `ServerConnectionEvent.Err` |
 
 - `MaxClientsPerHost` counts IP addresses: clients behind one NAT, proxy or gateway share a host, so size it for the largest legitimate group, or leave it off where that is unknown
 - `FrameTimeout` well above the round-trip time of the slowest legitimate client avoids cutting off a request split over several TCP segments; it runs alongside `Timeout`, and the earlier of the two ends the wait
@@ -73,6 +75,16 @@ Since v1.21.0. Every setting here is off by default, and the library chooses no 
 `ServerConfig.Authorizer` is asked about every request before a handler serves it, with the client's address and role, the unit, the function code, whether it reads, writes or diagnoses, and the addresses and quantities it touches ([API.md § 3.6](API.md#36-request-authorization)). A refused request never reaches the handler, so it has no effect on the device; the client is answered with Illegal Function (01), or the exception the authorizer chose. An authorizer that panics refuses the request (Server Device Failure): a failed authorizer never lets a request through. Typical policies: read-only for clients without an operator role, no writes to unit 0, writes only to an address range. `AccessDiagnostic` is not read-only: FC08 sub-functions restart the communications port, change the ASCII delimiter, force Listen Only Mode or clear counters (V1.1b3 section 6.8.1), so a read-only policy checks `SubFunction`, as [examples/security_hooks](examples/security_hooks/security_hooks.go) does.
 
 The authorizer is a check inside the process. Role-based decisions are only as strong as the certificate that carries the role: they are meaningful on `tcp+tls://`, where the role comes from a verified certificate; on `tcp://` the address is all there is, and it can be spoofed on a network you do not control.
+
+### Connection Authorization
+
+Since v1.23.0. `ServerConfig.ConnectionAuthorizer` runs on a `tcp+tls://` server once a client's certificate chain has been verified against `TLSClientCAs`, before any request of the connection is read ([API.md § 3.7](API.md#37-connection-authorization)). It receives what `TLSHandshakeMetrics` reports: the peer certificates, the verified chains, the Modbus Role and `RoleErr`, the addresses and the `ConnectionID`. An error refuses the connection: it is closed without serving a request and reported as `RejectNotAuthorized`. An authorizer that panics refuses it too: it fails closed. Typical policies: accept only chains that end at one pinned CA when `TLSClientCAs` holds several, refuse certificates the application has revoked (the library checks no CRL or OCSP), refuse an unusable Role extension outright, require a subject or a SAN. The library imposes no model of users, tenants or roles; [examples/security_hooks](examples/security_hooks/security_hooks.go) pins a CA and keeps a revocation list.
+
+The connection holds its `MaxClients` slot while the authorizer runs, and is not evicted for a newer one: keep it fast and non-blocking (look up in memory, not over the network). It is not available on `tcp://`, which has no verified identity; `AllowClient` decides by address there and on `tcp+tls://` before the handshake.
+
+### Audit Records
+
+`AuthorizationDecisionMetrics` (since v1.23.0) reports each decision of `ServerConfig.Authorizer` with the request it was asked about. Every server report of a request carries the `ConnectionID` and a per-connection `RequestSeq`, so that a decision, its PDU record (`ServerConfig.PDUTap`) and a protocol violation can be joined into one audit record. What an audit record contains, how it is protected and where it is kept are the application's: the callbacks run synchronously on the connection's goroutine, so hand the facts to a buffered channel without blocking and count what is dropped, as the example does. `ServerConfig.PDUTap` sees register values and write payloads: treat an audit trail built from it as sensitive.
 
 ### What the Library Is Not
 

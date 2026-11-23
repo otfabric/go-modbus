@@ -86,6 +86,11 @@ type TLSHandshakeInfo struct {
 	// ServerConfig.TLSClientCAs (server) or Config.TLSRootCAs (client). It is
 	// true for every completed handshake.
 	Verified bool
+	// VerifiedChains are the chains crypto/tls built from PeerCertificates to
+	// a trusted root when it verified them, each leaf first and root last;
+	// empty when the handshake failed. Like PeerCertificates, they are parsed
+	// afresh for each call. Since v1.23.0.
+	VerifiedChains [][]*x509.Certificate
 	// Role is the role of the client from the Modbus Role extension of its
 	// certificate, as the handlers receive it in ClientRole; empty when it
 	// has none or the handshake failed. Server only.
@@ -112,6 +117,11 @@ func newTLSHandshakeInfo(conn *tls.Conn, d time.Duration, err error) TLSHandshak
 	info.Version, info.CipherSuite, info.ServerName = st.Version, st.CipherSuite, st.ServerName
 	info.Verified = err == nil && len(st.VerifiedChains) > 0
 	info.PeerCertificates = copyCertificates(st.PeerCertificates)
+	if err == nil {
+		for _, chain := range st.VerifiedChains {
+			info.VerifiedChains = append(info.VerifiedChains, copyCertificates(chain))
+		}
+	}
 	return info
 }
 
@@ -192,6 +202,11 @@ type ProtocolViolation struct {
 	// ConnectionID is the connection the request arrived on (see
 	// ConnectionID). Since v1.22.0.
 	ConnectionID ConnectionID
+	// RequestSeq is the position of the request among those read from the
+	// connection, as in its ServerPDUExchange and AuthorizationRequest (see
+	// AuthorizationRequest.RequestSeq); zero for an MBAP header the server
+	// could not frame, which is not a request. Since v1.23.0.
+	RequestSeq uint64
 	// ClientAddr and ClientRole identify the connection, as the handlers
 	// receive them (ClientRole is empty on tcp).
 	ClientAddr string

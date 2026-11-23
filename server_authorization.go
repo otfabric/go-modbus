@@ -4,16 +4,21 @@ package modbus
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
+	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // ErrNotAuthorized is matched by the error ServerMetrics.OnError receives for
-// a request that ServerConfig.Authorizer refused. The error also wraps the
-// one the authorizer returned.
+// a request that ServerConfig.Authorizer refused, and by
+// ServerConnectionEvent.Err for a connection ServerConfig.ConnectionAuthorizer
+// refused (RejectNotAuthorized). The error also wraps the one the authorizer
+// returned.
 var ErrNotAuthorized = errors.New("modbus: request not authorized")
 
 // RequestAuthorizer decides whether the server serves a request
@@ -135,6 +140,18 @@ type AuthorizationRequest struct {
 	// ConnectionID is the connection the request arrived on (see
 	// ConnectionID). Since v1.22.0.
 	ConnectionID ConnectionID
+	// RequestSeq is the position of the request among those the server read
+	// from the connection: 1 for the first, counting every request read,
+	// whether it was served, refused or malformed. It is per connection:
+	// ConnectionID and RequestSeq together identify the request within the
+	// process, in its AuthorizationDecisionEvent, ServerPDUExchange and
+	// ProtocolViolation. Like ConnectionID it is for correlating reports,
+	// not for metric labels. Since v1.23.0.
+	RequestSeq uint64
+	// TransactionID is the MBAP transaction ID the request arrived with. The
+	// client chooses it and may repeat it: it is not a key of its own.
+	// Since v1.23.0.
+	TransactionID uint16
 	// ClientAddr and ClientRole identify the client, as the handlers receive
 	// them: its remote host:port, and on tcp+tls the role of its verified
 	// certificate (empty on tcp, and for a certificate without a usable
@@ -168,15 +185,150 @@ type AuthorizationRequest struct {
 	FileRecords []FileRecordRequest
 }
 
+// AuthorizationDecisionMetrics is an optional extension of ServerMetrics. A
+// ServerConfig.Metrics that implements it is told every decision of
+// ServerConfig.Authorizer, allowed or refused, with what the authorizer was
+// asked: the decision with its inputs, which ServerMetrics.OnError does not
+// carry for a refused request (it has the unit ID and the function code
+// only). Request.ConnectionID and Request.RequestSeq join the decision to
+// the ServerPDUExchange of the same request.
+//
+// OnAuthorizationDecision runs on the connection's goroutine, right after the
+// authorizer returned (or failed): before the handler method for a request
+// that is served, before ServerMetrics.OnError for one that is refused. It
+// must not block; one that does not return normally is logged at error level
+// with its stack, and the request is served or refused as decided. It may
+// call Stop or Shutdown (see RequestHandler): as for one called from
+// ServerMetrics.OnRequest, the request is then not answered, and an allowed
+// request's handler is still called, with its context cancelled.
+type AuthorizationDecisionMetrics interface {
+	OnAuthorizationDecision(ev AuthorizationDecisionEvent)
+}
+
+// AuthorizationDecisionEvent is one decision of ServerConfig.Authorizer, as
+// reported to AuthorizationDecisionMetrics. It reports what was decided; it
+// says nothing of how serious a refusal is.
+type AuthorizationDecisionEvent struct {
+	// Request is what the authorizer was asked, as the server made it: a
+	// copy taken before the call, which changes the authorizer made to its
+	// AuthorizationRequest do not reach. FileRecords is the receiver's.
+	Request AuthorizationRequest
+	// Allowed reports whether the request is served.
+	Allowed bool
+	// Err is nil for an allowed request. For a refused one it is the error
+	// the authorizer returned, or, when Failed, an error that says the
+	// authorizer did not return normally and with what value. Its methods
+	// are the application's: the server called them through its guard.
+	Err error
+	// Failed reports that the authorizer did not return normally (it
+	// panicked, or called runtime.Goexit): the request is refused with
+	// Server Device Failure.
+	Failed bool
+	// Exception is the exception the server decided to answer a refused
+	// request with; zero for an allowed request and for one refused with
+	// ErrNoResponse, which is not answered. It is a decision: the callback
+	// runs before the answer is written.
+	Exception ExceptionCode
+}
+
+// ConnectionAuthorizer decides whether the server serves a tcp+tls
+// connection once its TLS handshake has completed and the client's
+// certificate chain has been verified against ServerConfig.TLSClientCAs
+// (ServerConfig.ConnectionAuthorizer). It is the place for an application's
+// own rules about which verified clients may connect at all: pinning a
+// certificate or an issuing CA, checking a subject, a SAN or the Modbus Role,
+// consulting a revocation list the application keeps. The server imposes no
+// model of users, tenants or roles of its own.
+//
+// AuthorizeConnection is called once for every connection whose handshake
+// completed and that the server would serve, on the connection's goroutine,
+// after TLSHandshakeMetrics.OnTLSHandshake and before the connection is
+// served: before ConnectionLifecycleMetrics.OnConnectionOpened and before any
+// request is read. info is what TLSHandshakeMetrics reports for the
+// handshake (Err nil, Verified true, the role and RoleErr included), parsed
+// afresh for this call: it is the receiver's. ctx is the connection's
+// context, cancelled when the server stops.
+//
+// nil serves the connection. Any other error refuses it: the connection is
+// closed, no request of it is read, and it is reported to
+// ConnectionMetrics.OnConnectionRejected and ServerConnectionMetrics as
+// RejectNotAuthorized, with ServerConnectionEvent.Err matching
+// ErrNotAuthorized and wrapping the error. It is never reported as opened
+// or closed.
+//
+// The connection holds its MaxClients slot while AuthorizeConnection runs,
+// and is not evicted for a newer one: it must not block, and should return
+// quickly. It must be safe for concurrent use. One that does not return
+// normally is logged at error level with its stack, and the connection is
+// refused: a failed authorizer never lets a connection through. It may call
+// Stop or Shutdown (see RequestHandler); the connection is then closed
+// without being served, and nothing more is reported for it.
+type ConnectionAuthorizer interface {
+	AuthorizeConnection(ctx context.Context, info TLSHandshakeInfo) error
+}
+
+// ConnectionAuthorizerFunc is a function that serves as a
+// ConnectionAuthorizer. A ServerConfig holding one is not comparable with ==:
+// comparing it panics, as comparing two functions would.
+type ConnectionAuthorizerFunc func(ctx context.Context, info TLSHandshakeInfo) error
+
+// AuthorizeConnection returns f(ctx, info).
+func (f ConnectionAuthorizerFunc) AuthorizeConnection(ctx context.Context, info TLSHandshakeInfo) error {
+	return f(ctx, info)
+}
+
+// errConnectionAuthorizerFailed is the cause of a connection refused because
+// ServerConfig.ConnectionAuthorizer did not return normally; it is wrapped
+// with the error call returned.
+var errConnectionAuthorizerFailed = errors.New("the connection authorizer did not return normally")
+
+// authorizeConnection asks ServerConfig.ConnectionAuthorizer, through call,
+// whether to serve the tcp+tls connection id on tlsSock, whose handshake took
+// d: nil to serve it, else the error it is refused with, which matches
+// ErrNotAuthorized.
+func (ms *Server) authorizeConnection(ctx context.Context, id ConnectionID, tlsSock *tls.Conn, d time.Duration, role string, roleErr error) error {
+	info := newTLSHandshakeInfo(tlsSock, d, nil)
+	info.ConnectionID, info.Role, info.RoleErr = id, role, roleErr
+	var authErr error
+	if callErr := ms.call("ConnectionAuthorizer.AuthorizeConnection", func() string {
+		return fmt.Sprintf("ConnectionAuthorizer.AuthorizeConnection for %s did not return normally", info.RemoteAddr)
+	}, func() error {
+		authErr = ms.conf.ConnectionAuthorizer.AuthorizeConnection(ctx, info)
+		return nil
+	}); callErr != nil {
+		return &connNotAuthorizedError{cause: fmt.Errorf("%w: %w", errConnectionAuthorizerFailed, callErr)}
+	}
+	if authErr == nil {
+		return nil
+	}
+	return &connNotAuthorizedError{cause: authErr}
+}
+
+// connNotAuthorizedError is the error of a connection
+// ServerConfig.ConnectionAuthorizer refused: it matches ErrNotAuthorized and
+// wraps the authorizer's error (cause). Its methods call cause's only in
+// Error, which the server does not call outside its guard.
+type connNotAuthorizedError struct{ cause error }
+
+func (e *connNotAuthorizedError) Error() string {
+	return "modbus: connection not authorized: " + e.cause.Error()
+}
+
+func (e *connNotAuthorizedError) Unwrap() error { return e.cause }
+
+func (e *connNotAuthorizedError) Is(target error) bool { return target == ErrNotAuthorized }
+
 // newAuthorization returns the AuthorizationRequest of req with the fields
 // every request has.
 func newAuthorization(req *adu.Request, clientAddr, clientRole string, access RequestAccess) *AuthorizationRequest {
 	return &AuthorizationRequest{
-		ClientAddr:   clientAddr,
-		ClientRole:   clientRole,
-		UnitID:       req.UnitID,
-		FunctionCode: FunctionCode(req.FunctionCode),
-		Access:       access,
+		RequestSeq:    req.Seq,
+		TransactionID: req.TransactionID,
+		ClientAddr:    clientAddr,
+		ClientRole:    clientRole,
+		UnitID:        req.UnitID,
+		FunctionCode:  FunctionCode(req.FunctionCode),
+		Access:        access,
 	}
 }
 
@@ -262,20 +414,30 @@ func connFrom(ctx context.Context) connState {
 // authorize asks ServerConfig.Authorizer about ar, the request req a handler
 // is about to serve: nil when it is served (or there is no authorizer), else
 // a *notAuthorizedError that the caller returns as the request's error.
-// The authorizer, and the methods of its error, run through call.
+// The authorizer, and the methods of its error, run through call. The
+// decision is then reported to AuthorizationDecisionMetrics, when
+// ServerConfig.Metrics implements it.
 func (ms *Server) authorize(ctx context.Context, req *adu.Request, ar *AuthorizationRequest) error {
 	st := connFrom(ctx)
 	ar.ConnectionID, ar.ClientRoleErr = st.id, st.roleErr
+	var asked AuthorizationRequest
+	if ms.decisionMetrics != nil {
+		// What the authorizer was asked, before it could change ar.
+		asked = *ar
+		asked.FileRecords = slices.Clone(ar.FileRecords)
+	}
 	var authErr error
-	if ms.call("RequestAuthorizer.AuthorizeRequest", func() string {
+	if callErr := ms.call("RequestAuthorizer.AuthorizeRequest", func() string {
 		return fmt.Sprintf("RequestAuthorizer.AuthorizeRequest for FC 0x%02x from %s did not return normally", req.FunctionCode, ar.ClientAddr)
 	}, func() error {
 		authErr = ms.conf.Authorizer.AuthorizeRequest(ctx, ar)
 		return nil
-	}) != nil {
+	}); callErr != nil {
+		ms.reportDecision(&asked, AuthorizationDecisionEvent{Err: callErr, Failed: true, Exception: exServerDeviceFailure})
 		return &notAuthorizedError{cause: errAuthorizerFailed, code: exServerDeviceFailure}
 	}
 	if authErr == nil {
+		ms.reportDecision(&asked, AuthorizationDecisionEvent{Allowed: true})
 		return nil
 	}
 	refused := &notAuthorizedError{cause: authErr, code: exIllegalFunction}
@@ -297,7 +459,29 @@ func (ms *Server) authorize(ctx context.Context, req *adu.Request, ar *Authoriza
 		refused.silent, refused.code = false, exServerDeviceFailure
 	}
 	ms.logger.Debugf("FC 0x%02x from %s not authorized: %v", req.FunctionCode, ar.ClientAddr, authErr)
+	ev := AuthorizationDecisionEvent{Err: authErr}
+	if !refused.silent {
+		ev.Exception = refused.code
+	}
+	ms.reportDecision(&asked, ev)
 	return refused
+}
+
+// reportDecision reports ev, the decision on asked, to
+// AuthorizationDecisionMetrics through call, when ServerConfig.Metrics
+// implements it.
+func (ms *Server) reportDecision(asked *AuthorizationRequest, ev AuthorizationDecisionEvent) {
+	dm := ms.decisionMetrics
+	if dm == nil {
+		return
+	}
+	ev.Request = *asked
+	_ = ms.call("AuthorizationDecisionMetrics.OnAuthorizationDecision", func() string {
+		return fmt.Sprintf("AuthorizationDecisionMetrics.OnAuthorizationDecision for FC 0x%02x from %s did not return normally", byte(asked.FunctionCode), asked.ClientAddr)
+	}, func() error {
+		dm.OnAuthorizationDecision(ev)
+		return nil
+	})
 }
 
 // fileRecordRefs returns the FileRecordRequest of every record of an FC21

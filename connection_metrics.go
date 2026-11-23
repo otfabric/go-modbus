@@ -41,7 +41,8 @@ func (id ConnectionID) String() string { return strconv.FormatUint(uint64(id), 1
 // implements those, which keep their signatures and are still called:
 //
 //   - ServerConnectionRejected for every connection reported to
-//     OnConnectionRejected, right after it;
+//     OnConnectionRejected, right after it (on the connection's goroutine
+//     for RejectNotAuthorized);
 //   - ServerConnectionOpened for every connection reported to
 //     OnConnectionOpened (on tcp+tls, once its TLS handshake completed), right
 //     after it;
@@ -50,7 +51,9 @@ func (id ConnectionID) String() string { return strconv.FormatUint(uint64(id), 1
 //     Shutdown called from one of its own callbacks stopped is not reported.
 //
 // A tcp+tls connection whose TLS handshake fails is neither opened nor
-// closed here; TLSHandshakeMetrics reports it, with the same ConnectionID. A
+// closed here; TLSHandshakeMetrics reports it, with the same ConnectionID.
+// Nor is one that ServerConfig.ConnectionAuthorizer refused: it is reported
+// as Rejected, after its handshake. A
 // Shutdown or Stop called from a callback of a connection (this one
 // included) ends that connection's callbacks: nothing more is reported for it.
 //
@@ -99,23 +102,27 @@ func (k ServerConnectionEventKind) String() string {
 type ServerConnectionEvent struct {
 	Kind ServerConnectionEventKind
 	// ConnectionID is the connection's identifier, the same as in the
-	// TLSHandshakeInfo, ProtocolViolation, AuthorizationRequest and
-	// ServerPDUExchange of the connection.
+	// TLSHandshakeInfo, ProtocolViolation, AuthorizationRequest,
+	// AuthorizationDecisionEvent and ServerPDUExchange of the connection.
 	ConnectionID ConnectionID
 	// RemoteAddr and LocalAddr are the addresses of the connection (host:port),
 	// empty when the socket does not have one.
 	RemoteAddr string
 	LocalAddr  string
 	// Role and RoleErr are the client's role and the error of an unusable
-	// Modbus Role extension, as in TLSHandshakeInfo (tcp+tls; Opened and
-	// Closed only).
+	// Modbus Role extension, as in TLSHandshakeInfo (tcp+tls; Opened, Closed,
+	// and Rejected with RejectNotAuthorized).
 	Role    string
 	RoleErr error
 	// RejectReason is set for ServerConnectionRejected.
 	RejectReason RejectReason
 	// CloseReason and Err are set for ServerConnectionClosed: why the server
 	// stopped serving the connection, and the error that ended it (never nil),
-	// as reported to ConnectionCloseMetrics.
+	// as reported to ConnectionCloseMetrics. Err is also set for
+	// ServerConnectionRejected with RejectNotAuthorized: it matches
+	// ErrNotAuthorized and wraps the error ServerConfig.ConnectionAuthorizer
+	// refused the connection with (since v1.23.0); it is nil for the other
+	// reject reasons.
 	CloseReason CloseReason
 	Err         error
 	// Age is how long the server served the connection (Closed only): the time

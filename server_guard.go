@@ -22,10 +22,12 @@ import (
 //     (reportOpened, reportClosed), ConnectionCloseMetrics
 //     (reportCloseReason), AcceptErrorMetrics (reportAcceptError),
 //     TLSHandshakeMetrics (reportTLSHandshake), ProtocolViolationMetrics
-//     (reportViolation) and ServerConnectionMetrics (reportServerConn);
+//     (reportViolation), ServerConnectionMetrics (reportServerConn) and
+//     AuthorizationDecisionMetrics (reportDecision);
 //   - ServerConfig.AllowClient (allowClient), ServerConfig.PDUTap
-//     (tapServerExchange) and ServerConfig.Authorizer (authorize), with the
-//     methods of the error it returns;
+//     (tapServerExchange), ServerConfig.Authorizer (authorize), with the
+//     methods of the error it returns, and ServerConfig.ConnectionAuthorizer
+//     (authorizeConnection);
 //   - the TLS handshake of tcp+tls (startTLS), which runs the private key of
 //     ServerConfig.TLSServerCert, a crypto.Signer that may be the
 //     application's.
@@ -63,6 +65,17 @@ func (ms *Server) reportRejected(share *runShare, sock net.Conn, id ConnectionID
 		RemoteAddr: addr, LocalAddr: addrString(sock.LocalAddr()),
 		RejectReason: reason,
 	})
+}
+
+// reportRejectedConn reports ev, a ServerConnectionRejected event, to
+// ConnectionMetrics.OnConnectionRejected and then, unless a Shutdown was
+// called from it, to ServerConnectionMetrics, as reportRejected does.
+func (ms *Server) reportRejectedConn(share *runShare, ev ServerConnectionEvent) {
+	ms.reportRejectedAddr(ev.RemoteAddr, ev.RejectReason)
+	if share.released.Load() {
+		return
+	}
+	ms.reportServerConn(ev)
 }
 
 // reportRejectedAddr calls ConnectionMetrics.OnConnectionRejected, when
@@ -212,6 +225,7 @@ func (ms *Server) reportRequestViolation(req *adu.Request, txnID uint16, id Conn
 	}
 	ms.reportViolation(ProtocolViolation{
 		ConnectionID:    id,
+		RequestSeq:      req.Seq,
 		ClientAddr:      clientAddr,
 		ClientRole:      clientRole,
 		TransactionID:   txnID,

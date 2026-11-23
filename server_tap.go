@@ -19,6 +19,13 @@ type ServerPDUExchange struct {
 	// ConnectionID is the connection the request arrived on (see
 	// ConnectionID). Since v1.22.0.
 	ConnectionID ConnectionID
+	// RequestSeq is the position of the request among those read from the
+	// connection, from 1, and TransactionID its MBAP transaction ID: the same
+	// as in the AuthorizationDecisionEvent and ProtocolViolation of the
+	// request (see AuthorizationRequest.RequestSeq for the scope). Since
+	// v1.23.0.
+	RequestSeq    uint64
+	TransactionID uint16
 	// ClientAddr is the client's remote host:port, ClientRole its role (tcp+tls;
 	// empty on tcp), as the handlers receive them.
 	ClientAddr string
@@ -85,13 +92,15 @@ func (ms *Server) tapServerExchange(ctx context.Context, req *adu.Request, res *
 		return
 	}
 	ex := ServerPDUExchange{
-		ConnectionID: connFrom(ctx).id,
-		ClientAddr:   clientAddr,
-		ClientRole:   clientRole,
-		UnitID:       req.UnitID,
-		Request:      pduBytes(req.FunctionCode, req.Payload),
-		Received:     received,
-		Answered:     time.Now(),
+		ConnectionID:  connFrom(ctx).id,
+		RequestSeq:    req.Seq,
+		TransactionID: req.TransactionID,
+		ClientAddr:    clientAddr,
+		ClientRole:    clientRole,
+		UnitID:        req.UnitID,
+		Request:       pduBytes(req.FunctionCode, req.Payload),
+		Received:      received,
+		Answered:      time.Now(),
 	}
 	if res != nil {
 		ex.Response = pduBytes(res.FunctionCode, res.Payload)
