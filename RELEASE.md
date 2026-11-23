@@ -2,10 +2,10 @@
 
 ## v1.20.0
 
-**Date:** unreleased
+**Date:** 2026-11-23
 **Previous release:** v1.19.0
 
-Conformance hardening against the MODBUS Application Protocol Specification V1.1b3: the server tells a request whose PDU is complete but malformed from one whose framing is lost, and answers the first with an exception instead of closing the connection; FC08, FC12, FC17, FC20 and FC43 send and accept what their clauses define. No exported identifier is removed or changed; one method is added. Behaviour changes are listed under Changed; each follows a clause of the specification named there. Agreement with the clauses and worked examples named here is not a claim of conformance or certification.
+Conformance hardening against the MODBUS Application Protocol Specification V1.1b3: the server answers a request PDU of the wrong length with exception 3 before it closes the connection, rejects the wrong MBAP length of a fixed-size request as soon as it reads the function code, and answers a well-framed request with bad values without closing it; FC08, FC12, FC17, FC20 and FC43 send and accept what their clauses define. No exported identifier is removed or changed; one method is added. Behaviour changes are listed under Changed; each follows a clause of the specification named there. Agreement with the clauses and worked examples named here is not a claim of conformance or certification.
 
 ### Added
 
