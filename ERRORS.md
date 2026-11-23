@@ -43,6 +43,8 @@ Modbus exception from the unit.
 | `batch.Compile` / `Decode` given invalid items or data | `*batch.ValidationError` |
 | `ValidateRuntimeDecodePlan` / `ExecuteRuntimeDecodePlan` / `ExecuteRuntimeDecodePlanOffline` given an invalid plan (or, offline, registers that do not match the window) | `*RuntimePlanValidationError` (`ItemName`, `Reason`; no sentinel, match with `errors.As`) |
 | `batch` `Plan.Execute` that did not read every window | result **and** `*batch.ExecError` (`errors.Is` → `batch.ErrIncomplete`, the first window error, and the reason the batch stopped) |
+| Server: request refused by `ServerConfig.Authorizer` | to `ServerMetrics.OnError` an error matching `ErrNotAuthorized`, the exception error answered, and the authorizer's own error (`errors.Is`); the handler was not called. Since v1.21.0 |
+| Server: client certificate with an unusable Modbus Role extension | `TLSHandshakeInfo.RoleErr` wrapping `ErrInvalidRole`; the client is served with no role. Since v1.21.0 |
 
 Prefer:
 
@@ -117,6 +119,8 @@ built-in retry policies. `ErrBadCRC`, `ErrBadLRC`, `ErrShortFrame` and
 | `ErrSerialPortNotOpen` | A read or write on a serial port that was never opened or was closed. The client treats it as a lost link |
 | `ErrNoResponse` | Returned **by a `RequestHandler`**, not by the client: the server sends nothing and keeps the connection, so the client runs into its timeout. It models a silent device |
 | `ErrProtocolError` (server) | Returned by a `RequestHandler`, the server closes the connection without answering (`CloseProtocolError`). The server's own request checks report to `ServerMetrics.OnError` an error that matches it and `ErrIllegalDataValue`: for a PDU whose length disagrees with its fields or byte count (answered with exception 3, then the connection is closed), an FC21 sub-request that overruns the byte count or FC08 data of odd length (answered with exception 3, the connection kept). Since v1.20.0 these errors, and the one for a request with an exception function code (which matches `ErrIllegalFunction`), are not the sentinels themselves: compare with `errors.Is`, not `==`. `ErrProtocolError` there does not mean the connection was closed; `ConnectionCloseMetrics` says that |
+| `ErrNotAuthorized` (server) | Matched by the error `ServerMetrics.OnError` receives for a request `ServerConfig.Authorizer` refused. The error also matches the exception error the client was answered with (`ErrIllegalFunction` for a plain refusal, `ErrServerDeviceFailure` for an authorizer that panicked, or the exception error the authorizer returned; `ErrNoResponse` for a silent refusal) and wraps the authorizer's error. Never returned by the client: a client sees the exception. Since v1.21.0 |
+| `ErrInvalidRole` (server) | Wrapped in `TLSHandshakeInfo.RoleErr` for a client certificate whose Modbus Role extension the server cannot use: more than one, or not a DER UTF8String. Such a client is served with an empty `ClientRole`, as before; the error lets a `TLSHandshakeMetrics` tell it from a certificate without a role. Since v1.21.0 |
 
 ### SunSpec discovery
 
@@ -173,15 +177,21 @@ the next request dials again. See
 [API.md § 2.1 "Custom dialer"](API.md#21-config).
 
 On the server, a response that cannot be written in full within
-`ServerConfig.Timeout` closes the connection.
+`ServerConfig.Timeout` closes the connection (`CloseWriteFailed`, with an error
+matching `os.ErrDeadlineExceeded`). With the opt-in limits set, a connection
+that sends no complete request within `ServerConfig.FirstRequestTimeout` is
+closed with `CloseFirstRequestTimeout`, one whose request does not arrive in
+full within `ServerConfig.FrameTimeout` of its first byte with
+`CloseFrameTimeout` (both errors match `os.ErrDeadlineExceeded`), and one beyond
+`ServerConfig.MaxClientsPerHost` is refused at accept (`RejectPerHostLimit`).
 
 ## Server lifecycle
 
 `Start`, `Shutdown` and `Stop` return the listener's error or nil; `Shutdown`
 returns `ctx.Err()` when its context ends before the handlers have. Only the
 first `Shutdown` or `Stop` of a cycle waits: a later one returns nil at once.
-Called from a `RequestHandler` method, a `ServerMetrics` or `ConnectionMetrics`
-method or the `Logger`, they return the same, once the server's other goroutines
+Called from a `RequestHandler` method, a `ServerMetrics` method or one of its
+optional extensions, `ServerConfig.Authorizer` or the `Logger`, they return the same, once the server's other goroutines
 have ended; `Shutdown` with a context that is already done, such as the
 handler's own (the shutdown cancels it), returns `ctx.Err()` at once. Up to
 v1.15.3 a `Stop` called there did not return. See

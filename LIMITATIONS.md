@@ -43,14 +43,44 @@ What it implements, function by function, is in
 ## Security
 
 Only `tcp+tls://` protects the connection. Authorization on the server is the
-handler's job. See [SECURITY.md](SECURITY.md).
+application's: `ServerConfig.Authorizer` or the handlers decide; the library
+gives roles no meaning. See [SECURITY.md](SECURITY.md).
 
 A `tcp+tls://` server counts a connection against `MaxClients` before its TLS
 handshake. When every slot is taken, a new connection replaces the oldest one
 still handshaking (from the host with the most of them), never one that
-completed its handshake. The server has no per-source connection limit: peers
-that keep opening connections without handshaking can still delay clients
-from the same host, or from many hosts a client whose handshake is slow.
+completed its handshake. `MaxClientsPerHost` (opt-in, off by default) bounds
+the connections of one IP address; without it, peers that keep opening
+connections without handshaking can still delay clients from the same host.
+Either way, many hosts can still crowd out a client whose handshake is slow.
+
+- **No connection-rate limit.** The server does not limit how fast connections
+  are accepted, per host or overall; that belongs at the network edge.
+- **No defaults for the hardening settings.** `MaxClientsPerHost`,
+  `FirstRequestTimeout`, `FrameTimeout` and `Authorizer` are off unless set.
+- **Per-host means per IP address.** Clients behind one NAT or proxy share a
+  `MaxClientsPerHost` budget; an IPv6 client that rotates addresses within its
+  prefix counts as several hosts.
+- **No detection.** The observation hooks report facts (handshakes,
+  violations, refusals, closes, client-side skipped frames); they classify
+  nothing as an attack, assign no severity and keep no history. go-modbus is
+  not an IDS, IPS or SIEM ([SECURITY.md](SECURITY.md)).
+- **No connection ID.** Callbacks identify a connection by its remote
+  `host:port`, unique while it is open; a port reused after a close looks like
+  the same peer.
+- **Not reported.** A client pool replacing a broken connection is reported
+  only through the re-dial (`AttemptMetrics.OnRetryDial`, and the new
+  connection's `TLSHandshakeMetrics` call); the server's own exception for an
+  out-of-range value or an unserved function code goes to
+  `ServerMetrics.OnError`, not to `ProtocolViolationMetrics`. The serial
+  framings' discarded bytes (`ResponseAnomalyMetrics`) are counted when the
+  client reads them, before the next request, so bytes that arrive later and
+  are dropped with a failed response are reported through that request's
+  error instead.
+- **FrameTimeout and the variable-length function codes.** The server reads
+  what the MBAP length announces; an overcounting length waits for bytes of
+  the next request, and `FrameTimeout` then bounds that wait as for any
+  incomplete request.
 
 ## Custom dialer
 
@@ -120,14 +150,15 @@ from the same host, or from many hosts a client whose handshake is slow.
 - `ServerConfig.AllowClient` sees only the remote address, at accept: on
   `tcp+tls` it runs before the handshake, so it cannot decide on the client
   certificate (`TLSClientCAs` and the client's role do that).
-- A failed `tcp+tls` handshake is logged only: the connection was never served,
-  so `ConnectionCloseMetrics` does not report it.
+- A failed `tcp+tls` handshake is logged and reported to `TLSHandshakeMetrics`
+  only: the connection was never served, so `ConnectionCloseMetrics` does not
+  report it.
 - `ServerConfig.PDUTap` reports the answer the server decided on, before it is
   written: a response whose write then fails is reported as sent
   (`CloseWriteFailed` says it was not).
 - `Server.Stop` and `Server.Shutdown` called from a handler method, a
-  `ServerMetrics`, `ConnectionMetrics`, `ConnectionLifecycleMetrics` or
-  `ConnectionCloseMetrics` method, `ServerConfig.AllowClient`,
+  `ServerMetrics` method or a method of one of its optional extensions,
+  `ServerConfig.AllowClient`, `ServerConfig.Authorizer`,
   `ServerConfig.PDUTap` or the `Logger` do not wait for
   the connection (or the accept loop) they were called on: when they return,
   that connection's goroutines are still finishing the request in progress (its

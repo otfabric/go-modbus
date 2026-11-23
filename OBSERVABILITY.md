@@ -46,6 +46,10 @@ Pluggable synchronous callbacks via `Config.Metrics` / `ServerConfig.Metrics`:
 | `ConnectionMetrics` | Optional, on the `ServerMetrics` value; connections the server closed to keep within `MaxClients` or refused through `AllowClient` (`OnConnectionRejected`) |
 | `ConnectionLifecycleMetrics` | Optional, on the `ServerMetrics` value; connections the server starts and stops serving (`OnConnectionOpened`, `OnConnectionClosed`) |
 | `ConnectionCloseMetrics` | Optional, on the `ServerMetrics` value; why the server stopped serving a connection (`OnConnectionCloseReason`) |
+| `TLSHandshakeMetrics` | Optional, on the `ServerMetrics` or `ClientMetrics` value; the outcome of every TLS handshake, failed ones included, with the peer's certificates, the negotiated version and suite, and on the server the role and why a role was unusable (`OnTLSHandshake`). Since v1.21.0 |
+| `AcceptErrorMetrics` | Optional, on the `ServerMetrics` value; a failed `Accept` and the wait before the next one (`OnAcceptError`). Since v1.21.0 |
+| `ProtocolViolationMetrics` | Optional, on the `ServerMetrics` value; a request that breaks the framing or the structure of its function code, with its MBAP header and what the server did (`OnProtocolViolation`). Since v1.21.0 |
+| `ResponseAnomalyMetrics` | Optional, on the `ClientMetrics` value; what the client skipped or discarded while waiting for a response (`OnResponseAnomaly`). Since v1.21.0 |
 
 `ClientMetrics` reflects what the calling method returns (including exception and
 protocol validation failures), **not** each internal retry. Implement
@@ -102,10 +106,55 @@ request PDU of the wrong length for its fields or byte count (since v1.20.0 afte
 answering it with exception 3), or a handler that returned `ErrProtocolError`
 (`CloseProtocolError`), a response that could
 not be written (`CloseWriteFailed`), another read error such as a reset
-(`CloseReadFailed`), or `Shutdown` (`CloseServerStopped`). These causes were
-only logged up to v1.18.0. A `tcp+tls` connection whose handshake failed was
-never served and is reported neither opened nor closed; the failure is logged at
-warning level.
+(`CloseReadFailed`), or `Shutdown` (`CloseServerStopped`); with the opt-in
+limits set, no complete first request within `ServerConfig.FirstRequestTimeout`
+(`CloseFirstRequestTimeout`) or a request not complete within
+`ServerConfig.FrameTimeout` of its first byte (`CloseFrameTimeout`). A response
+the client did not read in time is `CloseWriteFailed` with an error matching
+`os.ErrDeadlineExceeded`. These causes were only logged up to v1.18.0. A
+`tcp+tls` connection whose handshake failed was never served and is reported
+neither opened nor closed; the failure is logged at warning level and, since
+v1.21.0, reported to `TLSHandshakeMetrics`.
+
+### Security-relevant facts (since v1.21.0)
+
+The library reports what it observes; it does not decide what is an attack.
+There are no severities, no event schema, no detection rules and no sinks: an
+application that wants them builds them on these callbacks, with whatever
+monitoring product it uses.
+
+| Fact | Where it is reported |
+|---|---|
+| Connection refused at accept (`AllowClient`, `MaxClients`, `MaxClientsPerHost`) or evicted mid-handshake | `ConnectionMetrics.OnConnectionRejected` |
+| TLS handshake completed or failed: version, suite, SNI, peer chain, role, unusable role | `TLSHandshakeMetrics.OnTLSHandshake` (server and client) |
+| Connection opened, with the client's role; closed, and why (idle, first-request and frame timeouts, malformed frame, protocol error, write failure, reset, stop) | `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics` |
+| Framing or structure violation: bad MBAP length or protocol ID, wrong PDU length, contradicting fields, exception function code | `ProtocolViolationMetrics.OnProtocolViolation` |
+| Request refused by `ServerConfig.Authorizer` | `ServerMetrics.OnError` with an error matching `ErrNotAuthorized` |
+| Function code not served, value out of range, handler error | `ServerMetrics.OnError`, `ServerConfig.PDUTap` |
+| Every request and answer, raw | `ServerConfig.PDUTap` (server), `Config.PDUTap` (client) |
+| Accept failure | `AcceptErrorMetrics.OnAcceptError` |
+| Client: frame with another transaction ID or a non-zero protocol ID skipped; stale serial bytes discarded | `ResponseAnomalyMetrics.OnResponseAnomaly` |
+
+**Correlation.** Every server callback about a connection carries its remote
+`host:port`, which identifies the connection while it is open; the client's role
+is in `OnConnectionOpened`, `TLSHandshakeInfo.Role`, `ProtocolViolation.ClientRole`
+and `ServerPDUTap`. There is no separate connection ID.
+
+**Order on one connection (server).** `OnTLSHandshake` (tcp+tls), then
+`OnConnectionOpened`; per request `OnRequest`, then `OnResponse` or `OnError`,
+then `OnProtocolViolation` for a violation; then `OnConnectionClosed` and
+`OnConnectionCloseReason`. A malformed MBAP header, which never becomes a
+request, is reported to `OnProtocolViolation` right before the close.
+
+**Cost.** The interfaces are found once, by type assertion, in `New` and
+`NewServer`. A value that implements none of them costs nothing more than
+before; `BenchmarkSecurityHooks` (`go test -run '^$' -bench SecurityHooks .`)
+measures a loopback round trip with them absent and present.
+
+A consumer that forwards these facts elsewhere must not block: hand them to a
+buffered channel with a non-blocking send, and count what it drops.
+[examples/security_hooks/security_hooks.go](examples/security_hooks/security_hooks.go)
+does that.
 
 A `batch` plan executed on a client makes one ordinary request per window, so
 each window is one `OnRequest` and one outcome; windows a stopped batch did not
@@ -143,8 +192,13 @@ locks when it logs.
 | `ConnectionCloseMetrics.OnConnectionCloseReason` | `ConnectionCloseMetrics.OnConnectionCloseReason for <addr> did not return normally` | the server goes on as if it had returned |
 | `ServerPDUTap.OnServerPDU` | `ServerPDUTap.OnServerPDU for <addr> did not return normally` | the response is sent as if it had returned |
 | `ServerConfig.AllowClient` | `ServerConfig.AllowClient for <addr> did not return normally` | the connection is refused (`RejectNotAllowed`) |
+| `ServerConfig.Authorizer` | `RequestAuthorizer.AuthorizeRequest for FC 0x.. from <client> did not return normally` | the request is refused with Server Device Failure; the handler is not called |
+| `Is` or `Unwrap` of the authorizer's error | `the error of the authorizer for FC 0x.. from <client> did not return normally` | the request is refused with Server Device Failure |
+| `TLSHandshakeMetrics.OnTLSHandshake` (server) | `TLSHandshakeMetrics.OnTLSHandshake for <addr> did not return normally` | the server goes on as if it had returned |
+| `ProtocolViolationMetrics.OnProtocolViolation` | `ProtocolViolationMetrics.OnProtocolViolation for <addr> did not return normally` | the server goes on as if it had returned |
+| `AcceptErrorMetrics.OnAcceptError` | `AcceptErrorMetrics.OnAcceptError did not return normally` | the accept loop goes on as if it had returned |
 | private key of `TLSServerCert` (a `crypto.Signer`) | `TLS handshake with <client> did not return normally` | the handshake fails and the connection is closed |
-| `ClientMetrics`, `AttemptMetrics` method | `ClientMetrics.OnResponse did not return normally: …` | the request goes on as if it had returned; its result is unchanged |
+| `ClientMetrics`, `AttemptMetrics`, `TLSHandshakeMetrics`, `ResponseAnomalyMetrics` method | `ClientMetrics.OnResponse did not return normally: …` | the request goes on as if it had returned; its result is unchanged |
 | `PDUTap.OnPDU` | `PDUTap.OnPDU did not return normally: …` | the call goes on as if it had returned; its result is unchanged |
 | `RetryPolicy.ShouldRetry` | `RetryPolicy.ShouldRetry did not return normally: …` | no retry: the call returns the error of its attempt |
 | `Config.Dialer` | `Config.Dialer did not return normally: …` | the dial fails with an error that says so (`Open` returns it, or the request that dialled) |
@@ -172,7 +226,8 @@ A server whose `Accept` fails (other than because it is stopping) logs a warning
 with the error and the wait before the next attempt, `failed to accept client
 connection (next attempt in 5ms): …`: 5 ms after the first failure, doubling to
 at most 1 s, so a listener that keeps failing produces about one line a second.
-There is no metrics hook for accept errors.
+Since v1.21.0 a `ServerMetrics` value that implements `AcceptErrorMetrics` is
+also told of each, with the same error and wait.
 
 ## Related
 

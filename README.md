@@ -631,6 +631,7 @@ modbus-cli completion powershell | Out-String | Invoke-Expression
 | [examples/tcp_server/tcp_server.go](examples/tcp_server/tcp_server.go) | Modbus TCP server with an in-memory `RequestHandler` |
 | [examples/tls_server/tls_server.go](examples/tls_server/tls_server.go) | MBAPS (Modbus over TLS) server with client certificate authentication |
 | [examples/tls_client/tls_client.go](examples/tls_client/tls_client.go) | MBAPS client with mutual TLS |
+| [examples/security_hooks/security_hooks.go](examples/security_hooks/security_hooks.go) | Server forwarding security observations to an application channel, with a write-refusing authorizer and opt-in connection limits |
 
 For the full public API reference — all types, method signatures, configuration
 details, and annotated examples — see **[API.md](API.md)**.

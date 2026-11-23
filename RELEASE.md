@@ -1,5 +1,43 @@
 # go-modbus Releases
 
+## Unreleased
+
+**Previous release:** v1.20.0
+
+Provider-agnostic security observability and opt-in server hardening. Optional interfaces on the existing `Metrics` values report TLS handshakes, accept errors, protocol violations and client-side response anomalies; new `ServerConfig` fields bound connections per host, the wait for a first request and the time a request takes to arrive, and an optional authorizer decides which requests reach the handlers. Everything is off unless set: with none of it implemented or configured, behaviour and the wire are unchanged. No exported identifier is removed or changed; no method is added to an existing interface. The library reports facts and enforces what the application configures; it has no detection rules, severities, event schema or monitoring-product dependency, and nothing here is a claim of conformance or certification.
+
+### Added
+
+- `TLSHandshakeMetrics` (server and client) with `TLSHandshakeInfo`: the outcome of every `tcp+tls` handshake, failed, timed-out and evicted ones included, with addresses, duration, negotiated version and cipher suite, SNI, copies of the peer's certificates, whether they were verified, and on the server the client's role and `RoleErr`.
+- `ErrInvalidRole`: wrapped in `TLSHandshakeInfo.RoleErr` for a client certificate whose Modbus Role extension the server cannot use (more than one, or not a DER UTF8String), so that it can be told from a certificate without a role. Such a client is still served with no role, as before.
+- `AcceptErrorMetrics` (server): every failed `Accept` and the wait before the next attempt, which was only logged.
+- `ProtocolViolationMetrics` (server) with `ProtocolViolation`: requests that break the framing or the structure of their function code (an MBAP length outside 2–254 or a protocol ID other than 0, a PDU of the wrong length, contradicting fields, an exception function code), with the MBAP header as received, the exception answered and whether the connection is closed. Ordinary refusals (unserved function code, value out of range, handler errors) are not violations.
+- `ResponseAnomalyMetrics` (client) with `ResponseAnomaly` and `ResponseAnomalyKind` (`AnomalyTransactionID`, `AnomalyProtocolID`, `AnomalyDiscarded`): MBAP frames the client skipped and stale bytes the serial framings discarded, which do not show in a request's outcome.
+- `ServerConfig.MaxClientsPerHost`: connections at once from one IP address, handshaking ones included; one beyond it is refused at accept and reported as `RejectPerHostLimit`.
+- `ServerConfig.FirstRequestTimeout`: the idle timeout until the first complete request; reported as `CloseFirstRequestTimeout`.
+- `ServerConfig.FrameTimeout`: the time a request may take from its first byte to its last; reported as `CloseFrameTimeout`.
+- `ServerConfig.Authorizer` (`RequestAuthorizer`, `RequestAuthorizerFunc`, `AuthorizationRequest`, `RequestAccess`): asked about every request right before a handler serves it, with the client's address and role, unit, function code, access kind and the addresses, quantities or file records touched. A refused request never reaches the handler and is answered with Illegal Function (01, V1.1b3 section 7, "not an allowable action for the server"), the exception error the authorizer returned, or nothing for `ErrNoResponse`; an authorizer that panics refuses with Server Device Failure. `ServerMetrics.OnError` receives an error matching the new `ErrNotAuthorized`.
+- `RejectPerHostLimit`, `CloseFirstRequestTimeout` and `CloseFrameTimeout`, with `String` names `"per-host limit"`, `"first request timeout"` and `"frame timeout"`.
+- `examples/security_hooks`: a server forwarding these facts to an application-owned channel without blocking, with a role-based write authorizer and the hardening settings.
+
+### Changed
+
+- None of the new settings has a default; the new interfaces are found by type assertion once, in `New` and `NewServer`. Without them nothing changes, on the wire or in the callbacks already reported.
+- Server: `Stop` and `Shutdown` may be called from the new callbacks and from the authorizer, with the same guarantees as from the existing ones; no callback runs once they returned.
+
+### Documentation
+
+- API.md (§ 3.1 `ServerConfig`, new § 3.6 "Request authorization", § 4 sentinels, § 6 the new interfaces and constants), ERRORS.md, OBSERVABILITY.md (new "Security-relevant facts": what is reported where, correlation by address, callback order, cost), SECURITY.md ("Opt-in Server Hardening", "Request Authorization", "What the Library Is Not"), LIMITATIONS.md, README.md examples.
+
+### Tests
+
+- `security_metrics_test.go`: TLS handshakes completed, failed, timed out, with an invalid role, from a client, with certificate copies, a panicking callback and `Stop` from one; protocol violations by kind and their absence for ordinary refusals; accept errors (`testing/synctest`) and `Stop` from that callback; skipped MBAP frames on a scripted connection. `internal/transport/anomaly_test.go`: discarded serial bytes.
+- `server_hardening_test.go`: the per-host limit, also while handshaking and under churn; the first-request and frame timeouts, also while a request is served and against each other; defaults off; negative values rejected.
+- `server_authorization_test.go`: the authorizer asked once for every served request and never for those the server answers itself, the request fields per function code, a refusal never reaching the handler, the answers per error kind, a panicking authorizer, `Stop` from it, decisions by role.
+- `bench_security_test.go`: `BenchmarkSecurityHooks`, a loopback FC03 round trip with the hooks, the authorizer and the hardening settings absent and present.
+
+---
+
 ## v1.20.0
 
 **Date:** 2026-11-23
