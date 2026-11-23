@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/otfabric/go-modbus"
@@ -40,6 +41,8 @@ func TestAuthorize(t *testing.T) {
 		{"fc08 restart by an operator", fc08(0x01), "operator", true},
 		{"write", write, "", false},
 		{"write by an operator", write, "operator", true},
+		{"read with an unusable role", modbus.AuthorizationRequest{UnitID: 1, FunctionCode: modbus.FCReadHoldingRegisters, Access: modbus.AccessRead,
+			ClientRoleErr: fmt.Errorf("%w: not a UTF8String", modbus.ErrInvalidRole)}, "", false},
 		{"broadcast write by an operator", modbus.AuthorizationRequest{UnitID: 0, FunctionCode: modbus.FCWriteSingleRegister, Access: modbus.AccessWrite}, "operator", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

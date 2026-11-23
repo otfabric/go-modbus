@@ -14,6 +14,12 @@
 // The counters are atomics indexed by function code, which every hook can
 // update without blocking; an application would export them (Prometheus,
 // expvar, OpenTelemetry, a log line) instead of printing them.
+//
+// What the run triggers, on loopback tcp with a healthy server: OnRequest,
+// OnResponse and OnError (one exception), OnAttempt and OnPDU. Implemented
+// but not triggered here: OnTimeout and OnRetryDial (a slow or lost link),
+// OnResponseAnomaly (a peer that sends late or foreign frames, or stale
+// serial bytes) and OnTLSHandshake (tcp+tls only).
 package main
 
 import (

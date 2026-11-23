@@ -55,7 +55,14 @@ type ClientMetrics interface {
 // method that does not return normally is logged, and the request goes on.
 type AttemptMetrics interface {
 	// OnAttempt is called after each individual transport attempt (including the first).
-	// attempt is the zero-based attempt index (0 = first try). err is nil on success.
+	// attempt is the zero-based attempt index (0 = first try). err is the error
+	// of the exchange on the link: a transport error, a timeout, a frame that
+	// could not be read. It is nil when a response frame was received,
+	// whatever it says: an exception response, a response for another unit
+	// ID and one the calling method then rejects (a wrong byte count or echo)
+	// are completed attempts here, and the call's error is reported to
+	// ClientMetrics.OnError. OnAttempt measures the link; ClientMetrics the
+	// outcome of the call.
 	OnAttempt(unitID uint8, functionCode FunctionCode, attempt int, duration time.Duration, err error)
 
 	// OnRetryDial is called when the engine re-dials the single connection: between

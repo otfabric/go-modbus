@@ -401,3 +401,69 @@ func TestNotAuthorizedError(t *testing.T) {
 		}
 	}
 }
+
+// ClientRoleErr tells the authorizer a certificate without a role from one
+// whose role extension is unusable, for every request of the connection; the
+// server refuses nothing because of it, and the handlers see the same
+// ClientRole as without an authorizer.
+func TestAuthorizer_ClientRoleErr(t *testing.T) {
+	pki := e2ePKI(t)
+	for _, tc := range []struct {
+		name     string
+		kind     string
+		roles    []string // nil: no role extension; tcp: no certificate
+		wantRole string
+		invalid  bool
+	}{
+		{"plain tcp", "tcp", nil, "", false},
+		{"valid role", "tcp+tls", []string{"operator"}, "operator", false},
+		{"no role", "tcp+tls", nil, "", false},
+		{"unusable role", "tcp+tls", []string{"printable:operator"}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var handlerRoles []string
+			h := &fnHandler{holding: func(r *HoldingRegistersRequest) ([]uint16, error) {
+				mu.Lock()
+				handlerRoles = append(handlerRoles, r.ClientRole)
+				mu.Unlock()
+				return make([]uint16, r.Quantity), nil
+			}}
+			a := &authRecorder{}
+			p := e2eStart(t, tc.kind, h, e2eOpts{noOpen: true, server: func(c *ServerConfig) { c.Authorizer = a }})
+			c := p.newClient(func(conf *Config) {
+				if tc.kind == "tcp+tls" {
+					conf.TLSClientCert = e2eIssue(t, pki.ca, tc.name, false, tc.roles...)
+				}
+			})
+			if err := c.Open(); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			for range 2 {
+				if _, err := c.ReadHoldingRegister(t.Context(), e2eUnit, 1); err != nil {
+					t.Fatalf("read refused: %v", err)
+				}
+			}
+			got := a.take()
+			if len(got) != 2 {
+				t.Fatalf("%d authorizations, want 2", len(got))
+			}
+			for i, r := range got {
+				if r.ClientRole != tc.wantRole {
+					t.Errorf("request %d: ClientRole %q, want %q", i, r.ClientRole, tc.wantRole)
+				}
+				if errors.Is(r.ClientRoleErr, ErrInvalidRole) != tc.invalid || (!tc.invalid && r.ClientRoleErr != nil) {
+					t.Errorf("request %d: ClientRoleErr %v, want ErrInvalidRole: %v", i, r.ClientRoleErr, tc.invalid)
+				}
+			}
+			if got[0].ClientRoleErr != got[1].ClientRoleErr {
+				t.Errorf("ClientRoleErr differs between requests of one connection: %v, %v", got[0].ClientRoleErr, got[1].ClientRoleErr)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(handlerRoles) != 2 || handlerRoles[0] != tc.wantRole || handlerRoles[1] != tc.wantRole {
+				t.Errorf("handler roles %q, want %q twice", handlerRoles, tc.wantRole)
+			}
+		})
+	}
+}

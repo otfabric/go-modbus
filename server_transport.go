@@ -332,7 +332,8 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn) {
 			_ = tlsSock.Close()
 		default:
 			effectiveConn = tlsSock
-			ms.serveConn(run, share, connCtx, connCancel,
+			// connCancel cancels the parent, and with it this context.
+			ms.serveConn(run, share, withRoleErr(connCtx, roleErr), connCancel,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
 		}

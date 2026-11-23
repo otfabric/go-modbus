@@ -1830,6 +1830,7 @@ const (
 type AuthorizationRequest struct {
     ClientAddr     string // remote host:port
     ClientRole     string // tcp+tls: role of the verified certificate; else empty
+    ClientRoleErr  error  // tcp+tls: wraps ErrInvalidRole for an unusable role extension; else nil
     UnitID         uint8  // as sent; 0 (broadcast) gets no meaning of its own
     FunctionCode   FunctionCode
     Access         RequestAccess
@@ -1861,6 +1862,20 @@ handler call, with the connection's context. Requests the server answers
 itself (an exception for a malformed request, Illegal Function for a function
 code no handler serves) do not reach it. `FC08` sub-functions are not
 classified further: the authorizer sees `SubFunction` and decides.
+
+`ClientRole` and `ClientRoleErr` together tell the four cases apart:
+
+| Client | `ClientRole` | `ClientRoleErr` |
+|---|---|---|
+| `tcp+tls`, certificate with a valid role | the role | nil |
+| `tcp+tls`, certificate without a role extension | `""` | nil |
+| `tcp+tls`, certificate with an unusable role extension | `""` | matches `ErrInvalidRole` (the connection's `TLSHandshakeInfo.RoleErr`) |
+| `tcp` | `""` | nil |
+
+`ClientRoleErr` is the same for every request of a connection. The server
+refuses nothing because of it, and the handlers' `ClientRole` is unchanged:
+whether to refuse a client with an unusable role, while serving one without a
+role, is the authorizer's decision.
 
 `nil` serves the request. Any other error refuses it: the handler is not
 called, so the request has no effect, and:
@@ -2237,7 +2252,9 @@ dial within a retried request.
 ```go
 type AttemptMetrics interface {
     // Called after each transport attempt (including the first).
-    // attempt is 0-based. err is nil on success.
+    // attempt is 0-based. err is the error of the exchange on the link
+    // (transport error, timeout, unreadable frame); nil when a response
+    // frame was received, an exception response included.
     OnAttempt(unitID uint8, functionCode FunctionCode, attempt int, duration time.Duration, err error)
 
     // Called when the engine re-dials the transport between retries.
@@ -2245,6 +2262,12 @@ type AttemptMetrics interface {
     OnRetryDial(attempt int, duration time.Duration, err error)
 }
 ```
+
+`OnAttempt` measures the link, `ClientMetrics` the outcome of the call: a
+request the device answers with an exception is one `OnAttempt` with `err` nil
+and one `OnError` with the `*ExceptionError`. The same holds for a response
+with another unit ID or one the method rejects (a wrong byte count or echo).
+Only an attempt that failed on the link, and so may be retried, has an error.
 
 ### `ServerMetrics`
 

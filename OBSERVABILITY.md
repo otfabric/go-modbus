@@ -54,6 +54,8 @@ Pluggable synchronous callbacks via `Config.Metrics` / `ServerConfig.Metrics`:
 `ClientMetrics` reflects what the calling method returns (including exception and
 protocol validation failures), **not** each internal retry. Implement
 `AttemptMetrics` on the same value when you need per-attempt visibility.
+Its `OnAttempt` reports the exchange on the link: an exception response is an
+attempt with `err` nil, and the call's `OnError` carries the exception.
 
 A request refused by `Config.AllowedFunctionCodes` is reported like any other
 failure: `OnRequest`, then `OnError` with an error wrapping

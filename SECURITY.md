@@ -36,7 +36,7 @@ Modbus TCP, UDP, RTU and ASCII carry no authentication and no encryption: anyone
 - Both sides authenticate: the client requires a client certificate (`TLSClientCert`) and the CA or server certificates it trusts (`TLSRootCAs`); the server requires a server certificate and the CAs it accepts client certificates from. A configuration without them is rejected
 - TLS 1.2 is the minimum version
 - Keep private keys out of source control and give key files restrictive permissions (`chmod 600`)
-- The server passes the role from the client certificate's Modbus role extension to handlers as `ClientRole`. The library attaches no meaning to a role: what a role may do is the application's decision, made in `ServerConfig.Authorizer` (below) or in the handlers. A certificate whose role extension the server cannot use (more than one, or not exactly one DER UTF8String) is served with no role; `TLSHandshakeMetrics` reports it with `RoleErr` wrapping `ErrInvalidRole`
+- The server passes the role from the client certificate's Modbus role extension to handlers as `ClientRole`. The library attaches no meaning to a role: what a role may do is the application's decision, made in `ServerConfig.Authorizer` (below) or in the handlers. A certificate whose role extension the server cannot use (more than one, or not exactly one DER UTF8String) is served with no role; `TLSHandshakeMetrics` reports it with `RoleErr` wrapping `ErrInvalidRole`, and the authorizer sees the same error in `AuthorizationRequest.ClientRoleErr`, so a policy can refuse such a client while still serving one without a role
 
 ### Restricting Destinations
 

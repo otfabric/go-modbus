@@ -16,6 +16,13 @@
 //
 // The counters are atomics, which the hooks update without blocking; an
 // application would export them instead of printing them.
+//
+// The run triggers every interface it implements: requests, responses and
+// one exception; one connection served and closed by its client
+// (CloseClientClosed); one refused for MaxClients (RejectMaxClients); and
+// the PDUs of the three requests. The other reject and close reasons need
+// other settings or failures (AllowClient, MaxClientsPerHost, timeouts, a
+// malformed frame, Stop).
 package main
 
 import (

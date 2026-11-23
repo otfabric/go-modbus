@@ -138,7 +138,15 @@ type AuthorizationRequest struct {
 	// role).
 	ClientAddr string
 	ClientRole string
-	UnitID     uint8
+	// ClientRoleErr tells a certificate without a role from one whose Modbus
+	// Role extension the server could not use. It is nil on tcp, and on
+	// tcp+tls for a certificate with a valid role or none; for an unusable
+	// one (ClientRole is then empty) it is the error TLSHandshakeInfo.RoleErr
+	// reported for the connection, which matches ErrInvalidRole. It is the
+	// same for every request of a connection. The server refuses nothing
+	// because of it: what to do is the authorizer's decision.
+	ClientRoleErr error
+	UnitID        uint8
 	// FunctionCode is the request's function code, Access what it does.
 	FunctionCode FunctionCode
 	Access       RequestAccess
@@ -223,11 +231,26 @@ func (e *notAuthorizedError) Is(target error) bool {
 // authorizer did not return normally.
 var errAuthorizerFailed = errors.New("the authorizer did not return normally")
 
+// roleErrKey is the key of the connection context's value holding the
+// error of an unusable Modbus Role extension (see withRoleErr).
+type roleErrKey struct{}
+
+// withRoleErr returns ctx carrying roleErr, the error of the connection's
+// Modbus Role extension, for AuthorizationRequest.ClientRoleErr. A nil
+// roleErr returns ctx itself. The key is unexported: handlers cannot see it.
+func withRoleErr(ctx context.Context, roleErr error) context.Context {
+	if roleErr == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, roleErrKey{}, roleErr)
+}
+
 // authorize asks ServerConfig.Authorizer about ar, the request req a handler
 // is about to serve: nil when it is served (or there is no authorizer), else
 // a *notAuthorizedError that the caller returns as the request's error.
 // The authorizer, and the methods of its error, run through call.
 func (ms *Server) authorize(ctx context.Context, req *adu.Request, ar *AuthorizationRequest) error {
+	ar.ClientRoleErr, _ = ctx.Value(roleErrKey{}).(error)
 	var authErr error
 	if ms.call("RequestAuthorizer.AuthorizeRequest", func() string {
 		return fmt.Sprintf("RequestAuthorizer.AuthorizeRequest for FC 0x%02x from %s did not return normally", req.FunctionCode, ar.ClientAddr)

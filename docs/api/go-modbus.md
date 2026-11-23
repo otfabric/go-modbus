@@ -200,7 +200,14 @@ AcceptErrorMetrics is an optional extension of ServerMetrics. A ServerConfig.Met
 ```go
 type AttemptMetrics interface {
 	// OnAttempt is called after each individual transport attempt (including the first).
-	// attempt is the zero-based attempt index (0 = first try). err is nil on success.
+	// attempt is the zero-based attempt index (0 = first try). err is the error
+	// of the exchange on the link: a transport error, a timeout, a frame that
+	// could not be read. It is nil when a response frame was received,
+	// whatever it says: an exception response, a response for another unit
+	// ID and one the calling method then rejects (a wrong byte count or echo)
+	// are completed attempts here, and the call's error is reported to
+	// ClientMetrics.OnError. OnAttempt measures the link; ClientMetrics the
+	// outcome of the call.
 	OnAttempt(unitID uint8, functionCode FunctionCode, attempt int, duration time.Duration, err error)
 
 	// OnRetryDial is called when the engine re-dials the single connection: between
@@ -224,7 +231,15 @@ type AuthorizationRequest struct {
 	// role).
 	ClientAddr string
 	ClientRole string
-	UnitID     uint8
+	// ClientRoleErr tells a certificate without a role from one whose Modbus
+	// Role extension the server could not use. It is nil on tcp, and on
+	// tcp+tls for a certificate with a valid role or none; for an unusable
+	// one (ClientRole is then empty) it is the error TLSHandshakeInfo.RoleErr
+	// reported for the connection, which matches ErrInvalidRole. It is the
+	// same for every request of a connection. The server refuses nothing
+	// because of it: what to do is the authorizer's decision.
+	ClientRoleErr error
+	UnitID        uint8
 	// FunctionCode is the request's function code, Access what it does.
 	FunctionCode FunctionCode
 	Access       RequestAccess

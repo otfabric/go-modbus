@@ -18,6 +18,12 @@
 //
 //	modbus-cli --target tcp://localhost:5502 rh:uint16:0
 //	modbus-cli --target tcp://localhost:5502 wr:uint16:0:42
+//
+// Those two trigger OnConnectionOpened, OnConnectionCloseReason and, for the
+// write, OnError with ErrNotAuthorized. The other hooks it implements need
+// other conditions: OnTLSHandshake a tcp+tls listener, OnProtocolViolation a
+// malformed request, OnAcceptError a listener that fails, and
+// OnConnectionRejected a client beyond the limits.
 package main
 
 import (
@@ -91,12 +97,19 @@ func (o *observer) OnProtocolViolation(v modbus.ProtocolViolation) {
 		"hasFC", v.HasFunctionCode, "exception", v.Exception, "closed", v.Closed, "err", v.Err)
 }
 
-// authorize serves reads, and the diagnostics that only report, to every
-// client. Everything else, writes and the FC08 sub-functions that change the
+// authorize refuses every request of a client whose certificate carries an
+// unusable role, and serves reads, and the diagnostics that only report, to
+// every other client. Everything else, writes and the FC08 sub-functions that change the
 // device's state, it serves only to clients whose verified tcp+tls
 // certificate carries the "operator" role (so on plain tcp, as here, all of
 // it is refused), and never to the broadcast unit.
 func authorize(_ context.Context, req *modbus.AuthorizationRequest) error {
+	if req.ClientRoleErr != nil {
+		// A verified certificate whose role claim the server could not use
+		// (it matches modbus.ErrInvalidRole): refuse it outright, while a
+		// client without any role may still read.
+		return req.ClientRoleErr
+	}
 	if req.Access == modbus.AccessRead || reportsOnly(req) {
 		return nil
 	}
