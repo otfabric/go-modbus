@@ -44,6 +44,7 @@ const (
 	scanRegisters
 	scanUnitID
 	ping
+	deviceID
 )
 
 type operation struct {
@@ -57,6 +58,8 @@ type operation struct {
 	bytes        []byte
 	duration     time.Duration
 	unitID       uint8
+	devCategory  modbus.DeviceIDCategory
+	devObject    modbus.DeviceIDObjectID
 }
 
 func parseEndianness(s string) (modbus.Endianness, error) {
@@ -128,7 +131,7 @@ func parseOperations(args []string) ([]operation, error) {
 
 		verbAndRest := strings.SplitN(arg, ":", 2)
 		verb := verbAndRest[0]
-		if len(verbAndRest) < 2 && verb != "repeat" && verb != "date" {
+		if len(verbAndRest) < 2 && verb != "repeat" && verb != "date" && verb != "devid" && verb != "deviceId" {
 			return nil, fmt.Errorf("illegal command format %q (should be command:arg1:arg2..., e.g. rh:uint32:0x1000+5)", arg)
 		}
 
@@ -367,6 +370,20 @@ func parseOperations(args []string) ([]operation, error) {
 				return nil, fmt.Errorf("unknown scan/register type %q (valid options: coils, di, hr, ir, s)", splitArgs[1])
 			}
 
+		case "devid", "deviceId":
+			if len(splitArgs) > 2 {
+				return nil, fmt.Errorf("need at most 1 argument after devid, got %v", len(splitArgs)-1)
+			}
+
+			o.op = deviceID
+			o.devCategory = modbus.DeviceIDBasic
+			if len(splitArgs) == 2 {
+				o.devCategory, o.devObject, err = parseDeviceIDSelector(splitArgs[1])
+				if err != nil {
+					return nil, err
+				}
+			}
+
 		case "ping":
 			if len(splitArgs) < 2 || len(splitArgs) > 3 {
 				return nil, fmt.Errorf("need 1 or 2 arguments after ping, got %v", len(splitArgs)-1)
@@ -571,4 +588,23 @@ func parseHexBytes(in string) (out []byte, err error) {
 	out, err = hex.DecodeString(in)
 
 	return
+}
+
+// parseDeviceIDSelector parses the argument of devid: a category (basic,
+// regular, extended: stream access) or an object ID (decimal or 0x hex:
+// individual access, FC43 read device ID code 4).
+func parseDeviceIDSelector(s string) (modbus.DeviceIDCategory, modbus.DeviceIDObjectID, error) {
+	switch s {
+	case "basic":
+		return modbus.DeviceIDBasic, 0, nil
+	case "regular":
+		return modbus.DeviceIDRegular, 0, nil
+	case "extended":
+		return modbus.DeviceIDExtended, 0, nil
+	}
+	id, err := strconv.ParseUint(s, 0, 8)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to parse devid argument %q (use basic, regular, extended or an object ID 0..255)", s)
+	}
+	return modbus.DeviceIDIndividual, modbus.DeviceIDObjectID(id), nil
 }

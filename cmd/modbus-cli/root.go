@@ -108,6 +108,7 @@ func completeOperations(_ *cobra.Command, _ []string, _ string) ([]string, cobra
 		"wr:\twrite register",
 		"scan:\tscan address space",
 		"ping:\tping device",
+		"devid:\tread device identification (FC43)",
 		"sleep:\tpause execution",
 		"suid:\tset unit ID",
 		"sid:\tset unit ID (short)",
