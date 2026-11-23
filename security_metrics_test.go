@@ -4,8 +4,10 @@ package modbus
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -14,6 +16,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/otfabric/go-modbus/internal/adu"
 )
 
 // secRecorder is a ServerMetrics and a ClientMetrics that records the calls of
@@ -636,4 +640,121 @@ func scriptedMBAPClient(t *testing.T, mut func(*Config)) (*Client, net.Conn) {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	return c, srv
+}
+
+// errorLogger records what is logged at error level.
+type errorLogger struct {
+	mu     sync.Mutex
+	errors []string
+}
+
+func (l *errorLogger) Debugf(string, ...any) {}
+func (l *errorLogger) Infof(string, ...any)  {}
+func (l *errorLogger) Warnf(string, ...any)  {}
+func (l *errorLogger) Errorf(format string, args ...any) {
+	l.mu.Lock()
+	l.errors = append(l.errors, fmt.Sprintf(format, args...))
+	l.mu.Unlock()
+}
+
+func (l *errorLogger) logged(sub string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range l.errors {
+		if strings.Contains(e, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+type panickingAcceptMetrics struct{}
+
+func (panickingAcceptMetrics) OnAcceptError(error, time.Duration) { panic("accept hook failed") }
+
+// An accept error hook that panics is logged with its name, and the server
+// goes on; without the hook nothing is called.
+func TestAcceptErrorMetrics_PanicIsContained(t *testing.T) {
+	logs := &errorLogger{}
+	ms, err := NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Logger: logs}, &fnHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms.reportAcceptError(errors.New("accept failed"), time.Millisecond) // no hook: nothing happens
+	ms.acceptMetrics = panickingAcceptMetrics{}
+	ms.reportAcceptError(errors.New("accept failed"), time.Millisecond)
+	if !logs.logged("AcceptErrorMetrics.OnAcceptError did not return normally") {
+		t.Errorf("panic not logged; logged %q", logs.errors)
+	}
+}
+
+// A handshake that could not be started (the deadline of the accepted socket
+// could not be set) is reported with the socket's addresses and its error,
+// and never with a role.
+func TestReportTLSHandshake_NotStarted(t *testing.T) {
+	m := &secRecorder{}
+	ms, err := NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Logger: NopLogger()}, &fnHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := net.Pipe()
+	defer func() { _ = a.Close(); _ = b.Close() }()
+	startErr := errors.New("set deadline failed")
+	ms.reportTLSHandshake(a, nil, 0, "operator", nil, startErr) // no hook: nothing happens
+	ms.tlsMetrics = m
+	ms.reportTLSHandshake(a, nil, time.Millisecond, "operator", nil, startErr)
+	_, hs, _, _ := m.snapshot()
+	if len(hs) != 1 {
+		t.Fatalf("%d handshakes reported, want 1", len(hs))
+	}
+	got := hs[0]
+	if got.Err != startErr || got.RemoteAddr != a.RemoteAddr().String() || got.LocalAddr != a.LocalAddr().String() ||
+		got.Duration != time.Millisecond || got.Role != "" || got.Verified || len(got.PeerCertificates) != 0 {
+		t.Errorf("handshake %+v, want the socket's addresses, the error and no role", got)
+	}
+}
+
+// Violations are not built without the hook.
+func TestReportRequestViolation_NoHook(t *testing.T) {
+	ms, err := NewServer(&ServerConfig{URL: "tcp://127.0.0.1:0", Logger: NopLogger()}, &fnHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms.reportRequestViolation(&adu.Request{UnitID: 1, FunctionCode: 3}, 1, "addr", "", errors.New("bad"), 3, true)
+}
+
+// The certificates handed to TLSHandshakeMetrics are new values parsed from
+// copies of the encoding; one that does not parse is left out.
+func TestCopyCertificates(t *testing.T) {
+	certPEM, keyPEM := newRoleClientCert("operator")
+	pair, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := &x509.Certificate{Raw: []byte{0x30, 0x00}}
+	got := copyCertificates([]*x509.Certificate{broken, orig})
+	if len(got) != 1 || got[0] == orig || !got[0].Equal(orig) {
+		t.Fatalf("copies %v, want one new certificate equal to the original", got)
+	}
+	got[0].Raw[0] ^= 0xFF
+	if orig.Raw[0] == got[0].Raw[0] {
+		t.Error("the copy shares its encoding with the original")
+	}
+	if copyCertificates(nil) != nil {
+		t.Error("certificates copied from none")
+	}
+}
+
+func TestAddrString(t *testing.T) {
+	if s := addrString(nil); s != "" {
+		t.Errorf("addrString(nil) = %q, want empty", s)
+	}
+	a := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 502}
+	if s := addrString(a); s != "127.0.0.1:502" {
+		t.Errorf("addrString = %q", s)
+	}
 }

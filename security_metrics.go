@@ -107,15 +107,23 @@ func newTLSHandshakeInfo(conn *tls.Conn, d time.Duration, err error) TLSHandshak
 	st := conn.ConnectionState()
 	info.Version, info.CipherSuite, info.ServerName = st.Version, st.CipherSuite, st.ServerName
 	info.Verified = err == nil && len(st.VerifiedChains) > 0
-	for _, c := range st.PeerCertificates {
-		cp, perr := x509.ParseCertificate(append([]byte(nil), c.Raw...))
-		if perr != nil {
-			// The certificate parsed once already; keep the chain's order.
+	info.PeerCertificates = copyCertificates(st.PeerCertificates)
+	return info
+}
+
+// copyCertificates returns certificates parsed afresh from copies of the DER
+// encoding of certs, in order. A certificate whose encoding does not parse
+// (crypto/tls parsed each once already, so none should) is left out.
+func copyCertificates(certs []*x509.Certificate) []*x509.Certificate {
+	var out []*x509.Certificate
+	for _, c := range certs {
+		cp, err := x509.ParseCertificate(append([]byte(nil), c.Raw...))
+		if err != nil {
 			continue
 		}
-		info.PeerCertificates = append(info.PeerCertificates, cp)
+		out = append(out, cp)
 	}
-	return info
+	return out
 }
 
 // addrString returns a.String(), or "" for a nil address.
