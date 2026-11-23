@@ -457,6 +457,16 @@ func mapTimeout(err error) error {
 // requests are running on: those requests, and the callers waiting for their
 // turn or between two retry attempts, return promptly with ErrClientNotOpen.
 func (e *Engine) Close() error {
+	report, err := e.CloseDeferred()
+	report()
+	return err
+}
+
+// CloseDeferred is Close that does not report the connections it closes to
+// Config.Connections: it returns report, which does, for a caller that must
+// finish closing before it runs the application's code (a Close called from
+// that code would otherwise wait for itself). report is never nil.
+func (e *Engine) CloseDeferred() (report func(), err error) {
 	e.mu.Lock()
 	if !e.closed {
 		e.closed = true
@@ -468,16 +478,25 @@ func (e *Engine) Close() error {
 	e.mu.Unlock()
 
 	var errs []error
+	var closed []connMeta
 	if pool != nil {
-		if err := pool.CloseAll(); err != nil {
+		c, err := pool.closeAll()
+		if err != nil {
 			errs = append(errs, err)
 		}
+		closed = c
 	}
+	pooled := len(closed)
 	if tr != nil {
 		if err := tr.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		e.observe().closed(meta, false)
+		closed = append(closed, meta)
 	}
-	return errors.Join(errs...)
+	o := e.observe()
+	return func() {
+		for i, m := range closed {
+			o.closed(m, i < pooled)
+		}
+	}, errors.Join(errs...)
 }

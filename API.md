@@ -2407,7 +2407,7 @@ type ClientConnectionEvent struct {
     Kind          ClientConnectionEventKind // ClientConnectionDialed, ClientConnectionDiscarded, ClientConnectionClosed
     ConnectionID  ConnectionID
     Target        string           // endpoint of the URL: host:port or serial device
-    Pooled        bool             // a connection of the pool (MaxConns > 1, tcp or tcp+tls)
+    Pooled        bool             // a connection of the pool (MaxConns > 1 on tcp, rtuovertcp, rtuoverudp, udp or asciiovertcp)
     Origin        ConnectionOrigin // Dialed: ConnectionOriginOpen, ConnectionOriginOnDemand, ConnectionOriginRedial
     DiscardReason DiscardReason    // Discarded: DiscardTransportError, DiscardSuspectResponse, DiscardRetry, DiscardOpenFailed
     Duration      time.Duration    // Dialed: the dial, TLS handshake included
@@ -2473,7 +2473,10 @@ relationship to report; correlate by time and `Target` if needed.
 
 The callbacks run synchronously with none of the client's or the server's
 locks held; they must not block, and a client callback must not make requests
-on the same client.
+on the same client. A client callback may call `Close`: the connections a
+`Close` closes are reported once it has closed them all, so a `Close` called
+from the callback returns at once, and a `Close` called concurrently may
+return before they are reported.
 
 ### `TLSHandshakeMetrics` (optional, server and client)
 

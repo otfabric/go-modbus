@@ -810,8 +810,9 @@ type ClientConnectionEvent struct {
 	// Target is the endpoint of the client's URL: host:port, or the serial
 	// device.
 	Target string
-	// Pooled is true for a connection of the client's pool (Config.MaxConns > 1
-	// on tcp or tcp+tls).
+	// Pooled is true for a connection of the client's pool: Config.MaxConns > 1
+	// on a transport that pools (tcp, rtuovertcp, rtuoverudp, udp,
+	// asciiovertcp). A tcp+tls or serial client has a single connection.
 	Pooled bool
 	// Origin is set for ClientConnectionDialed.
 	Origin ConnectionOrigin
@@ -877,7 +878,7 @@ Every connection that was dialled successfully is reported once more, as Discard
 
 There are no replacement pairs: when a pool dials after a discard, the new connection is not reported as the replacement of the old one, because a pool does not dial for a given connection (any waiting request may take the freed slot, or none). Correlate by time and Target if you need to.
 
-OnClientConnection runs synchronously, on the goroutine of the Open, request or Close that caused the event, with none of the client's locks held. It must be non-blocking and must not make requests on the same client. One that does not return normally is logged at error level with the stack, and the client goes on as if it had returned.
+OnClientConnection runs synchronously, on the goroutine of the Open, request or Close that caused the event, with none of the client's locks held. It must be non-blocking and must not make requests on the same client; it may call Close. The connections a Close closes are reported once that Close has closed them all and no longer counts as closing: a Close called from OnClientConnection then returns at once, and one called concurrently may return before they are reported. One that does not return normally is logged at error level with the stack, and the client goes on as if it had returned.
 
 ### type ClientFilter
 

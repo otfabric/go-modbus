@@ -977,7 +977,7 @@ func (mc *Client) Close() error {
 
 	// The connections are closed without the lock: closing one runs the
 	// application's code when it comes from Config.Dialer.
-	err := eng.Close()
+	report, err := eng.CloseDeferred()
 
 	mc.lock.Lock()
 	if mc.state.closing == done {
@@ -985,6 +985,9 @@ func (mc *Client) Close() error {
 	}
 	mc.lock.Unlock()
 	close(done)
+	// The closes are reported once this Close has finished, so that
+	// ClientConnectionMetrics may call Close (which then returns at once).
+	report()
 	return err
 }
 

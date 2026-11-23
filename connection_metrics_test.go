@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -393,5 +394,154 @@ func TestConnectionEnumStrings(t *testing.T) {
 		if tc.got != tc.want {
 			t.Errorf("got %q, want %q", tc.got, tc.want)
 		}
+	}
+}
+
+// closeInCallback calls Close on its client from OnClientConnection when it is
+// told of a closed connection, as ClientMetrics allows.
+type closeInCallback struct {
+	connRecorder
+	c      atomic.Pointer[Client]
+	closes atomic.Int32
+}
+
+func (r *closeInCallback) OnClientConnection(ev ClientConnectionEvent) {
+	r.connRecorder.OnClientConnection(ev)
+	if ev.Kind == ClientConnectionClosed {
+		if c := r.c.Load(); c != nil {
+			_ = c.Close()
+			r.closes.Add(1)
+		}
+	}
+}
+
+func TestClientConnectionMetrics_CloseFromCallback(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		min, max int
+		want     int32
+	}{
+		{"single", 0, 1, 1},
+		{"pool", 2, 3, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &closeInCallback{}
+			p := e2eStart(t, "tcp", &blockingHandler{fn: func(context.Context) {}}, e2eOpts{noOpen: true})
+			c := p.newClient(func(conf *Config) { conf.MinConns, conf.MaxConns, conf.Metrics = tc.min, tc.max, m })
+			m.c.Store(c)
+			if err := c.Open(); err != nil {
+				t.Fatal(err)
+			}
+			if tc.min == 0 {
+				if _, err := c.ReadHoldingRegister(context.Background(), 1, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			done := make(chan error, 1)
+			go func() { done <- c.Close() }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Close called from OnClientConnection deadlocked")
+			}
+			if got := m.closes.Load(); got != tc.want {
+				t.Errorf("Close called from %d Closed events, want %d", got, tc.want)
+			}
+			if c.Info().IsOpen {
+				t.Error("client still open")
+			}
+		})
+	}
+}
+
+// stopOnCloseReason stops its server from OnConnectionCloseReason: the
+// connection's ServerConnectionClosed is then not reported.
+type stopOnCloseReason struct {
+	connRecorder
+	ms      atomic.Pointer[Server]
+	stopped chan error
+}
+
+func (r *stopOnCloseReason) OnConnectionCloseReason(string, CloseReason, error) {
+	r.stopped <- r.ms.Load().Stop()
+}
+
+func TestServerConnectionMetrics_StopFromCloseReason(t *testing.T) {
+	m := &stopOnCloseReason{stopped: make(chan error, 1)}
+	p := e2eStart(t, "tcp", e2eNewDevice(), e2eOpts{noOpen: true, server: func(c *ServerConfig) { c.Metrics = m }})
+	m.ms.Store(p.server)
+	c := p.newClient(func(conf *Config) { conf.Timeout = time.Second })
+	if err := c.Open(); err != nil {
+		t.Fatal(err)
+	}
+	e2eEventually(t, "the connection to be opened", func() bool { return p.conns() == 1 })
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-m.stopped:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(e2eWait):
+		t.Fatal("Stop from OnConnectionCloseReason did not return")
+	}
+	time.Sleep(20 * time.Millisecond)
+	evs, _, _ := m.snapshot()
+	if len(evs) != 1 || evs[0].Kind != ServerConnectionOpened {
+		t.Errorf("events %+v, want the open alone", evs)
+	}
+}
+
+// A connection the peer drops is reported Discarded, with the transport
+// error, and the re-dial with ConnectionOriginRedial.
+func TestClientConnectionMetrics_Discarded(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	m := &connRecorder{}
+	c, err := New(Config{URL: "tcp://" + ln.Addr().String(), Timeout: time.Second, Metrics: m, Logger: NopLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Open(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ReadHoldingRegister(context.Background(), 1, 0); err == nil {
+		t.Fatal("read on a dropped connection succeeded")
+	}
+	if _, err := c.ReadHoldingRegister(context.Background(), 1, 0); err == nil {
+		t.Fatal("read on a dropped connection succeeded")
+	}
+	_ = c.Close()
+	_, evs, _ := m.snapshot()
+	var discarded, redial int
+	for _, ev := range evs {
+		switch {
+		case ev.Kind == ClientConnectionDiscarded:
+			discarded++
+			if ev.DiscardReason != DiscardTransportError || ev.Err == nil || ev.ConnectionID == 0 || ev.Pooled {
+				t.Errorf("discard %+v, want a transport error with an id", ev)
+			}
+		case ev.Kind == ClientConnectionDialed && ev.Origin == ConnectionOriginRedial:
+			redial++
+		}
+	}
+	if discarded < 1 || redial < 1 {
+		t.Errorf("events %+v: want a discard and a re-dial", evs)
 	}
 }

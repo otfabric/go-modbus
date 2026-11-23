@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/otfabric/go-modbus/internal/adu"
@@ -562,4 +563,189 @@ func TestConnEvents_PoolExecuteDiscard(t *testing.T) {
 	if len(evs) != 2 || evs[1].Kind != ConnDiscarded || evs[1].Reason != DiscardTransportError || !errors.Is(evs[1].Err, boom) {
 		t.Fatalf("events %+v", evs)
 	}
+}
+
+// A dial that reports success without a transport is reported failed, with
+// ErrClientNotOpen, and the connection has no end.
+func TestConnEvents_NilTransport(t *testing.T) {
+	rec := &connRecorder{}
+	p, err := newPool(context.Background(), 0, 1, func(context.Context) (aduTransport, error) { return nil, nil }, rec.observe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.acquireConn(context.Background()); !errors.Is(err, protocol.ErrClientNotOpen) {
+		t.Fatalf("acquire = %v, want ErrClientNotOpen", err)
+	}
+	evs := rec.snapshot()
+	checkLifecycles(t, evs, true)
+	if len(evs) != 1 || evs[0].Kind != ConnDialed || !errors.Is(evs[0].Err, protocol.ErrClientNotOpen) || !evs[0].Pooled {
+		t.Fatalf("events %+v, want one failed pooled dial", evs)
+	}
+}
+
+// A second CloseAll, and the release of a connection CloseAll shut, report
+// nothing more: the connection in use is closed once.
+func TestConnEvents_PoolCloseAllTwice(t *testing.T) {
+	rec := &connRecorder{}
+	ft := &funcTransport{fn: func(context.Context, *adu.Request) (*adu.Response, error) { return &adu.Response{}, nil }}
+	p, err := newPool(context.Background(), 0, 1, func(context.Context) (aduTransport, error) { return ft, nil }, rec.observe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, _, err := p.acquireConn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CloseAll(); err != nil {
+		t.Fatal(err)
+	}
+	p.release(tr)
+	if !ft.closed.Load() {
+		t.Error("the connection in use was not closed")
+	}
+	evs := rec.snapshot()
+	checkLifecycles(t, evs, true)
+	if d, x, c := countKinds(evs); d != 1 || x != 0 || c != 1 {
+		t.Fatalf("events %+v, want a dial and one close", evs)
+	}
+}
+
+// CloseDeferred closes the connections and reports them only when report
+// runs, so that the caller can finish closing before the application's code
+// runs; Close reports them itself.
+func TestConnEvents_CloseDeferred(t *testing.T) {
+	for _, pooled := range []bool{false, true} {
+		rec := &connRecorder{}
+		var trs []*funcTransport
+		var mu sync.Mutex
+		cfg := Config{Connections: rec.observe, Dial: func(context.Context) (aduTransport, error) {
+			ft := &funcTransport{fn: func(context.Context, *adu.Request) (*adu.Response, error) { return &adu.Response{}, nil }}
+			mu.Lock()
+			trs = append(trs, ft)
+			mu.Unlock()
+			return ft, nil
+		}}
+		if pooled {
+			cfg.UsePool, cfg.MinConns, cfg.MaxConns = true, 2, 2
+		}
+		e := NewEngine(cfg)
+		if err := e.Open(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		report, err := e.CloseDeferred()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ft := range trs {
+			if !ft.closed.Load() {
+				t.Errorf("pooled=%v: a connection is still open after CloseDeferred", pooled)
+			}
+		}
+		if _, _, c := countKinds(rec.snapshot()); c != 0 {
+			t.Fatalf("pooled=%v: %d closes reported before report ran", pooled, c)
+		}
+		report()
+		evs := rec.snapshot()
+		checkLifecycles(t, evs, true)
+		for _, ev := range evs {
+			if ev.Pooled != pooled {
+				t.Errorf("pooled=%v: event %+v", pooled, ev)
+			}
+		}
+		if _, _, c := countKinds(evs); c != len(trs) {
+			t.Errorf("pooled=%v: %d closes for %d connections", pooled, c, len(trs))
+		}
+		// A second close has nothing left to report.
+		report, err = e.CloseDeferred()
+		if err != nil {
+			t.Fatal(err)
+		}
+		report()
+		if n := len(rec.snapshot()); n != len(evs) {
+			t.Errorf("pooled=%v: the second close reported %d events", pooled, n-len(evs))
+		}
+	}
+}
+
+// A pooled connection whose response Config.Suspect flags is discarded with
+// DiscardSuspectResponse, and the response still carries its ConnectionID.
+func TestConnEvents_PoolSuspect(t *testing.T) {
+	rec := &connRecorder{}
+	e := NewEngine(Config{
+		Connections: rec.observe, UsePool: true, MaxConns: 2,
+		Suspect: func(*adu.Request, *adu.Response) bool { return true },
+		Dial: func(context.Context) (aduTransport, error) {
+			return &funcTransport{fn: func(context.Context, *adu.Request) (*adu.Response, error) { return &adu.Response{}, nil }}, nil
+		},
+	})
+	if err := e.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.Execute(context.Background(), &adu.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = e.Close()
+	evs := rec.snapshot()
+	checkLifecycles(t, evs, true)
+	if len(evs) != 2 || evs[1].Kind != ConnDiscarded || evs[1].Reason != DiscardSuspectResponse || !evs[1].Pooled {
+		t.Fatalf("events %+v, want a dial and a suspect discard", evs)
+	}
+	if res.ConnectionID != evs[0].ID {
+		t.Errorf("response ConnectionID %d, want %d", res.ConnectionID, evs[0].ID)
+	}
+}
+
+// transport on a closed engine dials nothing.
+func TestConnEvents_TransportAfterClose(t *testing.T) {
+	rec := &connRecorder{}
+	e := NewEngine(Config{Connections: rec.observe, Dial: func(context.Context) (aduTransport, error) {
+		return &funcTransport{fn: func(context.Context, *adu.Request) (*adu.Response, error) { return &adu.Response{}, nil }}, nil
+	}})
+	if err := e.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.Close()
+	if tr, id, err := e.transport(context.Background(), 1); !errors.Is(err, protocol.ErrClientNotOpen) || tr != nil || id != 0 {
+		t.Fatalf("transport = %v, %d, %v; want ErrClientNotOpen", tr, id, err)
+	}
+	if _, _, c := countKinds(rec.snapshot()); c != 1 {
+		t.Errorf("events %+v", rec.snapshot())
+	}
+}
+
+// A caller that waited for a slot and gets one after the pool closed hands
+// the slot back and dials nothing.
+func TestConnEvents_PoolClosedWhileWaiting(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rec := &connRecorder{}
+		p, err := newPool(context.Background(), 0, 1, func(context.Context) (aduTransport, error) {
+			return &funcTransport{fn: func(context.Context, *adu.Request) (*adu.Response, error) { return &adu.Response{}, nil }}, nil
+		}, rec.observe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-p.slots // the only slot is taken
+		errc := make(chan error, 1)
+		go func() { _, _, err := p.acquireConn(context.Background()); errc <- err }()
+		synctest.Wait() // blocked waiting for a slot
+		// The pool closes as the slot comes back (CloseAll has not woken the
+		// waiters yet).
+		p.mu.Lock()
+		p.closed = true
+		p.mu.Unlock()
+		p.slots <- struct{}{}
+		if err := <-errc; !errors.Is(err, errPoolClosed) {
+			t.Fatalf("acquire = %v, want errPoolClosed", err)
+		}
+		if len(p.slots) != 1 {
+			t.Error("the slot was not handed back")
+		}
+		if evs := rec.snapshot(); len(evs) != 0 {
+			t.Errorf("events %+v, want none", evs)
+		}
+	})
 }

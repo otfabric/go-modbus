@@ -193,10 +193,10 @@ func (p *Pool[Req, Res]) release(t Transport[Req, Res]) {
 	}
 	p.mu.Unlock()
 	if !keep {
+		// Not handed out by acquire, or handed out and then shut by CloseAll,
+		// which closes the pool and marks every connection in use under one
+		// lock, and reports them: there is nothing left to report.
 		_ = t.Close()
-		if owned && !use.shut {
-			p.observe.closed(use.meta, true)
-		}
 	}
 	if owned {
 		p.slots <- struct{}{}
@@ -257,6 +257,16 @@ func (p *Pool[Req, Res]) Execute(ctx context.Context, req Req) (Res, error) {
 // requests running on them fail at once. Their owners still release or discard
 // them afterwards; closing a transport twice is harmless.
 func (p *Pool[Req, Res]) CloseAll() error {
+	closed, err := p.closeAll()
+	for _, m := range closed {
+		p.observe.closed(m, true)
+	}
+	return err
+}
+
+// closeAll is CloseAll that returns the connections it closed instead of
+// reporting them, for a caller that reports them once it has finished closing.
+func (p *Pool[Req, Res]) closeAll() ([]connMeta, error) {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
@@ -278,18 +288,19 @@ func (p *Pool[Req, Res]) CloseAll() error {
 	p.mu.Unlock()
 
 	var errs []error
+	closed := make([]connMeta, 0, len(conns)+len(busy))
 	for _, c := range conns {
 		if err := c.t.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		p.observe.closed(c.meta, true)
+		closed = append(closed, c.meta)
 	}
 	for i, t := range busy {
 		// Errors of connections that are being torn down under a running request
 		// are not interesting to the caller of Close.
 		_ = t.Close()
-		p.observe.closed(busyMeta[i], true)
+		closed = append(closed, busyMeta[i])
 	}
 
-	return errors.Join(errs...)
+	return closed, errors.Join(errs...)
 }

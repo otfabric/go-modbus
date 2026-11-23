@@ -183,8 +183,10 @@ logs, traces and audit records; count by the event's kind and reason.
 | Client dial (origin, duration, error), discard (reason, error), close, with its ID | `ClientConnectionMetrics.OnClientConnection` |
 
 **Cost.** The interfaces are found once, by type assertion, in `New` and
-`NewServer`. A value that implements none of them costs nothing more than
-before; `BenchmarkSecurityHooks` (`go test -run '^$' -bench SecurityHooks .`)
+`NewServer`. The `ConnectionID` is allocated whether or not they are
+implemented: one atomic increment per connection, carried in the dial's and
+the connection's context, and copied into the reports above. Beyond that, a
+value that implements none of the interfaces costs nothing more than before; `BenchmarkSecurityHooks` (`go test -run '^$' -bench SecurityHooks .`)
 measures a loopback round trip with them absent and present.
 
 A consumer that forwards these facts elsewhere must not block: hand them to a
