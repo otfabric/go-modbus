@@ -174,6 +174,13 @@ Callbacks run on the request path and must not block. Absence of a metrics
 implementation is intentional for simple apps — attach one only when you have a
 concrete consumer (Prometheus, statsd, …).
 
+Runnable examples, each with a test: [examples/client_metrics](examples/client_metrics/client_metrics.go)
+(every client interface and `Config.PDUTap`),
+[examples/server_metrics](examples/server_metrics/server_metrics.go) (`ServerMetrics`, the
+connection interfaces and `ServerConfig.PDUTap`) and
+[examples/security_hooks](examples/security_hooks/security_hooks.go) (the server's security
+hooks, the authorizer and the opt-in limits).
+
 ### Callbacks that do not return normally
 
 Every call of the application's code is guarded where the library makes it. A

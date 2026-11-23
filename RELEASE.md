@@ -18,7 +18,8 @@ Provider-agnostic security observability and opt-in server hardening. Optional i
 - `ServerConfig.FrameTimeout`: the time a request may take from its first byte to its last; reported as `CloseFrameTimeout`.
 - `ServerConfig.Authorizer` (`RequestAuthorizer`, `RequestAuthorizerFunc`, `AuthorizationRequest`, `RequestAccess`): asked about every request right before a handler serves it, with the client's address and role, unit, function code, access kind and the addresses, quantities or file records touched. A refused request never reaches the handler and is answered with Illegal Function (01, V1.1b3 section 7, "not an allowable action for the server"), the exception error the authorizer returned, or nothing for `ErrNoResponse`; an authorizer that panics refuses with Server Device Failure. `ServerMetrics.OnError` receives an error matching the new `ErrNotAuthorized`.
 - `RejectPerHostLimit`, `CloseFirstRequestTimeout` and `CloseFrameTimeout`, with `String` names `"per-host limit"`, `"first request timeout"` and `"frame timeout"`.
-- `examples/security_hooks`: a server forwarding these facts to an application-owned channel without blocking, with a role-based write authorizer and the hardening settings.
+- `examples/security_hooks`: a server forwarding these facts to an application-owned channel without blocking, with a role-based authorizer that refuses writes and state-changing FC08 sub-functions, and the hardening settings.
+- `examples/client_metrics` and `examples/server_metrics`: every client and server observation interface, the ones that predate this release included, as non-blocking counters, with `Config.PDUTap` and `ServerConfig.PDUTap`. Each runs on loopback without a device and has a test.
 
 ### Changed
 

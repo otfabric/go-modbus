@@ -2167,7 +2167,10 @@ conf.Logger = &zapAdapter{l: zapLogger.Sugar()}
 
 ## 6. Metrics
 
-Short guide: **[OBSERVABILITY.md](OBSERVABILITY.md)**.
+Short guide: **[OBSERVABILITY.md](OBSERVABILITY.md)**. Runnable examples:
+[client_metrics](examples/client_metrics/client_metrics.go),
+[server_metrics](examples/server_metrics/server_metrics.go),
+[security_hooks](examples/security_hooks/security_hooks.go).
 
 Attach metric callbacks via the `Metrics` field of `Config` or
 `ServerConfig`. All methods fire at the **request level** (not per-attempt —
