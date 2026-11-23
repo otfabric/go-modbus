@@ -18,6 +18,7 @@ Moves the interop reference images to otfabric/modbus-interop v0.4.2 and builds 
 ### Documentation
 
 - README and INTEROPERABILITY.md name modbus-interop v0.4.2, and INTEROPERABILITY.md links its COMPATIBILITY.md at v0.4.2.
+- docs/FEATURE-STATUS.md was still at v1.16.0. It now names v1.23.1 and modbus-interop v0.4.2, lists j2mod, jsmodbus, modbus-esp8266 and modbus4j as independent peers over Modbus TCP and, for the client, over RTU over TCP and Modbus UDP, and has rows for the function code allowlist, the opt-in server hardening, request and connection authorization, security observability and connection identity.
 
 ---
 
