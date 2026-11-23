@@ -669,7 +669,7 @@ The images are the only thing shared with modbus-interop; nothing of it is
 cloned or built here. Scenarios, expected values and assertions live in this
 repository.
 
-This version is qualified against modbus-interop v0.4.1 (libmodbus v3.2.0,
+This version is qualified against modbus-interop v0.4.2 (libmodbus v3.2.0,
 PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83, tokio-modbus
 0.17.0, j2mod 3.4.0, jsmodbus 5.0.0, modbus-esp8266 4.1.1; modbus4j 3.1.0
 from a local build). The eight published images are named in

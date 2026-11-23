@@ -30,7 +30,7 @@ TEST_PKGS := $(shell go list ./... | grep -v '/examples' | grep -v '/interop' | 
 # docsync release of docs-check (DOC-008).
 DOCSYNC_VERSION := v0.4.0
 
-# Reference implementations for 'make interop': otfabric/modbus-interop v0.4.1
+# Reference implementations for 'make interop': otfabric/modbus-interop v0.4.2
 # (libmodbus v3.2.0, PyModbus 3.16.1, digitalpetri/modbus 2.1.6, NModbus 3.0.83,
 # tokio-modbus 0.17.0, j2mod 3.4.0, jsmodbus 5.0.0, modbus-esp8266 4.1.1).
 # modbus4j 3.1.0 is GPL and not published: build it in modbus-interop
@@ -41,14 +41,14 @@ DOCSYNC_VERSION := v0.4.0
 # Override to test other builds, e.g.
 #   make interop MODBUS_INTEROP_PYMODBUS_IMAGE=ghcr.io/otfabric/modbus-interop-pymodbus:dev
 # MODBUS_INTEROP_ADAPTERS=libmodbus,pymodbus restricts the run to a subset.
-MODBUS_INTEROP_LIBMODBUS_IMAGE    ?= ghcr.io/otfabric/modbus-interop-libmodbus@sha256:ec16dc38fbed42962aac2c3b72162615095c20beb7791c8b5f7d07a878d1cb16
-MODBUS_INTEROP_PYMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-pymodbus@sha256:048cf2a22fa2473c21d431e224b7feaafc791b596a088af355e2076266afba9c
-MODBUS_INTEROP_DIGITALPETRI_IMAGE ?= ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:8a852fc84fd47b5bcfb60dbec2473b55dd388425ee0c983458e871ffab6589a0
-MODBUS_INTEROP_NMODBUS_IMAGE      ?= ghcr.io/otfabric/modbus-interop-nmodbus@sha256:9cef6ff1b8b44da0a0356f5cb2b1a94c763f065f1e07c353469acd18279d8a17
-MODBUS_INTEROP_TOKIOMODBUS_IMAGE  ?= ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:bea1d36c98ba8bec5abb240461ef6f440cebcedcb7879e75cdb02c4a75b3c7aa
-MODBUS_INTEROP_J2MOD_IMAGE        ?= ghcr.io/otfabric/modbus-interop-j2mod@sha256:a2618932713d711ac1b0ede20623289b98372116d81228b744c14af5089ad1c4
-MODBUS_INTEROP_JSMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-jsmodbus@sha256:0482025a89e68e37708bf10bf6abb1289f10bfebbc58db2dd59c3fd42d72c70d
-MODBUS_INTEROP_MODBUSESP_IMAGE    ?= ghcr.io/otfabric/modbus-interop-modbusesp@sha256:0eaabcafa6605a37c1977552b32979ae1b865ab61f2a44ed27543b5b99ed43cc
+MODBUS_INTEROP_LIBMODBUS_IMAGE    ?= ghcr.io/otfabric/modbus-interop-libmodbus@sha256:da13c28adc0b00383d93d71b6cd70883d3673b12a171ffc260a7bb97aa75fd50
+MODBUS_INTEROP_PYMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-pymodbus@sha256:e780cc28e6aaba3f79117521f1f8dd9f29768d1d6dbcb39c6169dcf5062bac37
+MODBUS_INTEROP_DIGITALPETRI_IMAGE ?= ghcr.io/otfabric/modbus-interop-digitalpetri@sha256:cc54df3a528f79cfe3bdb18f8e4d136dd829f566d1044610705d416e30f1c06b
+MODBUS_INTEROP_NMODBUS_IMAGE      ?= ghcr.io/otfabric/modbus-interop-nmodbus@sha256:66af7261c1dff13a7e7f391049748e71cc0d46008a1004b7de12549e02c9760d
+MODBUS_INTEROP_TOKIOMODBUS_IMAGE  ?= ghcr.io/otfabric/modbus-interop-tokiomodbus@sha256:34860cd1c7200e32a0111853564d640b62e4bfc89d7c833d39ab3f1e7aa3a3ce
+MODBUS_INTEROP_J2MOD_IMAGE        ?= ghcr.io/otfabric/modbus-interop-j2mod@sha256:14cbe8953bc66fc1da77cc7673da00b9c2b99fef446558ee77914e5540394445
+MODBUS_INTEROP_JSMODBUS_IMAGE     ?= ghcr.io/otfabric/modbus-interop-jsmodbus@sha256:0d02076d4a8a8707632f8e7ab23b144501ee4ff2d9d7d5592a2ca2a8da48332d
+MODBUS_INTEROP_MODBUSESP_IMAGE    ?= ghcr.io/otfabric/modbus-interop-modbusesp@sha256:1f6b07b332e3108e0b56cc3d631bf96f89a8438b95b98c05445935182f2832a6
 MODBUS_INTEROP_MODBUS4J_IMAGE     ?=
 
 
