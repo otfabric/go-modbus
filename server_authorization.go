@@ -132,6 +132,9 @@ func (a RequestAccess) String() string {
 // The server gives unit id 0 (broadcast) no meaning of its own: the
 // authorizer sees it as the client sent it, and decides.
 type AuthorizationRequest struct {
+	// ConnectionID is the connection the request arrived on (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// ClientAddr and ClientRole identify the client, as the handlers receive
 	// them: its remote host:port, and on tcp+tls the role of its verified
 	// certificate (empty on tcp, and for a certificate without a usable
@@ -231,18 +234,29 @@ func (e *notAuthorizedError) Is(target error) bool {
 // authorizer did not return normally.
 var errAuthorizerFailed = errors.New("the authorizer did not return normally")
 
-// roleErrKey is the key of the connection context's value holding the
-// error of an unusable Modbus Role extension (see withRoleErr).
-type roleErrKey struct{}
+// connKey is the key of the connection context's value holding the
+// connection's connState (see withConn).
+type connKey struct{}
 
-// withRoleErr returns ctx carrying roleErr, the error of the connection's
-// Modbus Role extension, for AuthorizationRequest.ClientRoleErr. A nil
-// roleErr returns ctx itself. The key is unexported: handlers cannot see it.
-func withRoleErr(ctx context.Context, roleErr error) context.Context {
-	if roleErr == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, roleErrKey{}, roleErr)
+// connState is what the server keeps about a connection in its context: its
+// identifier, the error of its unusable Modbus Role extension (for
+// AuthorizationRequest.ClientRoleErr) and its local address.
+type connState struct {
+	id        ConnectionID
+	roleErr   error
+	localAddr string
+}
+
+// withConn returns ctx carrying st. The key is unexported: handlers cannot
+// see it.
+func withConn(ctx context.Context, st connState) context.Context {
+	return context.WithValue(ctx, connKey{}, st)
+}
+
+// connFrom returns the connState ctx carries, the zero one if none.
+func connFrom(ctx context.Context) connState {
+	st, _ := ctx.Value(connKey{}).(connState)
+	return st
 }
 
 // authorize asks ServerConfig.Authorizer about ar, the request req a handler
@@ -250,7 +264,8 @@ func withRoleErr(ctx context.Context, roleErr error) context.Context {
 // a *notAuthorizedError that the caller returns as the request's error.
 // The authorizer, and the methods of its error, run through call.
 func (ms *Server) authorize(ctx context.Context, req *adu.Request, ar *AuthorizationRequest) error {
-	ar.ClientRoleErr, _ = ctx.Value(roleErrKey{}).(error)
+	st := connFrom(ctx)
+	ar.ConnectionID, ar.ClientRoleErr = st.id, st.roleErr
 	var authErr error
 	if ms.call("RequestAuthorizer.AuthorizeRequest", func() string {
 		return fmt.Sprintf("RequestAuthorizer.AuthorizeRequest for FC 0x%02x from %s did not return normally", req.FunctionCode, ar.ClientAddr)

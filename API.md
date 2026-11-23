@@ -1828,6 +1828,7 @@ const (
 )
 
 type AuthorizationRequest struct {
+    ConnectionID   ConnectionID // since v1.22.0; see § 6 "Connection identity"
     ClientAddr     string // remote host:port
     ClientRole     string // tcp+tls: role of the verified certificate; else empty
     ClientRoleErr  error  // tcp+tls: wraps ErrInvalidRole for an unusable role extension; else nil
@@ -2202,6 +2203,8 @@ on a buffered channel).
 | `TLSHandshakeMetrics`, `ProtocolViolationMetrics` (server) | the connection's goroutine | is stopped there and logged; the server goes on as if it had returned |
 | `AcceptErrorMetrics` | the accept loop | is stopped there and logged; the server goes on as if it had returned |
 | `TLSHandshakeMetrics` (client), `ResponseAnomalyMetrics` | the goroutine that dials, or that runs the request | is stopped there and logged through `Config.Logger`; the dial or the request goes on unchanged |
+| `ServerConnectionMetrics` | the accept loop (rejected) or the connection's goroutine | is stopped there and logged; the server goes on as if it had returned |
+| `ClientConnectionMetrics` | the goroutine of the `Open`, request or `Close` that caused the event | is stopped there and logged through `Config.Logger`; the client goes on unchanged |
 
 `ServerMetrics` methods get the unit ID and the function code as the client sent
 them. `OnRequest` is called before the server has checked that it serves the
@@ -2374,6 +2377,107 @@ goroutine; a panic is logged and the server goes on. `CloseReason` has a
 `"first request timeout"`, `"frame timeout"`). A response the client did not read
 in time is `CloseWriteFailed` with an `err` matching `os.ErrDeadlineExceeded`.
 
+### Connection identity and lifecycle (since v1.22.0)
+
+```go
+type ConnectionID uint64 // String(): decimal
+
+type ServerConnectionMetrics interface { // optional, on ServerConfig.Metrics
+    OnServerConnection(ev ServerConnectionEvent)
+}
+
+type ServerConnectionEvent struct {
+    Kind         ServerConnectionEventKind // ServerConnectionRejected, ServerConnectionOpened, ServerConnectionClosed
+    ConnectionID ConnectionID
+    RemoteAddr   string
+    LocalAddr    string
+    Role         string        // tcp+tls; Opened and Closed
+    RoleErr      error         // as TLSHandshakeInfo.RoleErr
+    RejectReason RejectReason  // Rejected
+    CloseReason  CloseReason   // Closed
+    Err          error         // Closed: the error that ended the connection, never nil
+    Age          time.Duration // Closed: time since Opened
+}
+
+type ClientConnectionMetrics interface { // optional, on Config.Metrics
+    OnClientConnection(ev ClientConnectionEvent)
+}
+
+type ClientConnectionEvent struct {
+    Kind          ClientConnectionEventKind // ClientConnectionDialed, ClientConnectionDiscarded, ClientConnectionClosed
+    ConnectionID  ConnectionID
+    Target        string           // endpoint of the URL: host:port or serial device
+    Pooled        bool             // a connection of the pool (MaxConns > 1 on tcp, rtuovertcp, rtuoverudp, udp or asciiovertcp)
+    Origin        ConnectionOrigin // Dialed: ConnectionOriginOpen, ConnectionOriginOnDemand, ConnectionOriginRedial
+    DiscardReason DiscardReason    // Discarded: DiscardTransportError, DiscardSuspectResponse, DiscardRetry, DiscardOpenFailed
+    Duration      time.Duration    // Dialed: the dial, TLS handshake included
+    Age           time.Duration    // Discarded, Closed: time since the dial
+    Err           error            // Dialed: nil on success; Discarded: the cause (nil for a suspect response)
+}
+```
+
+A `ConnectionID` is allocated once per transport connection (TCP, TLS, UDP
+socket or serial port), before a client dials it or as soon as a server accepts
+it, and stays the same for its life. Failed dials, rejected connections and
+failed TLS handshakes have one too. Identifiers come from one counter shared by
+every client and server of the process, starting at 1: unique within the
+process for as long as it runs, never reused, meaningless across processes and
+restarts. 0 means no connection. The same identifier is in every report of the
+connection:
+
+| Report | Field |
+|---|---|
+| server: `TLSHandshakeInfo`, `ProtocolViolation`, `AuthorizationRequest`, `ServerPDUExchange`, `ServerConnectionEvent` | `ConnectionID` |
+| client: `TLSHandshakeInfo`, `ResponseAnomaly`, `PDUExchange`, `ClientConnectionEvent` | `ConnectionID` |
+
+The two ends of one TCP connection have different identifiers (each process,
+or each side in one process, allocates its own); correlate them by address.
+
+**Do not use a `ConnectionID` as a metric label.** Every connection has a new
+one, so a Prometheus label (or any per-value series) grows without bound. It is
+for logs, traces and audit records; count events by `Kind`, `RejectReason`,
+`CloseReason`, `Origin` or `DiscardReason` instead.
+
+`ServerConnectionMetrics` is the detailed form of `ConnectionMetrics`,
+`ConnectionLifecycleMetrics` and `ConnectionCloseMetrics`, which keep their
+signatures and are still called: `Rejected` right after `OnConnectionRejected`,
+`Opened` right after `OnConnectionOpened`, `Closed` after
+`OnConnectionCloseReason`, for the same connections. A `tcp+tls` connection
+whose handshake fails is neither opened nor closed; `TLSHandshakeMetrics`
+reports it with its `ConnectionID`. A `Shutdown` or `Stop` called from one of
+the callbacks of a connection ends that connection's callbacks.
+
+`ClientConnectionMetrics` covers the single connection and the pool:
+
+- `Dialed` for every dial, failed ones included: `ConnectionOriginOpen` for
+  `Open` (the single connection, or each of a pool's `MinConns`, pre-warmed),
+  `ConnectionOriginOnDemand` for a pool dial by a request that found no idle
+  connection, `ConnectionOriginRedial` for a re-dial of the single connection
+  (the same dials as `AttemptMetrics.OnRetryDial`).
+- `Discarded` for a connection closed because of a failure: an exchange that
+  failed (`DiscardTransportError`; a serial single connection is kept after an
+  error that leaves it usable), a response showing that requests and responses
+  are out of step (`DiscardSuspectResponse`), the single connection dropped
+  before a retry (`DiscardRetry`), or a pre-warmed connection closed because a
+  later pre-warm dial failed (`DiscardOpenFailed`).
+- `Closed` for a connection closed by the shutdown of the client: `Close`, a
+  connection released into a pool that is closing, a dial that ended after
+  `Close`, an `Open` that lost a race with `Close`. A normal end, never a
+  failure.
+
+Every connection dialled successfully ends with exactly one `Discarded` or
+`Closed` once the client is closed; a failed dial has no end. No event pairs an
+old connection with its replacement: a pool does not dial for a given
+connection (any waiting request may take a freed slot, or none), so there is no
+relationship to report; correlate by time and `Target` if needed.
+
+The callbacks run synchronously with none of the client's or the server's
+locks held; they must not block, and a client callback must not make requests
+on the same client. A client callback may call `Close`: the connections a
+`Close` closes are reported once it has closed them all, so a `Close` called
+from the callback returns at once, and a `Close` called concurrently may
+return before they are reported.
+
 ### `TLSHandshakeMetrics` (optional, server and client)
 
 Since v1.21.0.
@@ -2384,6 +2488,7 @@ type TLSHandshakeMetrics interface {
 }
 
 type TLSHandshakeInfo struct {
+    ConnectionID            ConnectionID  // since v1.22.0
     LocalAddr, RemoteAddr   string
     Err                     error         // nil: completed and verified
     Duration                time.Duration
@@ -2434,6 +2539,7 @@ type ProtocolViolationMetrics interface {
 }
 
 type ProtocolViolation struct {
+    ConnectionID           ConnectionID // since v1.22.0
     ClientAddr, ClientRole string
     TransactionID          uint16 // MBAP header as received
     ProtocolID             uint16
@@ -2484,6 +2590,7 @@ const (
 
 type ResponseAnomaly struct {
     Kind                  ResponseAnomalyKind
+    ConnectionID          ConnectionID // since v1.22.0
     UnitID                uint8
     FunctionCode          FunctionCode
     ExpectedTransactionID uint16
@@ -2511,6 +2618,7 @@ client asked and was answered; `ServerMetrics` stays the place for counting.
 
 ```go
 type ServerPDUExchange struct {
+    ConnectionID ConnectionID // since v1.22.0
     ClientAddr string    // remote host:port, as the handlers receive it
     ClientRole string    // tcp+tls role; empty on tcp
     UnitID     uint8
@@ -2568,6 +2676,7 @@ it again later; `ClientMetrics` stays the place for counting outcomes.
 
 ```go
 type PDUExchange struct {
+    ConnectionID ConnectionID // since v1.22.0: the connection the response came from
     UnitID   uint8
     Request  []byte    // request PDU as sent (copy, owned by the tap)
     Response []byte    // response PDU as received (copy); exception: FC | 0x80

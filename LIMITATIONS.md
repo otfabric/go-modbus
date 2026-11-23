@@ -65,12 +65,17 @@ Either way, many hosts can still crowd out a client whose handshake is slow.
   violations, refusals, closes, client-side skipped frames); they classify
   nothing as an attack, assign no severity and keep no history. go-modbus is
   not an IDS, IPS or SIEM ([SECURITY.md](SECURITY.md)).
-- **No connection ID.** Callbacks identify a connection by its remote
-  `host:port`, unique while it is open; a port reused after a close looks like
-  the same peer.
-- **Not reported.** A client pool replacing a broken connection is reported
-  only through the re-dial (`AttemptMetrics.OnRetryDial`, and the new
-  connection's `TLSHandshakeMetrics` call); the server's own exception for an
+- **Connection IDs are per process.** Since v1.22.0 the structured reports
+  carry a `ConnectionID`, unique within the process while it runs; it is not
+  stable across restarts, is not shared by the two ends of a connection, and
+  is not exchanged on the wire. The positional callbacks
+  (`ConnectionMetrics`, `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics`)
+  still identify a connection by its remote `host:port`; use
+  `ServerConnectionMetrics` for the identifier.
+- **No replacement pairs.** `ClientConnectionMetrics` reports a pool's discard
+  and its later on-demand dial as separate events: the pool does not dial for
+  a given connection, so it cannot say which one replaced which.
+- **Not reported.** The server's own exception for an
   out-of-range value or an unserved function code goes to
   `ServerMetrics.OnError`, not to `ProtocolViolationMetrics`. The serial
   framings' discarded bytes (`ResponseAnomalyMetrics`) are counted when the

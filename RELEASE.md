@@ -1,5 +1,37 @@
 # go-modbus Releases
 
+## v1.22.0
+
+**Date:** 2026-11-23
+**Previous release:** v1.21.0
+
+Connection identity and connection lifecycle observability, completing the observability foundation of v1.21.0. Every transport connection of a client or a server has an opaque `ConnectionID` that is the same in every structured report about it, and two new optional interfaces report each connection's lifecycle as typed events: on the server, rejected, opened and closed; on the client, single or pooled, dialled, discarded after a failure and closed at shutdown. The callbacks are opt-in; the `ConnectionID` is always allocated and filled in on the existing report structs, whether or not a callback is implemented. No exported identifier is removed or changed, no method is added to an existing interface, and the positional callbacks (`ConnectionMetrics`, `ConnectionLifecycleMetrics`, `ConnectionCloseMetrics`, `AttemptMetrics`) keep their signatures and are still called as before. Nothing changes on the wire. The library still reports facts only: no event dispatcher, schema, severities or exporter.
+
+### Added
+
+- `ConnectionID` (`String`): an identifier allocated once per transport connection (TCP, TLS, UDP socket, serial port) before a client dials it or when a server accepts it, kept for the connection's life. Failed dials, rejected connections and failed TLS handshakes have one too. Identifiers come from one counter per process, starting at 1, and are never reused while the process runs; 0 means no connection. They are not stable across restarts and not shared by the two ends of a connection. Not meant as a metric label: every connection has a new one.
+- `ConnectionID` fields on `TLSHandshakeInfo` (server and client), `ProtocolViolation`, `AuthorizationRequest`, `ServerPDUExchange`, `PDUExchange` and `ResponseAnomaly`.
+- `ServerConnectionMetrics` with `ServerConnectionEvent` and `ServerConnectionEventKind` (`ServerConnectionRejected`, `ServerConnectionOpened`, `ServerConnectionClosed`): the detailed lifecycle of a tcp or tcp+tls server connection, with its `ConnectionID`, addresses, role, `RoleErr`, reject or close reason, error and age. Called at the same points as `OnConnectionRejected`, `OnConnectionOpened` and `OnConnectionCloseReason`, right after them.
+- `ClientConnectionMetrics` with `ClientConnectionEvent`, `ClientConnectionEventKind` (`ClientConnectionDialed`, `ClientConnectionDiscarded`, `ClientConnectionClosed`), `ConnectionOrigin` (`ConnectionOriginOpen`, `ConnectionOriginOnDemand`, `ConnectionOriginRedial`) and `DiscardReason` (`DiscardTransportError`, `DiscardSuspectResponse`, `DiscardRetry`, `DiscardOpenFailed`). It reports every dial of the single connection and of the pool (Open and pre-warm, on demand, re-dial), with target, duration and error; every connection closed because of a failure, with the reason and error; and every connection closed by the client's shutdown as `Closed`, kept apart from failure-driven discards. Every successfully dialled connection ends with exactly one `Discarded` or `Closed` once the client is closed. No event pairs an old connection with its replacement: the pool has no such relationship to prove. The callback may call `Close`: the connections a `Close` closes are reported once it has closed them all, so a `Close` called from the callback returns at once instead of waiting for itself.
+- `String` methods for the new enums: `"rejected"`, `"opened"`, `"closed"`; `"dialed"`, `"discarded"`, `"closed"`; `"open"`, `"on demand"`, `"redial"`; `"transport error"`, `"suspect response"`, `"retry"`, `"open failed"`.
+- `examples/client_metrics` and `examples/server_metrics` implement the new interfaces, counting by kind and reason and keeping the `ConnectionID` for a log line.
+
+### Changed
+
+- None of the existing callbacks changes: same signatures, same points, same order. The new interfaces are found by type assertion once, in `New` and `NewServer`; the new events are emitted with none of the client's or server's locks held, are guarded like the other callbacks (a callback that does not return normally is logged and the library goes on) and, on the server, end with a `Shutdown` or `Stop` called from one of the connection's callbacks.
+
+### Documentation
+
+- API.md (§ 6 "Connection identity and lifecycle", the new fields in the struct listings and the callback table), OBSERVABILITY.md (the interfaces, the uniqueness scope of `ConnectionID`, why it is not a metric label), LIMITATIONS.md ("Connection IDs are per process", "No replacement pairs"; the "No connection ID" item is gone), docs/api.
+
+### Tests
+
+- `internal/session/conn_test.go`: the event stream of the single connection (Open, discard after a transport error, re-dial, close) and the identifier the dial's context carries; `DiscardRetry` and `DiscardSuspectResponse`; a failed re-dial; pre-warming, and a pre-warm failure discarding the connections already made; pool exhaustion (no dial while every connection is in use, the waiter reusing the released one, a discard replaced on demand); cancelled dials, single and pooled; concurrent failures and retries with `Close` racing in-flight requests, each dialled connection ending exactly once; a dial completing after `Close`, and an `Open` losing to `Close`, both reported closed; `Pool.Execute`. Run with `-race`.
+- `connection_metrics_test.go`: one tcp+tls connection carrying the same `ConnectionID` through the server's handshake, open, authorizations, PDU tap and close, and the client's dial, handshake, PDU tap and close, the two ends with different identifiers; rejected connections (MaxClients, an eviction whose identifier is that of its failed handshake, AllowClient); panicking callbacks on both sides; `Stop` from `OnServerConnection`; a pooled client's pre-warm and on-demand dials and closes, and a failed dial; the enum names. `internal/connid`: uniqueness under concurrency.
+- Existing payload tests compare the new `ConnectionID` fields instead of ignoring them.
+
+---
+
 ## v1.21.0
 
 **Date:** 2026-11-23

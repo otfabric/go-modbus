@@ -16,6 +16,9 @@ import (
 // Request and Response are copies owned by the receiver of the exchange; they
 // may be kept and modified.
 type PDUExchange struct {
+	// ConnectionID is the connection the response came from (see
+	// ConnectionID). Since v1.22.0.
+	ConnectionID ConnectionID
 	// UnitID is the unit id the request was addressed to (and the response
 	// carried).
 	UnitID uint8
@@ -84,10 +87,11 @@ func (mc *Client) tapExchange(ctx context.Context, req *adu.Request, res *adu.Re
 		return
 	}
 	ex := PDUExchange{
-		UnitID:   req.UnitID,
-		Request:  pduBytes(req.FunctionCode, req.Payload),
-		Response: pduBytes(res.FunctionCode, res.Payload),
-		Received: received,
+		ConnectionID: ConnectionID(res.ConnectionID),
+		UnitID:       req.UnitID,
+		Request:      pduBytes(req.FunctionCode, req.Payload),
+		Response:     pduBytes(res.FunctionCode, res.Payload),
+		Received:     received,
 	}
 	_ = mc.call("PDUTap.OnPDU", func() error { tap.OnPDU(ctx, ex); return nil })
 }
