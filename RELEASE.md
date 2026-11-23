@@ -1,7 +1,8 @@
 # go-modbus Releases
 
-## Unreleased
+## v1.21.0
 
+**Date:** 2026-11-23
 **Previous release:** v1.20.0
 
 Provider-agnostic security observability and opt-in server hardening. Optional interfaces on the existing `Metrics` values report TLS handshakes, accept errors, protocol violations and client-side response anomalies; new `ServerConfig` fields bound connections per host, the wait for a first request and the time a request takes to arrive, and an optional authorizer decides which requests reach the handlers. Everything is off unless set: with none of it implemented or configured, behaviour and the wire are unchanged. No exported identifier is removed or changed; no method is added to an existing interface. The library reports facts and enforces what the application configures; it has no detection rules, severities, event schema or monitoring-product dependency, and nothing here is a claim of conformance or certification.
@@ -25,6 +26,7 @@ Provider-agnostic security observability and opt-in server hardening. Optional i
 
 - Server, tcp+tls: a Modbus Role extension with bytes after its UTF8String is invalid: the client is served with no role, and `RoleErr` wraps `ErrInvalidRole`. Up to v1.20.0 the bytes were ignored and the role was served. The extension value is the DER encoding of one value (RFC 5280 section 4.1).
 - `AttemptMetrics.OnAttempt` documentation: `err` is the error of the exchange on the link, nil for any response frame received (an exception response included); the call's error goes to `ClientMetrics.OnError`. Behaviour unchanged.
+- The bundled `modbus-cli` is built on v1.20.0 (was v1.17.0).
 - None of the new settings has a default; the new interfaces are found by type assertion once, in `New` and `NewServer`. Without them nothing changes, on the wire or in the callbacks already reported.
 - Server: `Stop` and `Shutdown` may be called from the new callbacks and from the authorizer, with the same guarantees as from the existing ones; no callback runs once they returned.
 
