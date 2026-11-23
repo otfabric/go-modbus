@@ -1,8 +1,8 @@
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
-github.com/otfabric/go-modbus v1.22.0 h1:mO5ZG7BE+JQbRVjC4lwrWt8CvbBAn7QYanSi/QW+NLE=
-github.com/otfabric/go-modbus v1.22.0/go.mod h1:vPP3e6BiL8H/jwlK90htH7HLHduWhiEHx7M46QTeMcw=
+github.com/otfabric/go-modbus v1.23.0 h1:ErZe1E0/77N7D862eiS28US99hW5MIAAmIOgPCF/0KY=
+github.com/otfabric/go-modbus v1.23.0/go.mod h1:vPP3e6BiL8H/jwlK90htH7HLHduWhiEHx7M46QTeMcw=
 github.com/otfabric/go-serial v0.5.0 h1:hbKs9n/XLa7NnFlG3ftoNRIBsRkeS9NTO2tbqOyS1O4=
 github.com/otfabric/go-serial v0.5.0/go.mod h1:CGEz7RtffVDY/EBU8oN/ydSCjMOdtRpB0LNTc8BmSUQ=
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
