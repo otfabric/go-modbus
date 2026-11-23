@@ -129,6 +129,7 @@ func TestAuthorizer_RequestFields(t *testing.T) {
 		return AuthorizationRequest{UnitID: u, FunctionCode: fc, Access: access}
 	}
 	with := func(r AuthorizationRequest, f func(*AuthorizationRequest)) AuthorizationRequest { f(&r); return r }
+	var seq uint64
 	for _, tc := range []struct {
 		name string
 		call func() error
@@ -184,7 +185,12 @@ func TestAuthorizer_RequestFields(t *testing.T) {
 		if got.ConnectionID == 0 {
 			t.Errorf("%s: no connection id", tc.name)
 		}
-		got.ClientAddr, got.ConnectionID = "", 0
+		// One connection: its requests are numbered in order.
+		seq++
+		if got.RequestSeq != seq || got.TransactionID == 0 {
+			t.Errorf("%s: RequestSeq %d, TransactionID %d, want %d and the request's", tc.name, got.RequestSeq, got.TransactionID, seq)
+		}
+		got.ClientAddr, got.ConnectionID, got.RequestSeq, got.TransactionID = "", 0, 0, 0
 		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", tc.name, got, tc.want)
 		}

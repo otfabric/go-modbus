@@ -5,6 +5,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/otfabric/go-modbus"
@@ -52,5 +54,56 @@ func TestAuthorize(t *testing.T) {
 				t.Errorf("authorize = %v, want allowed %v", err, tc.allow)
 			}
 		})
+	}
+}
+
+// The demo produces one coherent trail: every connection is accepted or
+// refused with its verified subject, every decision has its PDU record under
+// the same ConnectionID and RequestSeq, and nothing is dropped.
+func TestRun(t *testing.T) {
+	trail, dropped, err := run(io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 0 {
+		t.Errorf("%d events dropped", dropped)
+	}
+	count := map[string]int{}
+	type key struct {
+		id  modbus.ConnectionID
+		seq uint64
+	}
+	pdus := map[key]bool{}
+	for _, e := range trail {
+		count[e.Kind]++
+		if e.Kind == "pdu" {
+			pdus[key{e.ConnectionID, e.RequestSeq}] = true
+		}
+		if e.ConnectionID == 0 || e.Subject == "" {
+			t.Errorf("event %v without a connection or a subject", e)
+		}
+	}
+	for kind, want := range map[string]int{
+		"connection accepted": 3, "connection refused": 1, "connection closed": 3,
+		"request allowed": 3, "request refused": 1, "pdu": 5, "protocol violation": 1,
+	} {
+		if count[kind] != want {
+			t.Errorf("%d %q events, want %d (trail %v)", count[kind], kind, want, trail)
+		}
+	}
+	for _, e := range trail {
+		switch e.Kind {
+		case "request allowed", "request refused", "protocol violation":
+			if !pdus[key{e.ConnectionID, e.RequestSeq}] {
+				t.Errorf("%v has no PDU record", e)
+			}
+		case "connection refused":
+			if e.Subject != "revoked client" || !strings.Contains(e.Detail, "not authorized") {
+				t.Errorf("refusal %v, want the revoked client, not authorized", e)
+			}
+		}
+		if e.Kind == "request refused" && (e.Subject != "viewer client" || e.Role != "viewer") {
+			t.Errorf("refusal %v, want the viewer's write", e)
+		}
 	}
 }

@@ -323,7 +323,8 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, id ConnectionID
 		var roleErr error
 		start := time.Now()
 		tlsSock, clientRole, roleErr, err = ms.startTLS(sock)
-		ms.reportTLSHandshake(id, sock, tlsSock, time.Since(start), clientRole, roleErr, err)
+		handshakeTime := time.Since(start)
+		ms.reportTLSHandshake(id, sock, tlsSock, handshakeTime, clientRole, roleErr, err)
 		admitted := false
 		if err == nil {
 			ms.lock.Lock()
@@ -345,7 +346,27 @@ func (ms *Server) handleTCPClient(run *serverRun, sock net.Conn, id ConnectionID
 			effectiveConn = tlsSock
 			// connCancel cancels the parent, and with it this context.
 			st.roleErr = roleErr
-			ms.serveConn(run, share, withConn(connCtx, st), connCancel,
+			ctx := withConn(connCtx, st)
+			if ms.conf.ConnectionAuthorizer != nil {
+				authErr := ms.authorizeConnection(ctx, id, tlsSock, handshakeTime, clientRole, roleErr)
+				if share.released.Load() {
+					// A Shutdown called from the authorizer: no further
+					// callback, and the connection is not served.
+					break
+				}
+				if authErr != nil {
+					ms.logger.Warningf("rejecting %v: %v", sock.RemoteAddr(), authErr)
+					_ = tlsSock.Close()
+					ms.reportRejectedConn(share, ServerConnectionEvent{
+						Kind: ServerConnectionRejected, ConnectionID: id,
+						RemoteAddr: addrString(sock.RemoteAddr()), LocalAddr: st.localAddr,
+						Role: clientRole, RoleErr: roleErr,
+						RejectReason: RejectNotAuthorized, Err: authErr,
+					})
+					break
+				}
+			}
+			ms.serveConn(run, share, ctx, connCancel,
 				newTCPTransport(tlsSock, ms.conf.Timeout, ms.conf.Logger),
 				sock.RemoteAddr().String(), clientRole)
 		}
@@ -573,10 +594,14 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	// drainAfterAnswer: the loop ended on a request it answered and must close
 	// the connection after (see answeredCloseDrain).
 	drainAfterAnswer := false
+	// seq numbers the requests of the connection, in the order read.
+	var seq uint64
 	for in := range queue {
 		if share.released.Load() {
 			break
 		}
+		seq++
+		in.req.Seq, in.req.TransactionID = seq, in.txnID
 		var res *adu.Response
 		var closeLink bool
 		if in.lengthErr != nil {
@@ -707,11 +732,14 @@ type serverTransport interface {
 // served by serveConn; the unit tests drive the dispatch logic through this loop,
 // which neither taps requests (ServerConfig.PDUTap) nor reports close reasons.
 func (ms *Server) handleTransport(connCtx context.Context, t serverTransport, clientAddr string, clientRole string) {
+	var seq uint64
 	for {
 		req, txnID, err := t.ReadRequest()
 		if err != nil {
 			return
 		}
+		seq++
+		req.Seq, req.TransactionID = seq, txnID
 		res, closeLink := ms.serveRequest(connCtx, req, txnID, clientAddr, clientRole)
 		if res != nil {
 			if writeErr := t.WriteResponse(res); writeErr != nil {
@@ -838,8 +866,8 @@ func (ms *Server) serveLengthError(req *adu.Request, txnID uint16, id Connection
 	}
 	if ms.violationMetrics != nil {
 		ms.reportViolation(ProtocolViolation{
-			ConnectionID: id,
-			ClientAddr:   clientAddr, ClientRole: clientRole,
+			ConnectionID: id, RequestSeq: req.Seq,
+			ClientAddr: clientAddr, ClientRole: clientRole,
 			TransactionID: txnID, Length: adu.Uint16(lengthErr.Have + 1), UnitID: req.UnitID,
 			FunctionCode: FunctionCode(req.FunctionCode), HasFunctionCode: true,
 			Err: err, Exception: code, Closed: true,

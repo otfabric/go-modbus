@@ -119,14 +119,17 @@ type ServerMetrics interface {
 //
 // It is also called for a connection ServerConfig.AllowClient refused
 // (RejectNotAllowed) and for one beyond ServerConfig.MaxClientsPerHost
-// (RejectPerHostLimit), both closed as soon as they were accepted.
+// (RejectPerHostLimit), both closed as soon as they were accepted, and for a
+// tcp+tls connection ServerConfig.ConnectionAuthorizer refused after its
+// handshake (RejectNotAuthorized).
 //
 // Connections accepted while the server is stopping, and connections that
 // close for any other reason, are not reported.
 //
 // addr is the remote address of the connection (host:port). The method is
-// called on the server's accept loop, after the connection was closed and
-// with no lock held, so it delays the next Accept: it must be non-blocking.
+// called after the connection was closed, with no lock held: on the server's
+// accept loop, which it delays, except for RejectNotAuthorized, which is
+// reported on the connection's goroutine. It must be non-blocking.
 // Like the ServerMetrics methods, a method that does not return normally is
 // logged at error level with the stack, and the server goes on as if it had
 // returned. It may call Stop or Shutdown (see RequestHandler).
@@ -258,10 +261,16 @@ const (
 	// soon as it was accepted, because its host already had
 	// ServerConfig.MaxClientsPerHost connections.
 	RejectPerHostLimit
+	// RejectNotAuthorized is a tcp+tls connection whose TLS handshake
+	// completed, closed before it was served because
+	// ServerConfig.ConnectionAuthorizer refused it (or did not return
+	// normally). ServerConnectionEvent.Err says why. Since v1.23.0.
+	RejectNotAuthorized
 )
 
 // String returns the name of the reason ("max clients", "tls handshake
-// evicted", "not allowed", "per-host limit"), or "RejectReason(n)" for a
+// evicted", "not allowed", "per-host limit", "not authorized"), or
+// "RejectReason(n)" for a
 // value without one.
 func (r RejectReason) String() string {
 	switch r {
@@ -273,6 +282,8 @@ func (r RejectReason) String() string {
 		return "not allowed"
 	case RejectPerHostLimit:
 		return "per-host limit"
+	case RejectNotAuthorized:
+		return "not authorized"
 	default:
 		return "RejectReason(" + strconv.Itoa(int(r)) + ")"
 	}

@@ -394,6 +394,10 @@ func TestProtocolViolationMetrics(t *testing.T) {
 				t.Error("violation without a ConnectionID")
 			}
 			want := tc.want
+			if tc.want.HasFunctionCode {
+				// The connection's first request.
+				want.RequestSeq = 1
+			}
 			want.ClientAddr, want.Err, want.ConnectionID = conn.LocalAddr().String(), got.Err, got.ConnectionID
 			if got != want {
 				t.Errorf("violation\n got %+v\nwant %+v", got, want)

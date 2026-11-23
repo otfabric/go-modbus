@@ -141,7 +141,7 @@ It has this meaning only when returned by a handler; no client method returns it
 var ErrNotAuthorized = errors.New("modbus: request not authorized")
 ```
 
-ErrNotAuthorized is matched by the error ServerMetrics.OnError receives for a request that ServerConfig.Authorizer refused. The error also wraps the one the authorizer returned.
+ErrNotAuthorized is matched by the error ServerMetrics.OnError receives for a request that ServerConfig.Authorizer refused, and by ServerConnectionEvent.Err for a connection ServerConfig.ConnectionAuthorizer refused (RejectNotAuthorized). The error also wraps the one the authorizer returned.
 
 ```go
 var ErrSerialPortNotOpen = errors.New("modbus: serial port not open")
@@ -221,6 +221,47 @@ type AttemptMetrics interface {
 
 AttemptMetrics is an optional extension of ClientMetrics that provides per-attempt visibility into retries and reconnects. If the value assigned to Config.Metrics also implements AttemptMetrics, the library calls its methods for every individual attempt and dial within a retried request. Implementations must be non-blocking, and must not make requests on the same client: on a single connection the methods run while the request holds that connection. As for ClientMetrics, a method that does not return normally is logged, and the request goes on.
 
+### type AuthorizationDecisionEvent
+
+```go
+type AuthorizationDecisionEvent struct {
+	// Request is what the authorizer was asked, as the server made it: a
+	// copy taken before the call, which changes the authorizer made to its
+	// AuthorizationRequest do not reach. FileRecords is the receiver's.
+	Request AuthorizationRequest
+	// Allowed reports whether the request is served.
+	Allowed bool
+	// Err is nil for an allowed request. For a refused one it is the error
+	// the authorizer returned, or, when Failed, an error that says the
+	// authorizer did not return normally and with what value. Its methods
+	// are the application's: the server called them through its guard.
+	Err error
+	// Failed reports that the authorizer did not return normally (it
+	// panicked, or called runtime.Goexit): the request is refused with
+	// Server Device Failure.
+	Failed bool
+	// Exception is the exception the server decided to answer a refused
+	// request with; zero for an allowed request and for one refused with
+	// ErrNoResponse, which is not answered. It is a decision: the callback
+	// runs before the answer is written.
+	Exception ExceptionCode
+}
+```
+
+AuthorizationDecisionEvent is one decision of ServerConfig.Authorizer, as reported to AuthorizationDecisionMetrics. It reports what was decided; it says nothing of how serious a refusal is.
+
+### type AuthorizationDecisionMetrics
+
+```go
+type AuthorizationDecisionMetrics interface {
+	OnAuthorizationDecision(ev AuthorizationDecisionEvent)
+}
+```
+
+AuthorizationDecisionMetrics is an optional extension of ServerMetrics. A ServerConfig.Metrics that implements it is told every decision of ServerConfig.Authorizer, allowed or refused, with what the authorizer was asked: the decision with its inputs, which ServerMetrics.OnError does not carry for a refused request (it has the unit ID and the function code only). Request.ConnectionID and Request.RequestSeq join the decision to the ServerPDUExchange of the same request.
+
+OnAuthorizationDecision runs on the connection's goroutine, right after the authorizer returned (or failed): before the handler method for a request that is served, before ServerMetrics.OnError for one that is refused. It must not block; one that does not return normally is logged at error level with its stack, and the request is served or refused as decided. It may call Stop or Shutdown (see RequestHandler): as for one called from ServerMetrics.OnRequest, the request is then not answered, and an allowed request's handler is still called, with its context cancelled.
+
 ### type AuthorizationRequest
 
 ```go
@@ -228,6 +269,18 @@ type AuthorizationRequest struct {
 	// ConnectionID is the connection the request arrived on (see
 	// ConnectionID). Since v1.22.0.
 	ConnectionID ConnectionID
+	// RequestSeq is the position of the request among those the server read
+	// from the connection: 1 for the first, counting every request read,
+	// whether it was served, refused or malformed. It is per connection:
+	// ConnectionID and RequestSeq together identify the request within the
+	// process, in its AuthorizationDecisionEvent, ServerPDUExchange and
+	// ProtocolViolation. Like ConnectionID it is for correlating reports,
+	// not for metric labels. Since v1.23.0.
+	RequestSeq uint64
+	// TransactionID is the MBAP transaction ID the request arrived with. The
+	// client chooses it and may repeat it: it is not a key of its own.
+	// Since v1.23.0.
+	TransactionID uint16
 	// ClientAddr and ClientRole identify the client, as the handlers receive
 	// them: its remote host:port, and on tcp+tls the role of its verified
 	// certificate (empty on tcp, and for a certificate without a usable
@@ -1251,6 +1304,38 @@ NewConfig builds a Config from grouped sub-configurations. This is a convenience
 type ConfigurationError = protocol.ConfigurationError
 ```
 
+### type ConnectionAuthorizer
+
+```go
+type ConnectionAuthorizer interface {
+	AuthorizeConnection(ctx context.Context, info TLSHandshakeInfo) error
+}
+```
+
+ConnectionAuthorizer decides whether the server serves a tcp+tls connection once its TLS handshake has completed and the client's certificate chain has been verified against ServerConfig.TLSClientCAs (ServerConfig.ConnectionAuthorizer). It is the place for an application's own rules about which verified clients may connect at all: pinning a certificate or an issuing CA, checking a subject, a SAN or the Modbus Role, consulting a revocation list the application keeps. The server imposes no model of users, tenants or roles of its own.
+
+AuthorizeConnection is called once for every connection whose handshake completed and that the server would serve, on the connection's goroutine, after TLSHandshakeMetrics.OnTLSHandshake and before the connection is served: before ConnectionLifecycleMetrics.OnConnectionOpened and before any request is read. info is what TLSHandshakeMetrics reports for the handshake (Err nil, Verified true, the role and RoleErr included), parsed afresh for this call: it is the receiver's. ctx is the connection's context, cancelled when the server stops.
+
+nil serves the connection. Any other error refuses it: the connection is closed, no request of it is read, and it is reported to ConnectionMetrics.OnConnectionRejected and ServerConnectionMetrics as RejectNotAuthorized, with ServerConnectionEvent.Err matching ErrNotAuthorized and wrapping the error. It is never reported as opened or closed.
+
+The connection holds its MaxClients slot while AuthorizeConnection runs, and is not evicted for a newer one: it must not block, and should return quickly. It must be safe for concurrent use. One that does not return normally is logged at error level with its stack, and the connection is refused: a failed authorizer never lets a connection through. It may call Stop or Shutdown (see RequestHandler); the connection is then closed without being served, and nothing more is reported for it.
+
+### type ConnectionAuthorizerFunc
+
+```go
+type ConnectionAuthorizerFunc func(ctx context.Context, info TLSHandshakeInfo) error
+```
+
+ConnectionAuthorizerFunc is a function that serves as a ConnectionAuthorizer. A ServerConfig holding one is not comparable with ==: comparing it panics, as comparing two functions would.
+
+#### func (ConnectionAuthorizerFunc) AuthorizeConnection
+
+```go
+func (f ConnectionAuthorizerFunc) AuthorizeConnection(ctx context.Context, info TLSHandshakeInfo) error
+```
+
+AuthorizeConnection returns f(ctx, info).
+
 ### type ConnectionCloseMetrics
 
 ```go
@@ -1305,11 +1390,11 @@ ConnectionMetrics is an optional extension of ServerMetrics. If the value assign
   - a connection it accepted when every slot was taken, which it closes at once (RejectMaxClients);
   - on tcp+tls, a connection whose TLS handshake had not completed, which it closed to make room for a newer one (RejectTLSHandshakeEvicted).
 
-It is also called for a connection ServerConfig.AllowClient refused (RejectNotAllowed) and for one beyond ServerConfig.MaxClientsPerHost (RejectPerHostLimit), both closed as soon as they were accepted.
+It is also called for a connection ServerConfig.AllowClient refused (RejectNotAllowed) and for one beyond ServerConfig.MaxClientsPerHost (RejectPerHostLimit), both closed as soon as they were accepted, and for a tcp+tls connection ServerConfig.ConnectionAuthorizer refused after its handshake (RejectNotAuthorized).
 
 Connections accepted while the server is stopping, and connections that close for any other reason, are not reported.
 
-addr is the remote address of the connection (host:port). The method is called on the server's accept loop, after the connection was closed and with no lock held, so it delays the next Accept: it must be non-blocking. Like the ServerMetrics methods, a method that does not return normally is logged at error level with the stack, and the server goes on as if it had returned. It may call Stop or Shutdown (see RequestHandler).
+addr is the remote address of the connection (host:port). The method is called after the connection was closed, with no lock held: on the server's accept loop, which it delays, except for RejectNotAuthorized, which is reported on the connection's goroutine. It must be non-blocking. Like the ServerMetrics methods, a method that does not return normally is logged at error level with the stack, and the server goes on as if it had returned. It may call Stop or Shutdown (see RequestHandler).
 
 ### type ConnectionOrigin
 
@@ -2038,6 +2123,11 @@ type ProtocolViolation struct {
 	// ConnectionID is the connection the request arrived on (see
 	// ConnectionID). Since v1.22.0.
 	ConnectionID ConnectionID
+	// RequestSeq is the position of the request among those read from the
+	// connection, as in its ServerPDUExchange and AuthorizationRequest (see
+	// AuthorizationRequest.RequestSeq); zero for an MBAP header the server
+	// could not frame, which is not a request. Since v1.23.0.
+	RequestSeq uint64
 	// ClientAddr and ClientRole identify the connection, as the handlers
 	// receive them (ClientRole is empty on tcp).
 	ClientAddr string
@@ -2185,6 +2275,11 @@ const (
 	// soon as it was accepted, because its host already had
 	// ServerConfig.MaxClientsPerHost connections.
 	RejectPerHostLimit
+	// RejectNotAuthorized is a tcp+tls connection whose TLS handshake
+	// completed, closed before it was served because
+	// ServerConfig.ConnectionAuthorizer refused it (or did not return
+	// normally). ServerConnectionEvent.Err says why. Since v1.23.0.
+	RejectNotAuthorized
 )
 ```
 
@@ -2194,7 +2289,7 @@ const (
 func (r RejectReason) String() string
 ```
 
-String returns the name of the reason ("max clients", "tls handshake evicted", "not allowed", "per-host limit"), or "RejectReason(n)" for a value without one.
+String returns the name of the reason ("max clients", "tls handshake evicted", "not allowed", "per-host limit", "not authorized"), or "RejectReason(n)" for a value without one.
 
 ### type ReportServerIDHandler
 
@@ -2333,7 +2428,7 @@ An error returned by a handler method is sent to the client as the matching Modb
 
 Ownership. The slices in a request (Args, WriteValues, Data, Requests, Records) are the handler's: the server made them for this call and does not use them again. A slice, or a response struct, that a handler returns is read by the server after the handler has returned, while it encodes the response, and not kept after that: return a copy of shared state, not a view of it (h.regs\[a:b]) that another call may be writing to. This holds for the optional handler interfaces as well.
 
-Stopping the server from a handler. A handler method may call Stop or Shutdown, and so may a method of ServerConfig.Metrics (ServerMetrics and its optional extensions: ConnectionMetrics, ConnectionLifecycleMetrics, ConnectionCloseMetrics, TLSHandshakeMetrics, AcceptErrorMetrics, ProtocolViolationMetrics), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer and the Logger. The call stops the server as a call from any other goroutine does: it stops accepting, cancels the context of every connection and closes the listener and the client sockets. Then it waits for the server's goroutines, the handlers running for other connections included, except the ones of the connection it was called on (or the accept loop, for ServerConfig.AllowClient, a ConnectionMetrics or AcceptErrorMetrics method or a log entry of the accept loop). Stop returns once they have ended. Shutdown also returns when its context ends, and at once when that context is already done: Shutdown with the handler's own context, which the shutdown cancels, returns context.Canceled without waiting.
+Stopping the server from a handler. A handler method may call Stop or Shutdown, and so may a method of ServerConfig.Metrics (ServerMetrics and its optional extensions: ConnectionMetrics, ConnectionLifecycleMetrics, ConnectionCloseMetrics, TLSHandshakeMetrics, AcceptErrorMetrics, ProtocolViolationMetrics, ServerConnectionMetrics, AuthorizationDecisionMetrics), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer, ServerConfig.ConnectionAuthorizer and the Logger. The call stops the server as a call from any other goroutine does: it stops accepting, cancels the context of every connection and closes the listener and the client sockets. Then it waits for the server's goroutines, the handlers running for other connections included, except the ones of the connection it was called on (or the accept loop, for ServerConfig.AllowClient, a ConnectionMetrics or AcceptErrorMetrics method or a log entry of the accept loop). Stop returns once they have ended. Shutdown also returns when its context ends, and at once when that context is already done: Shutdown with the handler's own context, which the shutdown cancels, returns context.Canceled without waiting.
 
 When the call returns, the listener and the client sockets are closed and every other goroutine of the server has ended. The caller's connection is still served on the caller's goroutine until the request in progress is complete: that request is not answered (its connection is closed), its handler is still called, with its context cancelled, when the call came from OnRequest, and its outcome is reported to ServerMetrics as usual. Then no further request of the connection is dispatched and its goroutines end; they may still write log entries. A Stop on any other goroutine (go srv.Stop() from a handler, say) waits for them too, and so for the handler that started it to return.
 
@@ -2589,7 +2684,7 @@ Shutdown gracefully shuts down the server. It stops accepting new connections, c
 
 Only the first Shutdown or Stop of a Start..Stop cycle waits. A call made while that one is still waiting, or after it returned because its context ended, finds the server stopped and returns nil at once, although handler goroutines of the cycle may still be running; nothing else waits for them.
 
-Shutdown may be called from the application's code that the server runs: a RequestHandler method, a method of ServerConfig.Metrics (ServerMetrics or one of its optional extensions), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer, the Logger. It then waits for every goroutine of the server except the ones of the connection, or of the accept loop, that it was called on (see RequestHandler, "Stopping the server from a handler"). When ctx is already done once the listener and the client sockets are closed, as the context a handler received is (the shutdown cancels it), such a call returns ctx.Err() without waiting.
+Shutdown may be called from the application's code that the server runs: a RequestHandler method, a method of ServerConfig.Metrics (ServerMetrics or one of its optional extensions), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer, ServerConfig.ConnectionAuthorizer, the Logger. It then waits for every goroutine of the server except the ones of the connection, or of the accept loop, that it was called on (see RequestHandler, "Stopping the server from a handler"). When ctx is already done once the listener and the client sockets are closed, as the context a handler received is (the shutdown cancels it), such a call returns ctx.Err() without waiting.
 
 #### func (Server) Start
 
@@ -2607,7 +2702,7 @@ func (ms *Server) Stop() error
 
 Stop stops the server and blocks until all handler goroutines have exited. It is equivalent to Shutdown(context.Background()), and like Shutdown it waits only when it is the first such call of a Start..Stop cycle: a Stop after a Shutdown whose context ended, or while another Stop is waiting, returns nil at once.
 
-Called from a RequestHandler method, a method of ServerConfig.Metrics (ServerMetrics or one of its optional extensions), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer or the Logger, Stop returns once every other goroutine of the server has ended; it does not wait for the connection, or the accept loop, it was called on (see RequestHandler).
+Called from a RequestHandler method, a method of ServerConfig.Metrics (ServerMetrics or one of its optional extensions), ServerConfig.AllowClient, ServerConfig.PDUTap, ServerConfig.Authorizer, ServerConfig.ConnectionAuthorizer or the Logger, Stop returns once every other goroutine of the server has ended; it does not wait for the connection, or the accept loop, it was called on (see RequestHandler).
 
 ### type ServerConfig
 
@@ -2666,9 +2761,18 @@ type ServerConfig struct {
 	// and the client is answered with an exception (see RequestAuthorizer).
 	// Nil (the default) serves every request, as before. A function serves
 	// as one through RequestAuthorizerFunc.
-	Authorizer    RequestAuthorizer
-	TLSServerCert *tls.Certificate
-	TLSClientCAs  *x509.CertPool
+	Authorizer RequestAuthorizer
+	// ConnectionAuthorizer, when set, is asked about every tcp+tls connection
+	// once its TLS handshake has completed and the client's certificate has
+	// been verified, before any request is read, and can refuse it: the
+	// connection is then closed and reported as RejectNotAuthorized (see
+	// ConnectionAuthorizer). Nil (the default) serves every verified client,
+	// as before. Setting it on a tcp server is a configuration error: there
+	// is no verified identity to decide on. A function serves as one through
+	// ConnectionAuthorizerFunc. Since v1.23.0.
+	ConnectionAuthorizer ConnectionAuthorizer
+	TLSServerCert        *tls.Certificate
+	TLSClientCAs         *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
 	// from accept. Defaults to 10 s.
 	TLSHandshakeTimeout time.Duration
@@ -2689,23 +2793,27 @@ Server configuration object.
 type ServerConnectionEvent struct {
 	Kind ServerConnectionEventKind
 	// ConnectionID is the connection's identifier, the same as in the
-	// TLSHandshakeInfo, ProtocolViolation, AuthorizationRequest and
-	// ServerPDUExchange of the connection.
+	// TLSHandshakeInfo, ProtocolViolation, AuthorizationRequest,
+	// AuthorizationDecisionEvent and ServerPDUExchange of the connection.
 	ConnectionID ConnectionID
 	// RemoteAddr and LocalAddr are the addresses of the connection (host:port),
 	// empty when the socket does not have one.
 	RemoteAddr string
 	LocalAddr  string
 	// Role and RoleErr are the client's role and the error of an unusable
-	// Modbus Role extension, as in TLSHandshakeInfo (tcp+tls; Opened and
-	// Closed only).
+	// Modbus Role extension, as in TLSHandshakeInfo (tcp+tls; Opened, Closed,
+	// and Rejected with RejectNotAuthorized).
 	Role    string
 	RoleErr error
 	// RejectReason is set for ServerConnectionRejected.
 	RejectReason RejectReason
 	// CloseReason and Err are set for ServerConnectionClosed: why the server
 	// stopped serving the connection, and the error that ended it (never nil),
-	// as reported to ConnectionCloseMetrics.
+	// as reported to ConnectionCloseMetrics. Err is also set for
+	// ServerConnectionRejected with RejectNotAuthorized: it matches
+	// ErrNotAuthorized and wraps the error ServerConfig.ConnectionAuthorizer
+	// refused the connection with (since v1.23.0); it is nil for the other
+	// reject reasons.
 	CloseReason CloseReason
 	Err         error
 	// Age is how long the server served the connection (Closed only): the time
@@ -2756,11 +2864,11 @@ type ServerConnectionMetrics interface {
 
 ServerConnectionMetrics is an optional extension of ServerMetrics: the detailed lifecycle of the tcp and tcp+tls connections of a server, with their ConnectionID. A ServerConfig.Metrics that implements it is called at the same points as ConnectionMetrics.OnConnectionRejected, ConnectionLifecycleMetrics and ConnectionCloseMetrics, whether or not it implements those, which keep their signatures and are still called:
 
-  - ServerConnectionRejected for every connection reported to OnConnectionRejected, right after it;
+  - ServerConnectionRejected for every connection reported to OnConnectionRejected, right after it (on the connection's goroutine for RejectNotAuthorized);
   - ServerConnectionOpened for every connection reported to OnConnectionOpened (on tcp+tls, once its TLS handshake completed), right after it;
   - ServerConnectionClosed once for every opened connection, after OnConnectionCloseReason, with the same exception: a connection that a Shutdown called from one of its own callbacks stopped is not reported.
 
-A tcp+tls connection whose TLS handshake fails is neither opened nor closed here; TLSHandshakeMetrics reports it, with the same ConnectionID. A Shutdown or Stop called from a callback of a connection (this one included) ends that connection's callbacks: nothing more is reported for it.
+A tcp+tls connection whose TLS handshake fails is neither opened nor closed here; TLSHandshakeMetrics reports it, with the same ConnectionID. Nor is one that ServerConfig.ConnectionAuthorizer refused: it is reported as Rejected, after its handshake. A Shutdown or Stop called from a callback of a connection (this one included) ends that connection's callbacks: nothing more is reported for it.
 
 OnServerConnection runs on the accept loop (Rejected) or on the connection's goroutine, with no lock held, and must not block. One that does not return normally is logged at error level with the stack, and the server goes on as if it had returned. It may call Stop or Shutdown (see RequestHandler).
 
@@ -2799,6 +2907,13 @@ type ServerPDUExchange struct {
 	// ConnectionID is the connection the request arrived on (see
 	// ConnectionID). Since v1.22.0.
 	ConnectionID ConnectionID
+	// RequestSeq is the position of the request among those read from the
+	// connection, from 1, and TransactionID its MBAP transaction ID: the same
+	// as in the AuthorizationDecisionEvent and ProtocolViolation of the
+	// request (see AuthorizationRequest.RequestSeq for the scope). Since
+	// v1.23.0.
+	RequestSeq    uint64
+	TransactionID uint16
 	// ClientAddr is the client's remote host:port, ClientRole its role (tcp+tls;
 	// empty on tcp), as the handlers receive them.
 	ClientAddr string
@@ -2894,6 +3009,11 @@ type TLSHandshakeInfo struct {
 	// ServerConfig.TLSClientCAs (server) or Config.TLSRootCAs (client). It is
 	// true for every completed handshake.
 	Verified bool
+	// VerifiedChains are the chains crypto/tls built from PeerCertificates to
+	// a trusted root when it verified them, each leaf first and root last;
+	// empty when the handshake failed. Like PeerCertificates, they are parsed
+	// afresh for each call. Since v1.23.0.
+	VerifiedChains [][]*x509.Certificate
 	// Role is the role of the client from the Modbus Role extension of its
 	// certificate, as the handlers receive it in ClientRole; empty when it
 	// has none or the handshake failed. Server only.
