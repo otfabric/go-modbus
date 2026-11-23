@@ -62,7 +62,34 @@ type ServerConfig struct {
 	// on the goroutine that accepts connections, so it should return quickly;
 	// one that panics refuses the connection. A function serves as one through
 	// ClientFilterFunc.
-	AllowClient   ClientFilter
+	AllowClient ClientFilter
+	// MaxClientsPerHost, when set, limits the tcp and tcp+tls connections
+	// the server serves at once from one remote host (the IP address of the
+	// client, without its port), connections still in their TLS handshake
+	// included. A connection beyond it is closed as soon as it is accepted,
+	// before anything is read from it: it takes no MaxClients slot, does not
+	// replace a connection still handshaking, and ConnectionMetrics reports
+	// it as RejectPerHostLimit. Zero (the default) sets no limit. Clients
+	// behind one NAT or proxy share a host.
+	MaxClientsPerHost uint
+	// FirstRequestTimeout, when set, replaces Timeout as the idle timeout of
+	// a connection until its first complete request has been read: a client
+	// that connects and sends no request is closed after it, and
+	// ConnectionCloseMetrics reports CloseFirstRequestTimeout. It runs from
+	// the moment the server starts serving the connection (on tcp+tls, once
+	// its handshake completed; TLSHandshakeTimeout bounds the handshake).
+	// Zero (the default) uses Timeout; negative is a configuration error.
+	FirstRequestTimeout time.Duration
+	// FrameTimeout, when set, bounds the time a request takes to arrive in
+	// full once its first byte has been read: a request still incomplete
+	// after it closes the connection, and ConnectionCloseMetrics reports
+	// CloseFrameTimeout. It applies to every request, also while earlier
+	// ones are being served, and together with the idle timeout: the earlier
+	// of the two ends the wait. Zero (the default) leaves a request the idle
+	// timeout alone, as before; negative is a configuration error. A value
+	// well above the round-trip time of the slowest legitimate client keeps
+	// it from cutting off a request split over several segments.
+	FrameTimeout  time.Duration
 	TLSServerCert *tls.Certificate
 	TLSClientCAs  *x509.CertPool
 	// TLSHandshakeTimeout bounds the TLS handshake of a tcp+tls connection,
@@ -413,6 +440,13 @@ func NewServer(conf *ServerConfig, reqHandler RequestHandler) (
 		ms.logger.Errorf("missing host part in URL '%s'", conf.URL)
 		err = newConfigurationError("URL", "missing host")
 		return
+	}
+
+	if ms.conf.FirstRequestTimeout < 0 {
+		return nil, newConfigurationError("FirstRequestTimeout", "must not be negative")
+	}
+	if ms.conf.FrameTimeout < 0 {
+		return nil, newConfigurationError("FrameTimeout", "must not be negative")
 	}
 
 	switch serverType {

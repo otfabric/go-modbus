@@ -29,7 +29,8 @@ var ErrInvalidRole = errors.New("modbus: invalid Modbus Role extension")
 // is told the outcome of every TLS handshake of a tcp+tls connection.
 //
 // On a server, OnTLSHandshake is called once for every tcp+tls connection the
-// server admitted (not refused through AllowClient or MaxClients), when its handshake has ended: completed, failed, timed
+// server admitted (not refused through AllowClient, MaxClients or
+// MaxClientsPerHost), when its handshake has ended: completed, failed, timed
 // out after TLSHandshakeTimeout, or cut short because the connection was
 // closed to make room for a newer one (ConnectionMetrics also reports that,
 // as RejectTLSHandshakeEvicted) or because the server stopped. It runs on the

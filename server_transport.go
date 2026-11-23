@@ -93,15 +93,21 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 			continue
 		}
 
-		accepted, refused := false, false
+		accepted, refused, perHost := false, false, false
 		var evicted net.Conn
 		ms.lock.Lock()
 		// ms.run != run once the server has been stopped (and maybe started again).
 		if ms.started && ms.run == run {
-			if uint(len(ms.tcpClients)) >= ms.conf.MaxClients && ms.transportType == modbusTCPOverTLS {
-				evicted = ms.evictPendingTLSLocked(remoteHost(sock))
+			host := remoteHost(sock)
+			if ms.conf.MaxClientsPerHost > 0 && ms.hostClientsLocked(host) >= ms.conf.MaxClientsPerHost {
+				// Refused before MaxClients is looked at: it evicts nobody.
+				perHost = true
+			} else if uint(len(ms.tcpClients)) >= ms.conf.MaxClients && ms.transportType == modbusTCPOverTLS {
+				evicted = ms.evictPendingTLSLocked(host)
 			}
-			if uint(len(ms.tcpClients)) < ms.conf.MaxClients {
+			if perHost {
+				refused = true
+			} else if uint(len(ms.tcpClients)) < ms.conf.MaxClients {
 				ms.tcpClients = append(ms.tcpClients, sock)
 				if ms.transportType == modbusTCPOverTLS {
 					ms.tlsPending = append(ms.tlsPending, sock)
@@ -130,11 +136,18 @@ func (ms *Server) acceptTCPClients(run *serverRun) {
 		}
 		if !accepted {
 			addr := sock.RemoteAddr().String()
-			ms.logger.Warningf("max. number of concurrent connections "+
-				"reached, rejecting %v", addr)
+			reason := RejectMaxClients
+			if perHost {
+				reason = RejectPerHostLimit
+				ms.logger.Warningf("max. number of concurrent connections "+
+					"per host reached, rejecting %v", addr)
+			} else {
+				ms.logger.Warningf("max. number of concurrent connections "+
+					"reached, rejecting %v", addr)
+			}
 			_ = sock.Close()
 			if refused {
-				ms.reportRejected(addr, RejectMaxClients)
+				ms.reportRejected(addr, reason)
 			}
 		}
 		if share.released.Load() {
@@ -156,6 +169,18 @@ func remoteHost(conn net.Conn) string {
 		return addr.String()
 	}
 	return host
+}
+
+// hostClientsLocked returns the number of connections in tcpClients (those
+// still handshaking included) whose remote host is host. ms.lock must be held.
+func (ms *Server) hostClientsLocked(host string) uint {
+	var n uint
+	for _, c := range ms.tcpClients {
+		if remoteHost(c) == host {
+			n++
+		}
+	}
+	return n
 }
 
 // evictPendingTLSLocked makes room for a new connection from host when every
@@ -426,7 +451,45 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 	var mu sync.Mutex
 	pending := 0
 	draining := false
-	_ = t.SetReadDeadline(time.Now().Add(ms.conf.Timeout))
+	// The read deadline is the earliest of the limits that apply (see
+	// armLocked): the idle timeout (ServerConfig.Timeout, or
+	// FirstRequestTimeout until the first request has been read) while no
+	// request is pending, from idleSince; and FrameTimeout from the first
+	// byte of a request (frameDeadline) while one is being read (inFrame).
+	// limit is the close reason of the deadline set last.
+	received, inFrame := false, false
+	idleSince := time.Now()
+	var frameDeadline time.Time
+	limit := CloseIdleTimeout
+	armLocked := func() {
+		if draining {
+			return
+		}
+		var d time.Time
+		limit = CloseIdleTimeout
+		if pending == 0 {
+			idle := ms.conf.Timeout
+			if !received && ms.conf.FirstRequestTimeout > 0 {
+				idle, limit = ms.conf.FirstRequestTimeout, CloseFirstRequestTimeout
+			}
+			d = idleSince.Add(idle)
+		}
+		if inFrame && (d.IsZero() || frameDeadline.Before(d)) {
+			d, limit = frameDeadline, CloseFrameTimeout
+		}
+		_ = t.SetReadDeadline(d)
+	}
+	mu.Lock()
+	armLocked()
+	mu.Unlock()
+	if ms.conf.FrameTimeout > 0 {
+		t.OnFrameStart = func() {
+			mu.Lock()
+			inFrame, frameDeadline = true, time.Now().Add(ms.conf.FrameTimeout)
+			armLocked()
+			mu.Unlock()
+		}
+	}
 
 	go func() {
 		defer close(readerDone)
@@ -440,22 +503,28 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 				// Disconnected, idle for too long, not speaking Modbus/TCP, or
 				// closed by the server.
 				badHeader, hasBadHeader = t.LastBadHeader()
-				cause.set(readCloseReason(run.ctx, err))
+				reason, rerr := readCloseReason(run.ctx, err)
+				if reason == CloseIdleTimeout {
+					// Which of the limits ran out.
+					mu.Lock()
+					reason = limit
+					mu.Unlock()
+				}
+				cause.set(reason, rerr)
 				connCancel()
 				return
 			}
-			var received time.Time
+			var readAt time.Time
 			if ms.conf.PDUTap != nil {
-				received = time.Now()
+				readAt = time.Now()
 			}
 			mu.Lock()
 			pending++
-			if !draining {
-				_ = t.SetReadDeadline(time.Time{})
-			}
+			received, inFrame = true, false
+			armLocked()
 			mu.Unlock()
 			select {
-			case queue <- inbound{req: req, txnID: txnID, received: received, lengthErr: lengthErr}:
+			case queue <- inbound{req: req, txnID: txnID, received: readAt, lengthErr: lengthErr}:
 			case <-quit:
 				return
 			}
@@ -511,7 +580,8 @@ func (ms *Server) serveConn(run *serverRun, share *runShare, connCtx context.Con
 		mu.Lock()
 		pending--
 		if pending == 0 {
-			_ = t.SetReadDeadline(time.Now().Add(ms.conf.Timeout))
+			idleSince = time.Now()
+			armLocked()
 		}
 		mu.Unlock()
 	}

@@ -110,6 +110,10 @@ type ServerMetrics interface {
 //   - on tcp+tls, a connection whose TLS handshake had not completed, which it
 //     closed to make room for a newer one (RejectTLSHandshakeEvicted).
 //
+// It is also called for a connection ServerConfig.AllowClient refused
+// (RejectNotAllowed) and for one beyond ServerConfig.MaxClientsPerHost
+// (RejectPerHostLimit), both closed as soon as they were accepted.
+//
 // Connections accepted while the server is stopping, and connections that
 // close for any other reason, are not reported.
 //
@@ -186,11 +190,21 @@ const (
 	// error the closed socket returned to the read or write in progress
 	// (typically wrapping net.ErrClosed).
 	CloseServerStopped
+	// CloseFirstRequestTimeout is a connection on which no complete request
+	// arrived within ServerConfig.FirstRequestTimeout of the server starting
+	// to serve it (err wraps os.ErrDeadlineExceeded). Only with
+	// FirstRequestTimeout set.
+	CloseFirstRequestTimeout
+	// CloseFrameTimeout is a connection on which a request had not arrived
+	// in full within ServerConfig.FrameTimeout of its first byte (err wraps
+	// os.ErrDeadlineExceeded). Only with FrameTimeout set.
+	CloseFrameTimeout
 )
 
 // String returns the name of the reason ("client closed", "idle timeout",
 // "malformed frame", "protocol error", "write failed", "read failed", "server
-// stopped"), or "CloseReason(n)" for a value without one.
+// stopped", "first request timeout", "frame timeout"), or "CloseReason(n)"
+// for a value without one.
 func (r CloseReason) String() string {
 	switch r {
 	case CloseClientClosed:
@@ -207,6 +221,10 @@ func (r CloseReason) String() string {
 		return "read failed"
 	case CloseServerStopped:
 		return "server stopped"
+	case CloseFirstRequestTimeout:
+		return "first request timeout"
+	case CloseFrameTimeout:
+		return "frame timeout"
 	default:
 		return "CloseReason(" + strconv.Itoa(int(r)) + ")"
 	}
@@ -229,10 +247,15 @@ const (
 	// RejectNotAllowed is a tcp or tcp+tls connection the server closed as soon
 	// as it was accepted, because ServerConfig.AllowClient refused it.
 	RejectNotAllowed
+	// RejectPerHostLimit is a tcp or tcp+tls connection the server closed as
+	// soon as it was accepted, because its host already had
+	// ServerConfig.MaxClientsPerHost connections.
+	RejectPerHostLimit
 )
 
 // String returns the name of the reason ("max clients", "tls handshake
-// evicted", "not allowed"), or "RejectReason(n)" for a value without one.
+// evicted", "not allowed", "per-host limit"), or "RejectReason(n)" for a
+// value without one.
 func (r RejectReason) String() string {
 	switch r {
 	case RejectMaxClients:
@@ -241,6 +264,8 @@ func (r RejectReason) String() string {
 		return "tls handshake evicted"
 	case RejectNotAllowed:
 		return "not allowed"
+	case RejectPerHostLimit:
+		return "per-host limit"
 	default:
 		return "RejectReason(" + strconv.Itoa(int(r)) + ")"
 	}

@@ -36,6 +36,9 @@ type TCP struct {
 	// length of such a request as soon as it has read the function code, and
 	// reads no further when the two disagree (see RequestLengthError).
 	RequestPDULength func(fc byte) int
+	// OnFrameStart, when set (server use), is called by ReadFrame as soon as
+	// the first byte of a request has been read, before it reads the rest.
+	OnFrameStart func()
 	// OnAnomaly, when set (client use), receives the frames readResponse
 	// skips: another transaction ID, a protocol ID other than 0.
 	OnAnomaly AnomalyFunc
@@ -170,6 +173,35 @@ func (tt *TCP) SetReadDeadline(t time.Time) error {
 	return tt.Socket.SetReadDeadline(t)
 }
 
+// readHeader reads an MBAP header into header. With OnFrameStart set, that
+// is called once the first byte has arrived, and the rest is read after it.
+func (tt *TCP) readHeader(header []byte) error {
+	if tt.OnFrameStart == nil {
+		_, err := io.ReadFull(tt.Socket, header)
+		return err
+	}
+	n := 0
+	for n == 0 {
+		m, err := tt.Socket.Read(header)
+		n = m
+		if err != nil && n == 0 {
+			return err
+		}
+		if err != nil {
+			break
+		}
+	}
+	tt.OnFrameStart()
+	if _, err := io.ReadFull(tt.Socket, header[n:]); err != nil {
+		if err == io.EOF {
+			// The client left in the middle of the header.
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
+	return nil
+}
+
 const maxAnomalies = 10
 
 func (tt *TCP) readResponse(req *adu.Request) (*adu.Response, error) {
@@ -228,7 +260,7 @@ func (tt *TCP) readMBAPFrame() (*adu.Response, uint16, error) {
 
 func (tt *TCP) readMBAPFrameRaw() (*adu.Request, uint16, error) {
 	header := make([]byte, adu.MBAPHeaderLength)
-	if _, err := io.ReadFull(tt.Socket, header); err != nil {
+	if err := tt.readHeader(header); err != nil {
 		return nil, 0, err
 	}
 	txnID, unitID, mbapLen, err := adu.ParseMBAPHeader(header)
